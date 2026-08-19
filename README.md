@@ -24,6 +24,8 @@ kann die Namen lesen.
 - Adminansicht mit verschlüsselten Namen und Buchung von Zahlungen.
 - Kein Framework, kein Build, kein npm. Eine einzige Composer-Abhängigkeit:
   `web-auth/webauthn-lib`.
+- Läuft unter dem eingebauten PHP-Server und unter Apache (mitgelieferte
+  `.htaccess`).
 
 ## Aufbau
 
@@ -41,7 +43,11 @@ data/                   SQLite-Datei, wird bei Bedarf angelegt (nicht im Reposit
 ```
 
 `config.php`, `src/`, `tools/`, `tests/` und `data/` liegen ausserhalb von
-`public/` und sind über HTTP nicht erreichbar.
+`public/` und sind über HTTP nicht erreichbar. Zusätzlich liegen
+`.htaccess`-Dateien bereit: `public/.htaccess` leitet Apache auf den
+Front-Controller, die `.htaccess` in der Projektwurzel greift nur, wenn die
+Dokumentenwurzel nicht auf `public/` zeigt, und `src/`, `tools/`, `tests/`
+verweigern den Zugriff als Sicherheitsnetz.
 
 ## Lokal starten
 
@@ -64,12 +70,38 @@ funktionieren Passkeys dort auch ohne HTTPS – überall sonst ist HTTPS Pflicht
 1. Lokal `composer install --no-dev` ausführen; das erzeugte `vendor/` gehört
    mit auf den Server. Auf dem Hosting selbst ist kein Composer nötig.
 2. Per FTP hochladen: `public/`, `src/`, `tools/`, `tests/`, `vendor/`,
-   `composer.json` und `config.php`.
+   `composer.json`, `config.php` und die Punktdateien `.htaccess` (Projektwurzel
+   und `public/`). Viele FTP-Programme blenden Punktdateien aus – ohne
+   `public/.htaccess` beantwortet Apache jede API-Anfrage mit einem eigenen 404,
+   weil die Weiterleitung auf den Front-Controller fehlt.
 3. Die Domain (oder Subdomain) auf `public/` zeigen lassen. Falls das Hosting
-   nur ein festes Verzeichnis wie `htdocs/` erlaubt: den *Inhalt* von `public/`
-   dorthin legen und `src/`, `tools/`, `vendor/` sowie `config.php` eine Ebene
-   darüber – die Pfade in `public/index.php` sind relativ (`__DIR__ . '/../…'`)
-   und passen dann weiterhin.
+   nur ein festes Verzeichnis wie `htdocs/` erlaubt: den ganzen Baum dorthin
+   legen. Die mitgelieferte `.htaccess` in der Projektwurzel leitet dann alle
+   Anfragen nach `public/` – `config.php`, `src/`, `tools/`, `vendor/` und
+   `data/` sind trotzdem nicht abrufbar, weil jede Anfrage dorthin im
+   Front-Controller endet (JSON-404). Zeigt die Wurzel korrekt auf `public/`,
+   liest Apache diese Datei nicht; sie ist dann wirkungslos.
+
+### Wenn `open_basedir` gesetzt ist (Plesk, netcup, viele Managed-Hoster)
+
+Beschränkt der Hoster PHP per `open_basedir` auf die *Dokumentenwurzel*, kommt
+PHP nicht an `src/`, `vendor/` und `config.php` heran, sobald diese eine Ebene
+darüber liegen. Im Log steht dann:
+
+```
+require(): open_basedir restriction in effect.
+File(.../httpdocs/src/Bootstrap.php) is not within the allowed path(s)
+```
+
+Zwei Auswege, beide erprobt:
+
+- **`open_basedir` erweitern** (empfohlen, saubere Aufteilung bleibt): in Plesk
+  unter *PHP-Einstellungen* den Wert auf das Verzeichnis über `public/` setzen,
+  z. B. `{WEBSPACEROOT}{/}{:}/tmp{/}`. Der Baum bleibt liegen, wie er ist.
+- **Ohne Panel-Änderung**: den ganzen Baum *in* die Dokumentenwurzel legen
+  (also z. B. nach `httpdocs/public/`, wenn die Wurzel dorthin zeigt). Die
+  `.htaccess` der Projektwurzel leitet auf `public/` weiter, alles liegt
+  innerhalb von `open_basedir`, und die sensiblen Pfade bleiben unerreichbar.
 4. Ein beschreibbares Verzeichnis für die Datenbank anlegen, zum Beispiel
    `data/`, und `dbPath` in `config.php` darauf zeigen lassen (absoluter Pfad,
    ausserhalb des Dokumentenverzeichnisses). Fehlt es, legt die Anwendung es

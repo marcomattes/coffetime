@@ -1,0 +1,42 @@
+# Front-Controller-Routing für Apache.
+#
+# Der eingebaute PHP-Server leitet unbekannte Pfade von selbst auf index.php;
+# Apache braucht diese Regel. Ohne sie antwortet der Server auf /api/... mit
+# einem eigenen 404 und die Anwendung wird nie erreicht.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Vorhandene Dateien (style.css, app.js) direkt ausliefern.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Alles andere beantwortet der Front-Controller.
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+<IfModule mod_dir.c>
+    DirectoryIndex index.php
+</IfModule>
+
+# Verzeichnisinhalte nie auflisten.
+<IfModule mod_autoindex.c>
+    Options -Indexes
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set Referrer-Policy "same-origin"
+</IfModule>
+
+# Punktdateien niemals ausliefern (.htaccess, .env, .git …).
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

@@ -1,0 +1,34 @@
+# Diese Datei greift nur, wenn die Dokumentenwurzel auf das Projektverzeichnis
+# zeigt statt auf public/ – das ist bei einfachem Webhosting oft nicht änderbar.
+# Sie leitet dann alle Anfragen nach public/ um; config.php, src/, tools/,
+# tests/, vendor/ und data/ sind dadurch über HTTP nicht erreichbar, weil jede
+# Anfrage dorthin im Front-Controller endet (JSON-404).
+#
+# Zeigt die Dokumentenwurzel korrekt auf public/, liest Apache diese Datei nicht
+# – sie liegt dann oberhalb der Wurzel und ist wirkungslos.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Statische Dateien aus public/ ausliefern.
+    RewriteCond %{DOCUMENT_ROOT}/public/$1 -f
+    RewriteRule ^(.+)$ public/$1 [L]
+
+    # Alles andere an den Front-Controller.
+    RewriteRule ^ public/index.php [L]
+</IfModule>
+
+<IfModule mod_autoindex.c>
+    Options -Indexes
+</IfModule>
+
+# Punktdateien niemals ausliefern (.htaccess, .env, .git …).
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

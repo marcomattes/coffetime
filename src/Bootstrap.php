@@ -39,8 +39,13 @@ final class Bootstrap
         });
 
         set_error_handler(static function (int $severity, string $message, string $file = '', int $line = 0): bool {
-            // Alles wird verschluckt und geloggt; die Bibliothek löst u. a.
-            // E_USER_DEPRECATED aus, was den Request nicht abbrechen darf.
+            // Mit @ unterdrückte Meldungen bleiben unterdrückt – auch im Log.
+            if ((error_reporting() & $severity) === 0) {
+                return true;
+            }
+            // Alles andere wird verschluckt und geloggt; die Bibliothek löst
+            // u. a. E_USER_DEPRECATED aus, was den Request nicht abbrechen und
+            // erst gar nicht im Response landen darf.
             error_log(sprintf('[coffee] php-error %d: %s in %s:%d', $severity, $message, $file, $line));
 
             return true;

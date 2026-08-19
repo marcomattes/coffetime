@@ -254,6 +254,37 @@ Worker des eingebauten Servers leben genauso lange wie der Server selbst.
 - Bei geschützten Endpunkten wird die Sitzung *vor* der Methode geprüft: ohne
   Sitzung gibt es 401, auch bei falschem Verb. Mit Sitzung und falschem Verb 405.
 
+## Apache und die Punktdateien
+
+Der eingebaute PHP-Server leitet Anfragen ohne passende Datei von selbst auf
+`index.php` – Apache tut das nicht. Deshalb liegen zwei `.htaccess`-Dateien bei,
+die beide unter `php -S` wirkungslos sind:
+
+- `public/.htaccess`: `RewriteCond %{REQUEST_FILENAME} -f` liefert vorhandene
+  Dateien direkt aus, alles andere geht an `index.php`. Ohne diese Datei
+  antwortet Apache auf `/api/me` mit einem eigenen 404.
+- `.htaccess` in der Projektwurzel: greift nur, wenn die Dokumentenwurzel auf
+  den Projektstamm zeigt (statt auf `public/`). Sie leitet statische Dateien
+  nach `public/` und alles andere an `public/index.php`. Nebeneffekt: Anfragen
+  auf `config.php`, `src/…`, `data/…` oder `vendor/…` erreichen nie das
+  Dateisystem, sondern enden im Front-Controller mit einem JSON-404. Zeigt die
+  Wurzel korrekt auf `public/`, liest Apache die Datei nicht, weil sie oberhalb
+  der Wurzel liegt.
+
+Beide Dateien verweigern zusätzlich alle Punktdateien (`<FilesMatch "^\.">`) –
+ohne das würde die Umschreibung in der Projektwurzel `/.htaccess` auf
+`public/.htaccess` abbilden und den Regelsatz ausliefern.
+
+`src/`, `tools/`, `tests/` und das angelegte `data/` bekommen ein
+`Require all denied`. Das ist reines Sicherheitsnetz für den Fall, dass die
+Dokumentenwurzel falsch gesetzt ist.
+
+Bei Hostern mit `open_basedir` auf der Dokumentenwurzel (Plesk, netcup) kommt
+PHP nicht an `src/`, `vendor/` und `config.php`, wenn diese darüber liegen.
+Entweder `open_basedir` auf die Ebene darüber erweitern oder den ganzen Baum in
+die Dokumentenwurzel legen – dann greift die `.htaccess` der Projektwurzel.
+Beides wurde gegen Apache 2.4 mit php-fpm und gesetztem `open_basedir` geprüft.
+
 ## Frontend
 
 Eine Seite, drei Abschnitte (`view-auth`, `view-app`, `view-admin`), umgeschaltet
