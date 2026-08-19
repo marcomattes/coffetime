@@ -1,0 +1,13 @@
+{
+    "name": "kaffeeliste/app",
+    "description": "Kaffeeliste – passkey-gesicherte Kaffeezählung, einfaches PHP ohne Framework",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.2",
+        "web-auth/webauthn-lib": "^5.3"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
