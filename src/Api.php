@@ -54,7 +54,6 @@ final class Api
             '/api/coffee/undo' => ['POST', 'coffeeUndo'],
             '/api/stats' => ['GET', 'stats'],
             '/api/admin/users' => ['GET', 'adminUsers'],
-            '/api/admin/payment' => ['POST', 'adminPayment'],
         ];
 
         if (!isset($routes[$path])) {
@@ -380,39 +379,6 @@ final class Api
             $users[] = Users::adminView($row);
         }
         Http::json(['users' => $users]);
-    }
-
-    /** @param array<string, mixed> $user */
-    private static function adminPayment(array $user): never
-    {
-        self::requireAdmin($user);
-        $body = Http::body();
-
-        $userId = $body['userId'] ?? null;
-        if (is_int($userId)) {
-            $userId = (string) $userId;
-        }
-        if (!is_string($userId) || !Users::isValidId($userId)) {
-            Http::error('invalid_user', 400);
-        }
-
-        $amount = $body['amountCents'] ?? null;
-        if (is_bool($amount) || !is_numeric($amount)) {
-            Http::error('invalid_amount', 400);
-        }
-        $amount = (string) $amount;
-        if (preg_match('/^[0-9]{1,15}$/', $amount) !== 1) {
-            Http::error('invalid_amount', 400);
-        }
-        $amountCents = (int) $amount;
-
-        if (Users::find($userId) === null) {
-            Http::error('user_not_found', 404);
-        }
-
-        // Verändert ausschliesslich paid_cents dieses einen Benutzers.
-        $updated = Users::addPayment($userId, $amountCents);
-        Http::json(['user' => Users::adminView($updated)]);
     }
 
     /** @param array<string, mixed> $user */

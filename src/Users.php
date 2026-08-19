@@ -98,17 +98,6 @@ final class Users
     }
 
     /** @return array<string, mixed> */
-    public static function addPayment(string $id, int $amountCents): array
-    {
-        return Db::transaction(static function (PDO $pdo) use ($id, $amountCents): array {
-            $statement = $pdo->prepare('UPDATE users SET paid_cents = paid_cents + ? WHERE id = ?');
-            $statement->execute([$amountCents, (int) $id]);
-
-            return self::rowInTransaction($pdo, $id);
-        });
-    }
-
-    /** @return array<string, mixed> */
     private static function rowInTransaction(PDO $pdo, string $id): array
     {
         $row = Db::fetchRow('SELECT * FROM users WHERE id = ?', [(int) $id], $pdo);

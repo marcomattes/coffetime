@@ -1,10 +1,12 @@
 # Kaffeeliste
 
-Eine gemeinsame Kaffeekasse für ein Büro. Jede Person zählt ihre eigenen Kaffees:
-anmelden mit Passkey, ein Knopf pro Kaffee, darunter steht was offen ist.
-Niemand sieht den Namen oder den Zählerstand von jemand anderem – geteilt werden
-nur die Gesamtzahl und eine anonyme Rangliste. Zahlungen bucht eine Person mit
-Adminrechten.
+Eine gemeinsame Kaffeekasse für ein Büro, als installierbare PWA. Jede Person
+zählt ihre eigenen Kaffees: anmelden mit Passkey, ein Knopf pro Kaffee (das
+Handy vibriert kurz zur Bestätigung), darunter steht was offen ist. Niemand
+sieht den Namen oder den Zählerstand von jemand anderem – geteilt werden nur
+die Gesamtzahl und eine anonyme Rangliste. Wer wem was schuldet, klärt eine
+Person mit Adminrechten offline über einen Excel-Export – die App selbst
+bucht keine Zahlungen.
 
 Vor- und Nachname werden beim Anlegen des Kontos gegen einen öffentlichen
 Admin-Schlüssel versiegelt und danach nie wieder entschlüsselt – auch nicht für
@@ -21,7 +23,11 @@ kann die Namen lesen.
 - `balanceCents = coffees × priceCents − paidCents`, Preis immer aus der
   Konfiguration.
 - Anonyme Statistik: Gesamtzahl, Anzahl der Konten, eigener Platz, Verteilung.
-- Adminansicht mit verschlüsselten Namen und Buchung von Zahlungen.
+- Adminansicht mit verschlüsselten Namen (nur lesend – Zahlungen werden nicht
+  in der App gebucht, siehe „Wer schuldet was?“ weiter unten).
+- Installierbare PWA: Manifest, Service Worker für die statische Hülle
+  (offline nutzbar, API-Aufrufe immer live), App-Icons. Kurze Vibration beim
+  Buchen eines Kaffees, sofern das Gerät die Vibration-API unterstützt.
 - Kein Framework, kein Build, kein npm. Eine einzige Composer-Abhängigkeit:
   `web-auth/webauthn-lib`.
 - Läuft unter dem eingebauten PHP-Server und unter Apache (mitgelieferte
@@ -36,6 +42,9 @@ composer.json           die eine Abhängigkeit
 public/                 das einzige Dokumentenverzeichnis
   index.php             Front-Controller: /api/* und die Oberfläche
   app.js, style.css     Vanilla JS und CSS
+  manifest.webmanifest  PWA-Manifest (Name, Icons, Farben, Startmodus)
+  sw.js                 Service Worker: cacht die statische Hülle, /api/* immer live
+  icons/                App-Icons in verschiedenen Größen (PNG)
 src/                    Anwendungsklassen (Namensraum Coffee\), nicht über HTTP erreichbar
 tools/decrypt-users.php Offline-Werkzeug für den Administrator
 tests/CryptoTest.php    Tests ohne Framework
@@ -188,9 +197,20 @@ php tools/decrypt-users.php --db ./coffee.sqlite --key ./admin.key \
   | awk -F'|' '$5 > 500 { printf "%s %s: %.2f EUR\n", $2, $3, $5/100 }'
 ```
 
-Zahlungen werden nicht mit dem Werkzeug gebucht, sondern in der Adminansicht der
-Anwendung: Konto antippen, Betrag in Cent eintragen, „Zahlung buchen“. Die
-Zuordnung erfolgt über die ID, die in beiden Ansichten dieselbe ist.
+### Excel-Export statt Zahlungsbuchung in der App
+
+Die App bucht keine Zahlungen – wer wem was schuldet, wird ausserhalb der App
+geklärt. `--xlsx <pfad>` schreibt zusätzlich zur Textausgabe eine echte
+`.xlsx`-Tabelle (ID, Vorname, Nachname, Kaffees, offener Betrag in Euro):
+
+```bash
+php tools/decrypt-users.php --db ./coffee.sqlite --key ./admin.key --xlsx ./kaffeeliste.xlsx
+```
+
+Die Datei lässt sich direkt in Excel, LibreOffice oder Google Sheets öffnen,
+zum Verteilen, Abgleichen oder Verrechnen ausserhalb der App. Sobald bezahlt
+wurde, ist das reine Absprache- bzw. Buchhaltungssache – die App selbst
+verändert `paid_cents` nach der Registrierung nicht mehr.
 
 ## Tests
 

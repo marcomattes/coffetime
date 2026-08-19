@@ -300,3 +300,24 @@ Analytics – nur `style.css` und `app.js` von derselben Herkunft.
 
 Nach jedem Zählerklick wird zusätzlich `/api/me` neu geladen, damit der angezeigte
 Stand auch bei mehreren schnellen Klicks der Serverwahrheit entspricht.
+
+## PWA und Zahlungsbuchung
+
+`manifest.webmanifest` und `sw.js` liegen in `public/` und werden wie
+`app.js`/`style.css` als statische Dateien ausgeliefert (siehe
+`public/.htaccess`). Der Service Worker cacht ausschliesslich die Hülle
+(`/`, `style.css`, `app.js`, Manifest, Icons); jede Anfrage unter `/api/`
+geht immer ans Netz – der Zähler bleibt serverautoritativ, auch offline
+zeigt die App nur den zuletzt bekannten Stand.
+
+`navigator.vibrate(...)` läuft bei jedem gebuchten Kaffee, zusammen mit einer
+kurzen CSS-Animation (`.bump`) auf Zähler und Knopf. Beides ist rein
+kosmetisches Feedback ohne Serverzustand; ein Browser ohne Vibration-API
+bekommt einfach nur die Animation.
+
+`POST /api/admin/payment` (Zahlung buchen) wurde entfernt, `paid_cents`
+bleibt als Spalte bestehen, wird aber ab Registrierung nie mehr geschrieben.
+Wer wem was schuldet, klärt `tools/decrypt-users.php --xlsx <pfad>` offline:
+dieselbe Entschlüsselung wie bisher, zusätzlich als `.xlsx` statt nur als
+Pipe-Text. Das hält die Kernidee bei – der Server entschlüsselt nie einen
+Namen –, verlagert das Verrechnen aber komplett aus der App heraus.

@@ -19,8 +19,16 @@ final class Frontend
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f1ea" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17120e" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kaffeeliste">
 <title>Kaffeeliste</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -116,14 +124,9 @@ final class Frontend
   <section id="view-admin" data-testid="view-admin" hidden>
     <div class="card">
       <h2>Verwaltung</h2>
-      <p class="hint">Namen bleiben verschlüsselt. Zahlung auf den gewählten Eintrag buchen.</p>
+      <p class="hint">Namen bleiben verschlüsselt &ndash; auch hier. Wer wieviel schuldet, klärt der
+        Offline-Export mit <code>tools/decrypt-users.php --xlsx</code> ausserhalb der App.</p>
       <div id="admin-users" data-testid="admin-users" class="rows"></div>
-      <div class="field">
-        <label for="admin-amount">Betrag in Cent</label>
-        <input type="number" id="admin-amount" data-testid="admin-amount" min="0" step="1" value="0">
-      </div>
-      <button type="button" id="btn-book" data-testid="btn-book" class="btn">Zahlung buchen</button>
-      <p id="admin-error" class="error" role="alert"></p>
     </div>
   </section>
 

@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var state = { me: null, users: [], selectedId: null };
+  var state = { me: null, users: [] };
 
   function el(id) {
     return document.getElementById(id);
@@ -133,23 +133,14 @@
       empty.className = 'hint';
       empty.textContent = 'Noch niemand angemeldet.';
       container.appendChild(empty);
-      state.selectedId = null;
       return;
-    }
-    var stillThere = state.users.some(function (user) {
-      return user.id === state.selectedId;
-    });
-    if (!stillThere) {
-      state.selectedId = state.users[0].id;
     }
 
     state.users.forEach(function (user) {
-      var row = document.createElement('button');
-      row.type = 'button';
+      var row = document.createElement('div');
       row.className = 'row';
       row.setAttribute('data-testid', 'admin-row');
       row.setAttribute('data-user-id', user.id);
-      row.setAttribute('aria-pressed', user.id === state.selectedId ? 'true' : 'false');
 
       var head = document.createElement('span');
       head.className = 'row-head';
@@ -166,10 +157,6 @@
 
       row.appendChild(head);
       row.appendChild(cipher);
-      row.addEventListener('click', function () {
-        state.selectedId = user.id;
-        renderAdmin(state.users);
-      });
       container.appendChild(row);
     });
   }
@@ -379,6 +366,9 @@
           balanceCents: data.balanceCents,
           priceCents: state.me ? state.me.priceCents : 0
         });
+        vibrate([18, 40, 18]);
+        bump(el('counter'));
+        bump(el('btn-add'));
         return refresh();
       })
       .catch(function (error) {
@@ -464,34 +454,38 @@
       });
   }
 
-  function book() {
-    var errorNode = el('admin-error');
-    text(errorNode, '');
-    var amount = parseInt(el('admin-amount').value, 10);
-    if (!state.selectedId) {
-      text(errorNode, 'kein_konto_gewaehlt');
+  /* ------------------------------------------------------- Feedback ----- */
+
+  /* Kurzes, zufriedenes Doppel-Summen – bewusst kein einzelner harter Ruck. */
+  function vibrate(pattern) {
+    if (window.navigator && typeof window.navigator.vibrate === 'function') {
+      try {
+        window.navigator.vibrate(pattern);
+      } catch (e) {
+        /* Manche Browser werfen ausserhalb einer Nutzergeste – einfach ignorieren. */
+      }
+    }
+  }
+
+  function bump(node) {
+    if (!node) {
       return;
     }
-    if (!isFinite(amount) || amount < 0) {
-      text(errorNode, 'ungueltiger_betrag');
-      return;
-    }
-    var button = el('btn-book');
-    busy(button, true);
-    api('/api/admin/payment', { userId: state.selectedId, amountCents: amount })
-      .then(function () {
-        el('admin-amount').value = '0';
-        return refresh();
-      })
-      .catch(function (error) {
-        fail(errorNode, error);
-      })
-      .then(function () {
-        busy(button, false);
-      });
+    node.classList.remove('bump');
+    // Reflow erzwingen, damit die Animation bei wiederholtem Antippen neu startet.
+    void node.offsetWidth;
+    node.classList.add('bump');
   }
 
   /* ---------------------------------------------------------- Start ----- */
+
+  function registerServiceWorker() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function () {
+        /* Offline-Cache ist ein Bonus, kein Muss – ohne SW läuft die App normal. */
+      });
+    }
+  }
 
   function ready() {
     el('btn-register').addEventListener('click', register);
@@ -499,8 +493,8 @@
     el('btn-add').addEventListener('click', addCoffee);
     el('btn-undo').addEventListener('click', undoCoffee);
     el('btn-logout').addEventListener('click', logout);
-    el('btn-book').addEventListener('click', book);
     el('btn-add-device').addEventListener('click', addDevice);
+    registerServiceWorker();
     show('auth');
     refresh();
   }
