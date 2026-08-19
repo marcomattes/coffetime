@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var state = { me: null, users: [] };
+  var state = { me: null, users: [], pendingBook: false };
 
   function el(id) {
     return document.getElementById(id);
@@ -90,6 +90,32 @@
     text(el('counter'), String(me.coffees));
     text(el('balance'), money(me.balanceCents));
     text(el('price'), money(me.priceCents));
+
+    var streakNode = el('streak');
+    if (streakNode) {
+      var streak = typeof me.streakDays === 'number' ? me.streakDays : 0;
+      streakNode.hidden = streak < 2;
+      text(streakNode, '🔥 ' + streak + ' Tage in Folge');
+    }
+
+    updateBadge(me.balanceCents);
+  }
+
+  /* App-Icon-Badge: offener Betrag, aufgerundet auf ganze Euro. Rein kosmetisch. */
+  function updateBadge(balanceCents) {
+    if (!('setAppBadge' in navigator)) {
+      return;
+    }
+    var amount = Math.round((typeof balanceCents === 'number' ? balanceCents : 0) / 100);
+    try {
+      if (amount > 0) {
+        navigator.setAppBadge(amount).catch(function () {});
+      } else if ('clearAppBadge' in navigator) {
+        navigator.clearAppBadge().catch(function () {});
+      }
+    } catch (e) {
+      /* Badging API ist ein Bonus, kein Muss. */
+    }
   }
 
   function renderStats(stats) {
@@ -168,6 +194,7 @@
       .then(function (me) {
         renderMe(me);
         show('app');
+        consumePendingBook();
         var jobs = [
           api('/api/stats').then(renderStats).catch(function () {})
         ];
@@ -415,6 +442,9 @@
       .then(function () {
         state.me = null;
         show('auth');
+        if ('clearAppBadge' in navigator) {
+          navigator.clearAppBadge().catch(function () {});
+        }
       });
   }
 
@@ -441,6 +471,35 @@
     node.classList.add('bump');
   }
 
+  /* ------------------------------------------------- Shortcut / NFC-Tag -- */
+
+  /*
+   * "/?book=1" bucht sofort einen Kaffee – dieselbe Adresse dient als
+   * App-Shortcut (Icon lange drücken) und als Ziel eines NFC-Tags am
+   * Automaten. Der Parameter wird sofort aus der URL entfernt, damit ein
+   * Neuladen nicht versehentlich erneut bucht.
+   */
+  function checkPendingBook() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('book') !== '1') {
+      return;
+    }
+    state.pendingBook = true;
+    window.history.replaceState(null, '', window.location.pathname);
+    var hint = el('nfc-hint');
+    if (hint) {
+      hint.hidden = false;
+    }
+  }
+
+  function consumePendingBook() {
+    if (!state.pendingBook) {
+      return;
+    }
+    state.pendingBook = false;
+    addCoffee();
+  }
+
   /* ---------------------------------------------------------- Start ----- */
 
   function registerServiceWorker() {
@@ -457,6 +516,7 @@
     el('btn-add').addEventListener('click', addCoffee);
     el('btn-undo').addEventListener('click', undoCoffee);
     el('btn-logout').addEventListener('click', logout);
+    checkPendingBook();
     registerServiceWorker();
     show('auth');
     refresh();

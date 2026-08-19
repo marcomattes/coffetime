@@ -37,6 +37,7 @@ final class Frontend
   <section id="view-auth" data-testid="view-auth" hidden>
     <h1 class="brand"><span aria-hidden="true">&#9749;</span> Kaffeeliste</h1>
     <p class="lead">Anmeldung mit Passkey &ndash; ohne Benutzername, ohne Passwort.</p>
+    <p id="nfc-hint" class="hint" hidden>Kaffee-Tag erkannt &ndash; nach der Anmeldung wird automatisch gebucht.</p>
 
     <div class="card">
       <h2>Anmelden</h2>
@@ -72,6 +73,7 @@ final class Frontend
     <div class="card tally">
       <p class="tally-label">Meine Kaffees</p>
       <p id="counter" data-testid="counter" class="tally-count">0</p>
+      <p id="streak" data-testid="streak" class="hint" hidden></p>
       <button type="button" id="btn-add" data-testid="btn-add" class="btn btn-add">
         <span aria-hidden="true">&#9749;</span> Kaffee nehmen
       </button>

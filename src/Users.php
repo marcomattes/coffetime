@@ -80,6 +80,9 @@ final class Users
         return Db::transaction(static function (PDO $pdo) use ($id): array {
             $statement = $pdo->prepare('UPDATE users SET coffees = coffees + 1 WHERE id = ?');
             $statement->execute([(int) $id]);
+            // Ereignis für die Serienanzeige – ein Datensatz je gebuchtem Kaffee.
+            $event = $pdo->prepare('INSERT INTO coffee_events (user_id, created_at) VALUES (?, ?)');
+            $event->execute([(int) $id, Clock::now()]);
 
             return self::rowInTransaction($pdo, $id);
         });
@@ -92,9 +95,51 @@ final class Users
             // Stoppt bei null, wird niemals negativ.
             $statement = $pdo->prepare('UPDATE users SET coffees = coffees - 1 WHERE id = ? AND coffees > 0');
             $statement->execute([(int) $id]);
+            if ($statement->rowCount() > 0) {
+                // Nur das zuletzt gebuchte Ereignis zurücknehmen, nicht irgendeins.
+                $pdo->prepare(
+                    'DELETE FROM coffee_events WHERE id = (
+                        SELECT id FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1
+                    )'
+                )->execute([(int) $id]);
+            }
 
             return self::rowInTransaction($pdo, $id);
         });
+    }
+
+    /**
+     * Aktuelle Serie in Tagen: Anzahl aufeinanderfolgender Tage bis heute (oder
+     * bis gestern, falls heute noch nichts gebucht wurde) mit mindestens einem
+     * Kaffee. Rein kosmetisch, ohne Einfluss auf coffees/balanceCents.
+     */
+    public static function streakDays(string $id): int
+    {
+        $rows = Db::fetchRows(
+            "SELECT DISTINCT date(created_at, 'unixepoch') AS day FROM coffee_events WHERE user_id = ?",
+            [(int) $id]
+        );
+        $days = [];
+        foreach ($rows as $row) {
+            if (isset($row['day']) && is_string($row['day']) && $row['day'] !== '') {
+                $days[$row['day']] = true;
+            }
+        }
+        if ($days === []) {
+            return 0;
+        }
+
+        $streak = 0;
+        $cursor = Clock::now();
+        if (!isset($days[gmdate('Y-m-d', $cursor)])) {
+            $cursor -= 86400;
+        }
+        while (isset($days[gmdate('Y-m-d', $cursor)])) {
+            $streak++;
+            $cursor -= 86400;
+        }
+
+        return $streak;
     }
 
     /** @return array<string, mixed> */

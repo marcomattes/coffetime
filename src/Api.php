@@ -387,7 +387,7 @@ final class Api
     private static function testReset(): never
     {
         Db::transaction(static function (\PDO $pdo): void {
-            foreach (['sessions', 'credentials', 'ceremonies', 'users'] as $table) {
+            foreach (['sessions', 'credentials', 'ceremonies', 'coffee_events', 'users'] as $table) {
                 if (Db::tableExists($pdo, $table)) {
                     $pdo->exec('DELETE FROM ' . $table);
                 }
@@ -532,6 +532,7 @@ final class Api
             'coffees' => Users::coffees($user),
             'balanceCents' => Users::balanceCents($user),
             'priceCents' => Config::priceCents(),
+            'streakDays' => Users::streakDays($id),
         ];
     }
 

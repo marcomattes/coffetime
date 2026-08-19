@@ -16,5 +16,14 @@
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
     { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Kaffee buchen",
+      "short_name": "Kaffee",
+      "description": "Bucht sofort einen Kaffee, ohne die App erst zu öffnen. Dieselbe Adresse funktioniert auch als Link auf einem NFC-Tag.",
+      "url": "/?book=1",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
   ]
 }

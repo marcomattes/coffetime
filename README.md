@@ -28,6 +28,13 @@ kann die Namen lesen.
 - Installierbare PWA: Manifest, Service Worker für die statische Hülle
   (offline nutzbar, API-Aufrufe immer live), App-Icons. Kurze Vibration beim
   Buchen eines Kaffees, sofern das Gerät die Vibration-API unterstützt.
+- App-Shortcut „Kaffee buchen“ (Icon lange drücken) und derselbe Link
+  (`/?book=1`) als Ziel für einen NFC-Tag am Automaten – siehe „Schnellstart
+  ohne App öffnen“ weiter unten.
+- Serie in Tagen („🔥 3 Tage in Folge“) als kleines Gamification-Element,
+  rein kosmetisch und ohne Einfluss auf Zähler oder Rangliste.
+- App-Icon-Badge (Badging API) mit dem offenen Betrag, sofern der Browser das
+  unterstützt.
 - Kein Framework, kein Build, kein npm. Eine einzige Composer-Abhängigkeit:
   `web-auth/webauthn-lib`.
 - Läuft unter dem eingebauten PHP-Server und unter Apache (mitgelieferte
@@ -147,6 +154,24 @@ dafür keine Spalte.
 
 Der private Schlüssel zu `adminPublicKey` gehört **nicht** auf den Server. Ohne
 ihn kann niemand – auch kein Angreifer mit vollem Dateizugriff – die Namen lesen.
+
+## Schnellstart ohne App öffnen
+
+`/?book=1` bucht sofort einen Kaffee für den angemeldeten Account und räumt den
+Parameter danach aus der URL, damit ein Neuladen nicht versehentlich erneut
+bucht. Zwei Wege, dieselbe Adresse zu nutzen:
+
+- **App-Shortcut**: Icon der installierten PWA lange drücken (Android/Desktop)
+  bzw. per Force-Touch (iOS) → „Kaffee buchen“. Steht im Manifest unter
+  `shortcuts`, kein zusätzlicher Code nötig.
+- **NFC-Tag am Automaten**: Tag mit einer beliebigen NFC-Schreib-App (z. B.
+  „NFC Tools“) auf die volle URL beschreiben, z. B.
+  `https://kaffee.example.org/?book=1`. Tippen des Handys ans Tag öffnet die
+  Adresse; ist man noch nicht angemeldet, zeigt die App einen Hinweis und holt
+  die Buchung automatisch nach, sobald man sich per Passkey anmeldet. Das
+  *Schreiben* selbst passiert ausserhalb der App – Web-NFC-Schreibzugriff aus
+  dem Browser gibt es bewusst nicht, weil er nur unter Chrome/Android
+  funktioniert und auf iOS ganz fehlt.
 
 ## Kodierung von `nameEncrypted`
 
