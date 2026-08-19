@@ -97,21 +97,15 @@ final class Api
     }
 
     /**
-     * Prüft Vor- und Nachname. Beim Hinzufügen eines weiteren Geräts zu einem
-     * bestehenden Konto dürfen die Felder ganz fehlen – der Name des Kontos
-     * bleibt unangetastet. Mitgeschickte Werte werden immer validiert.
+     * Prüft Vor- und Nachname.
      *
      * @param array<string, mixed> $body
      * @return array{0: string, 1: string}
      */
-    private static function requireNames(array $body, bool $optional = false): array
+    private static function requireNames(array $body): array
     {
         $first = Http::stringField($body, 'firstName');
         $last = Http::stringField($body, 'lastName');
-        if ($optional && $first === null && $last === null
-            && !array_key_exists('firstName', $body) && !array_key_exists('lastName', $body)) {
-            return ['', ''];
-        }
         if ($first === null || $last === null) {
             Http::error('invalid_name', 400);
         }
@@ -143,36 +137,21 @@ final class Api
     {
         $body = Http::body();
         self::requireInvite($body);
-        $current = Sessions::currentUser();
-        [$first, $last] = self::requireNames($body, $current !== null);
+        [$first, $last] = self::requireNames($body);
         $crypto = self::crypto();
 
-        if ($current !== null) {
-            // Angemeldet: ein weiteres Gerät für dasselbe Konto, kein neuer
-            // Benutzer und keine Namensprüfung.
-            $userId = (string) $current['id'];
-            $handleRaw = self::handleFor($current);
-            $options = WebAuthnService::creationOptions(
-                $handleRaw,
-                self::userLabel(Encoding::base64UrlEncode($handleRaw)),
-                WebAuthnService::descriptorsForUser($userId)
-            );
-            $payload = ['mode' => 'add', 'userId' => $userId];
-        } else {
-            $nameHash = $crypto->nameHash($first, $last);
-            if (Users::idForNameHash($nameHash) !== null) {
-                Http::error('name_taken', 409);
-            }
-            $handleRaw = random_bytes(16);
-            $handleEncoded = Encoding::base64UrlEncode($handleRaw);
-            $options = WebAuthnService::creationOptions($handleRaw, self::userLabel($handleEncoded));
-            $payload = [
-                'mode' => 'new',
-                'nameEncrypted' => $crypto->sealName($first, $last),
-                'nameHash' => $nameHash,
-                'userHandle' => $handleEncoded,
-            ];
+        $nameHash = $crypto->nameHash($first, $last);
+        if (Users::idForNameHash($nameHash) !== null) {
+            Http::error('name_taken', 409);
         }
+        $handleRaw = random_bytes(16);
+        $handleEncoded = Encoding::base64UrlEncode($handleRaw);
+        $options = WebAuthnService::creationOptions($handleRaw, self::userLabel($handleEncoded));
+        $payload = [
+            'nameEncrypted' => $crypto->sealName($first, $last),
+            'nameHash' => $nameHash,
+            'userHandle' => $handleEncoded,
+        ];
 
         Ceremonies::create(
             Ceremonies::KIND_REGISTER,
@@ -188,7 +167,7 @@ final class Api
     {
         $body = Http::body();
         self::requireInvite($body);
-        self::requireNames($body, Sessions::currentUser() !== null);
+        self::requireNames($body);
 
         $raw = self::credentialFromBody($body);
         if ($raw === null) {
@@ -223,21 +202,6 @@ final class Api
 
         if (Credentials::exists(Encoding::base64UrlEncode($record->publicKeyCredentialId))) {
             Http::error('credential_exists', 409);
-        }
-
-        if (($payload['mode'] ?? '') === 'add') {
-            // Zweites Gerät: die Sitzung muss noch demselben Konto gehören.
-            $current = Sessions::currentUser();
-            $userId = (string) ($payload['userId'] ?? '');
-            if ($current === null || (string) $current['id'] !== $userId) {
-                Http::error('unauthorized', 401);
-            }
-            Credentials::store($userId, $record);
-            $user = Users::find($userId);
-            if ($user === null) {
-                Http::error('server_error', 500);
-            }
-            Http::json(['ok' => true, 'user' => self::meView($user)]);
         }
 
         $nameHash = (string) ($payload['nameHash'] ?? '');
@@ -546,28 +510,6 @@ final class Api
         }
 
         return null;
-    }
-
-    /** @param array<string, mixed> $user */
-    private static function handleFor(array $user): string
-    {
-        $handle = $user['user_handle'] ?? null;
-        if (is_string($handle) && $handle !== '') {
-            $raw = Encoding::base64UrlDecode($handle);
-            if ($raw !== null && $raw !== '') {
-                return $raw;
-            }
-        }
-
-        // Altbestand ohne Handle bekommt eines – ohne den Namen zu berühren.
-        $new = random_bytes(16);
-        $encoded = Encoding::base64UrlEncode($new);
-        Db::transaction(static function (\PDO $pdo) use ($user, $encoded): void {
-            $statement = $pdo->prepare('UPDATE users SET user_handle = ? WHERE id = ?');
-            $statement->execute([$encoded, (int) $user['id']]);
-        });
-
-        return $new;
     }
 
     private static function userLabel(string $handle): string

@@ -103,20 +103,6 @@ final class Frontend
       <ol id="distribution" class="dist"></ol>
     </div>
 
-    <div class="card">
-      <h2>Weiteres Ger&auml;t</h2>
-      <p class="hint">Passkey auf einem zweiten Ger&auml;t einrichten &ndash; dasselbe Konto, kein neuer Eintrag.</p>
-      <div class="field">
-        <label for="device-invite-input">Einladungscode</label>
-        <input type="text" id="device-invite-input" data-testid="device-invite-input"
-               autocomplete="off" spellcheck="false">
-      </div>
-      <button type="button" id="btn-add-device" data-testid="btn-add-device" class="btn btn-quiet">
-        Passkey hinzuf&uuml;gen
-      </button>
-      <p id="device-note" class="hint" role="status"></p>
-    </div>
-
     <p id="app-error" class="error" role="alert"></p>
     <button type="button" id="btn-logout" data-testid="btn-logout" class="btn btn-quiet">Abmelden</button>
   </section>

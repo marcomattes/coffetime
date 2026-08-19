@@ -51,12 +51,6 @@ final class Credentials
         return Db::fetchRow('SELECT * FROM credentials WHERE credential_id = ?', [$credentialIdB64u]);
     }
 
-    /** @return list<array<string, mixed>> */
-    public static function forUser(string $userId): array
-    {
-        return Db::fetchRows('SELECT * FROM credentials WHERE user_id = ? ORDER BY id ASC', [(int) $userId]);
-    }
-
     public static function count(): int
     {
         $value = Db::fetchValue('SELECT COUNT(*) AS total FROM credentials');

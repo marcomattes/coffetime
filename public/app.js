@@ -418,42 +418,6 @@
       });
   }
 
-  function addDevice() {
-    var button = el('btn-add-device');
-    var note = el('device-note');
-    text(note, '');
-    if (!window.PublicKeyCredential) {
-      text(note, 'passkeys_nicht_verfuegbar');
-      return;
-    }
-    var payload = { invite: el('device-invite-input').value };
-    busy(button, true);
-    api('/api/register/options', payload)
-      .then(function (options) {
-        return navigator.credentials.create({ publicKey: creationOptions(options) });
-      })
-      .then(function (credential) {
-        if (!credential) {
-          throw new Error('abgebrochen');
-        }
-        return api('/api/register/verify', {
-          invite: payload.invite,
-          credential: serializeAttestation(credential)
-        });
-      })
-      .then(function () {
-        el('device-invite-input').value = '';
-        text(note, 'Gerät hinzugefügt.');
-        return refresh();
-      })
-      .catch(function (error) {
-        fail(note, error);
-      })
-      .then(function () {
-        busy(button, false);
-      });
-  }
-
   /* ------------------------------------------------------- Feedback ----- */
 
   /* Kurzes, zufriedenes Doppel-Summen – bewusst kein einzelner harter Ruck. */
@@ -493,7 +457,6 @@
     el('btn-add').addEventListener('click', addCoffee);
     el('btn-undo').addEventListener('click', undoCoffee);
     el('btn-logout').addEventListener('click', logout);
-    el('btn-add-device').addEventListener('click', addDevice);
     registerServiceWorker();
     show('auth');
     refresh();

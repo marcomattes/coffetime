@@ -17,8 +17,8 @@ kann die Namen lesen.
 
 - Anmeldung ausschliesslich per Passkey (WebAuthn), ohne Benutzername, ohne
   Passwort, ohne E-Mail. Die Anmeldung ist namenlos: das Gerät wählt den
-  auffindbaren Passkey selbst.
-- Ein Konto, beliebig viele Geräte.
+  auffindbaren Passkey selbst. Genau ein Passkey pro Konto, kein Hinzufügen
+  weiterer Geräte – Passkey weg heisst Konto weg, es gibt keine Wiederherstellung.
 - Serverautoritativer Zähler mit Rücknahme, die bei null stoppt.
 - `balanceCents = coffees × priceCents − paidCents`, Preis immer aus der
   Konfiguration.
