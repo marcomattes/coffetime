@@ -1,4 +1,4 @@
-/* Kaffeeliste – Service Worker. Cacht nur die statische Hülle, nie /api/*. */
+/* Coffee Time service worker: cache the static shell, never the API. */
 'use strict';
 
 var CACHE = 'kaffeeliste-v2';
@@ -48,13 +48,12 @@ self.addEventListener('fetch', function (event) {
   if (url.origin !== self.location.origin) {
     return;
   }
-  // Die API ist immer live: serverautoritativer Zähler, nie aus dem Cache.
+  // The server-authoritative API always uses the network.
   if (url.pathname.startsWith('/api/')) {
     return;
   }
 
-  // Shortcut/NFC-Link "/?book=1" soll auch offline die gecachte Hülle "/"
-  // treffen – Suchparameter spielen für den Seitenaufbau keine Rolle.
+  // Allow shortcut and NFC navigations to use the cached shell regardless of query parameters.
   var matchOptions = request.mode === 'navigate' ? { ignoreSearch: true } : undefined;
 
   event.respondWith(

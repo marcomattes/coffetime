@@ -1,8 +1,8 @@
-/* Kaffeeliste – Vanilla JS, kein Build, keine externen Aufrufe. */
+/* Coffee Time – vanilla JavaScript, no build step or external requests. */
 (function () {
   'use strict';
 
-  var state = { me: null, users: [], pendingBook: false };
+  var state = { me: null, users: [], pendingBook: false, adminKey: null };
 
   function el(id) {
     return document.getElementById(id);
@@ -95,7 +95,7 @@
     if (streakNode) {
       var streak = typeof me.streakDays === 'number' ? me.streakDays : 0;
       streakNode.hidden = streak < 2;
-      text(streakNode, '🔥 ' + streak + ' Tage in Folge');
+      text(streakNode, '🔥 ' + streak + ' days in a row');
     }
 
     updateBadge(me.balanceCents);
@@ -133,12 +133,12 @@
     (stats.distribution || []).forEach(function (entry) {
       var item = document.createElement('li');
       var left = document.createElement('span');
-      left.textContent = 'Platz ' + entry.rank;
+      left.textContent = 'Rank ' + entry.rank;
       var right = document.createElement('span');
-      right.textContent = entry.coffees + (entry.coffees === 1 ? ' Kaffee' : ' Kaffees');
+      right.textContent = entry.coffees + (entry.coffees === 1 ? ' coffee' : ' coffees');
       if (!marked && entry.rank === myRank && entry.coffees === mine) {
         item.className = 'me';
-        left.textContent = 'Platz ' + entry.rank + ' (ich)';
+        left.textContent = 'Rank ' + entry.rank + ' (me)';
         marked = true;
       }
       item.appendChild(left);
@@ -157,7 +157,7 @@
     if (state.users.length === 0) {
       var empty = document.createElement('p');
       empty.className = 'hint';
-      empty.textContent = 'Noch niemand angemeldet.';
+      empty.textContent = 'No accounts yet.';
       container.appendChild(empty);
       return;
     }
@@ -171,7 +171,7 @@
       var head = document.createElement('span');
       head.className = 'row-head';
       var left = document.createElement('span');
-      left.textContent = 'Konto ' + user.id + ' · ' + user.coffees + ' Kaffees';
+      left.textContent = 'Account ' + user.id + ' · ' + user.coffees + (user.coffees === 1 ? ' coffee' : ' coffees');
       var right = document.createElement('span');
       right.textContent = money(user.balanceCents);
       head.appendChild(left);
@@ -179,11 +179,57 @@
 
       var cipher = document.createElement('span');
       cipher.className = 'row-cipher';
-      cipher.textContent = user.nameEncrypted || '(kein Chiffrat)';
+      cipher.textContent = user.decryptedName || user.nameEncrypted || '(no ciphertext)';
 
       row.appendChild(head);
       row.appendChild(cipher);
       container.appendChild(row);
+    });
+  }
+
+  function pemBytes(pem) {
+    var normalized = pem.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, '');
+    if (!normalized) throw new Error('invalid_key');
+    var binary = atob(normalized);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  function decryptAdminName(user) {
+    var prefix = 'rsa-oaep-sha1:';
+    if (!state.adminKey || !user.nameEncrypted || user.nameEncrypted.indexOf(prefix) !== 0) return Promise.resolve();
+    var raw = atob(user.nameEncrypted.slice(prefix.length));
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return crypto.subtle.decrypt({ name: 'RSA-OAEP' }, state.adminKey, bytes).then(function (plain) {
+      var data = JSON.parse(new TextDecoder().decode(plain));
+      user.decryptedName = (String(data.firstName || '') + ' ' + String(data.lastName || '')).trim();
+    });
+  }
+
+  function selectPrivateKey(event) {
+    var file = event.target.files && event.target.files[0];
+    var status = el('admin-key-status');
+    state.adminKey = null;
+    state.users.forEach(function (user) { delete user.decryptedName; });
+    if (!file || !window.crypto || !crypto.subtle) {
+      text(status, 'Web Crypto is unavailable or no file was selected.');
+      renderAdmin(state.users);
+      return;
+    }
+    file.text().then(function (pem) {
+      return crypto.subtle.importKey('pkcs8', pemBytes(pem), { name: 'RSA-OAEP', hash: 'SHA-1' }, false, ['decrypt']);
+    }).then(function (key) {
+      state.adminKey = key;
+      return Promise.all(state.users.map(decryptAdminName));
+    }).then(function () {
+      text(status, 'Names decrypted locally. The key has not left this browser.');
+      renderAdmin(state.users);
+    }).catch(function () {
+      state.adminKey = null;
+      text(status, 'Could not decrypt names. Check that this is the matching PKCS#8 key.');
+      renderAdmin(state.users);
     });
   }
 
@@ -306,7 +352,7 @@
   }
 
   function fail(node, error) {
-    text(node, error && error.code ? error.code : 'unbekannter_fehler');
+    text(node, error && error.code ? error.code : 'unknown_error');
   }
 
   function register() {
@@ -314,7 +360,7 @@
     var errorNode = el('auth-error');
     text(errorNode, '');
     if (!window.PublicKeyCredential) {
-      text(errorNode, 'passkeys_nicht_verfuegbar');
+      text(errorNode, 'passkeys_unavailable');
       return;
     }
     var payload = {
@@ -329,7 +375,7 @@
       })
       .then(function (credential) {
         if (!credential) {
-          throw new Error('abgebrochen');
+          throw new Error('cancelled');
         }
         var body = {
           firstName: payload.firstName,
@@ -356,7 +402,7 @@
     var errorNode = el('auth-error');
     text(errorNode, '');
     if (!window.PublicKeyCredential) {
-      text(errorNode, 'passkeys_nicht_verfuegbar');
+      text(errorNode, 'passkeys_unavailable');
       return;
     }
     busy(button, true);
@@ -366,7 +412,7 @@
       })
       .then(function (credential) {
         if (!credential) {
-          throw new Error('abgebrochen');
+          throw new Error('cancelled');
         }
         return api('/api/login/verify', { credential: serializeAssertion(credential) });
       })
@@ -474,10 +520,8 @@
   /* ------------------------------------------------- Shortcut / NFC-Tag -- */
 
   /*
-   * "/?book=1" bucht sofort einen Kaffee – dieselbe Adresse dient als
-   * App-Shortcut (Icon lange drücken) und als Ziel eines NFC-Tags am
-   * Automaten. Der Parameter wird sofort aus der URL entfernt, damit ein
-   * Neuladen nicht versehentlich erneut bucht.
+   * "/?book=1" immediately books a coffee. It is shared by the app shortcut
+   * and NFC tags, and is removed immediately to prevent duplicate bookings.
    */
   function checkPendingBook() {
     var params = new URLSearchParams(window.location.search);
@@ -505,7 +549,7 @@
   function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(function () {
-        /* Offline-Cache ist ein Bonus, kein Muss – ohne SW läuft die App normal. */
+        /* Offline caching is optional; the app works without a service worker. */
       });
     }
   }
@@ -516,6 +560,7 @@
     el('btn-add').addEventListener('click', addCoffee);
     el('btn-undo').addEventListener('click', undoCoffee);
     el('btn-logout').addEventListener('click', logout);
+    el('private-key-input').addEventListener('change', selectPrivateKey);
     checkPendingBook();
     registerServiceWorker();
     show('auth');

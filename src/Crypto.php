@@ -5,34 +5,28 @@ declare(strict_types=1);
 namespace Coffee;
 
 use InvalidArgumentException;
-use SodiumException;
+use RuntimeException;
 
-/**
- * Versiegelt Namen gegen den öffentlichen Admin-Schlüssel und bildet den
- * Eindeutigkeits-HMAC.
- *
- * Diese Klasse hat absichtlich keine Abhängigkeiten (kein Composer, keine
- * Datenbank), damit `tests/CryptoTest.php` sie direkt einbinden kann. Sie kann
- * nur versiegeln – der private Schlüssel existiert auf dem Server nicht, es gibt
- * hier also bewusst keine Entschlüsselungsfunktion.
- */
+/** Encrypts names for the administrator and creates uniqueness HMACs. */
 final class Crypto
 {
-    public const NAME_MAX_LENGTH = 64;
+    public const NAME_MAX_LENGTH = 48;
+    public const CIPHER_PREFIX = 'rsa-oaep-sha1:';
 
-    private string $publicKey;
+    /** @var \OpenSSLAsymmetricKey */
+    private $publicKey;
 
-    public function __construct(string $adminPublicKeyHex, private string $pepper)
+    public function __construct(string $adminPublicKey, private string $pepper)
     {
-        $hex = trim($adminPublicKeyHex);
-        if (strlen($hex) !== 64 || preg_match('/^[0-9a-fA-F]{64}$/', $hex) !== 1) {
-            throw new InvalidArgumentException('adminPublicKey must be 64 hex characters');
+        $key = openssl_pkey_get_public(trim($adminPublicKey));
+        if ($key === false) {
+            throw new InvalidArgumentException('adminPublicKey must be a valid PEM-encoded RSA public key');
         }
-        $binary = hex2bin(strtolower($hex));
-        if ($binary === false || strlen($binary) !== SODIUM_CRYPTO_BOX_PUBLICKEYBYTES) {
-            throw new InvalidArgumentException('adminPublicKey is not a valid X25519 public key');
+        $details = openssl_pkey_get_details($key);
+        if (($details['type'] ?? null) !== OPENSSL_KEYTYPE_RSA || ($details['bits'] ?? 0) < 4096) {
+            throw new InvalidArgumentException('adminPublicKey must be an RSA key of at least 4096 bits');
         }
-        $this->publicKey = $binary;
+        $this->publicKey = $key;
     }
 
     public static function fromConfig(): self
@@ -40,41 +34,31 @@ final class Crypto
         return new self(Config::adminPublicKey(), Config::namePepper());
     }
 
-    /**
-     * Normalisiert einen Namensteil: Rand- und Mehrfach-Whitespace weg.
-     */
+    /** Trims a name part and collapses repeated whitespace. */
     public static function normalizeNamePart(string $value): string
     {
         $value = preg_replace('/\s+/u', ' ', $value) ?? $value;
-
         return trim($value);
     }
 
-    /**
-     * Verpackt Vor- und Nachname als JSON und versiegelt sie (anonyme
-     * Verschlüsselung, X25519 + XSalsa20-Poly1305).
-     *
-     * @return string Standard-Base64 (RFC 4648, mit Padding) des Chiffrats
-     * @throws SodiumException
-     */
+    /** Encrypts the name using RSA-OAEP so Web Crypto can decrypt it locally. */
     public function sealName(string $firstName, string $lastName): string
     {
         $payload = json_encode(
             ['firstName' => $firstName, 'lastName' => $lastName],
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
         );
-
-        return base64_encode(sodium_crypto_box_seal($payload, $this->publicKey));
+        $encrypted = '';
+        if (!openssl_public_encrypt($payload, $encrypted, $this->publicKey, OPENSSL_PKCS1_OAEP_PADDING)) {
+            throw new RuntimeException('Could not encrypt the name');
+        }
+        return self::CIPHER_PREFIX . base64_encode($encrypted);
     }
 
-    /**
-     * Deterministischer Fingerabdruck eines Namens für die UNIQUE-Spalte.
-     * Gleiche Namen ergeben denselben Wert, verschiedene Namen nicht.
-     */
+    /** Creates a deterministic, non-reversible name fingerprint. */
     public function nameHash(string $firstName, string $lastName): string
     {
         $normalized = self::normalizeNamePart($firstName) . "\x1f" . self::normalizeNamePart($lastName);
-
         return hash_hmac('sha256', $normalized, $this->pepper);
     }
 }

@@ -1,6 +1,6 @@
 {
-    "name": "kaffeeliste/app",
-    "description": "Kaffeeliste – passkey-gesicherte Kaffeezählung, einfaches PHP ohne Framework",
+    "name": "coffee-time/app",
+    "description": "Privacy-first shared coffee tracking with passkey authentication",
     "type": "project",
     "license": "MIT",
     "require": {
