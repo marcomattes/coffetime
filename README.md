@@ -2,6 +2,10 @@
 
 Coffee Time is a small, installable PWA for a shared office coffee tab. People sign in with a passkey and track their own coffees. Names and individual totals remain private; only anonymous aggregate statistics are shared.
 
+Composer resolves dependencies against PHP 8.2, matching the minimum runtime
+and CI version. This prevents lock-file updates on newer development machines
+from silently selecting packages that production cannot install.
+
 ## Features
 
 - Passwordless, username-less WebAuthn authentication with discoverable passkeys.
