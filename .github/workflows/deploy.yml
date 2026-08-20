@@ -1,0 +1,59 @@
+name: Deploy to FTP
+
+# Builds and publishes Coffee Time after all CI gates pass on main. It can also
+# be started manually. The server's config.php and data/ directory are excluded
+# deliberately: deployments must never overwrite secrets or the SQLite database.
+#
+# Required repository secrets:
+#   FTP_SERVER       hostname, for example ftp.example.com
+#   FTP_USERNAME     FTP account name
+#   FTP_PASSWORD     FTP account password
+#
+# Optional repository variables:
+#   FTP_SERVER_DIR   target directory (default "/")
+#   FTP_PROTOCOL     "ftps" (default) | "ftp" | "ftps-legacy"
+#   FTP_PORT         port number (default 21)
+
+on:
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ftp-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Build production release
+        run: ./scripts/build-release.sh
+
+      - name: Sync release to FTP
+        uses: SamKirkland/FTP-Deploy-Action@110f9186c050f71550953127052e77650219c287 # v4.4.0
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          port: ${{ vars.FTP_PORT || 21 }}
+          protocol: ${{ vars.FTP_PROTOCOL || 'ftps' }}
+          local-dir: ./deploy/
+          server-dir: ${{ vars.FTP_SERVER_DIR || '/' }}
+          exclude: |
+            **/.git/**
+            **/.github/**
+            **/config.php
+            **/data/**

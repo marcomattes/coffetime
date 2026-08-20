@@ -76,7 +76,7 @@ final class WebAuthnService
         array $excludeCredentials = []
     ): PublicKeyCredentialCreationOptions {
         return PublicKeyCredentialCreationOptions::create(
-            PublicKeyCredentialRpEntity::create('Kaffeeliste', Config::rpId()),
+            PublicKeyCredentialRpEntity::create('Coffee Time', Config::rpId()),
             // In der Entität steht bewusst kein Klarname: die Optionen gehen an
             // den Browser und dürfen keinen Namen preisgeben.
             PublicKeyCredentialUserEntity::create($userLabel, $userHandle, $userLabel),

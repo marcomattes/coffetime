@@ -3,13 +3,12 @@
 declare(strict_types=1);
 
 /**
- * Front-Controller der Kaffeeliste.
+ * Front-Controller der Coffee Time.
  *
- * Läuft ohne Router-Skript hinter dem eingebauten PHP-Server: jede Anfrage, für
- * die keine Datei existiert, landet hier und wird aus REQUEST_URI geroutet.
+ * Routes requests that do not match static files when using PHP’s built-in server.
  */
 
-// Nichts darf ausgegeben werden, was nicht ausdrücklich Response ist.
+// Suppress any output that is not an intentional response.
 @ini_set('display_errors', '0');
 @ini_set('display_startup_errors', '0');
 @ini_set('html_errors', '0');
@@ -55,9 +54,9 @@ register_shutdown_function(static function () use ($fail): void {
     $fail('fatal: ' . $last['message']);
 });
 
-// Die einzige Composer-Abhängigkeit liegt im Wurzelverzeichnis neben public/.
+// Composer dependencies live in the project root beside public/.
 if (!is_file(__DIR__ . '/../vendor/autoload.php')) {
-    $fail('vendor/autoload.php fehlt – bitte "composer install" ausführen');
+    $fail('vendor/autoload.php is missing; run "composer install"');
 
     return;
 }

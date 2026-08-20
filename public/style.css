@@ -1,4 +1,4 @@
-/* Kaffeeliste – mobile first, keine externen Ressourcen. */
+/* Coffee Time – mobile first, keine externen Ressourcen. */
 
 :root {
   --bg: #f6f1ea;
@@ -83,7 +83,7 @@ h2 {
   margin: 0 0 12px;
 }
 
-/* Zähler und Hauptaktion: ohne Scrollen erreichbar. */
+/* Keep the counter and primary action visible without scrolling. */
 .tally {
   text-align: center;
   padding: 16px 14px;

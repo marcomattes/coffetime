@@ -2,3 +2,4 @@
 /data/
 /config.php
 node_modules/
+/deploy/

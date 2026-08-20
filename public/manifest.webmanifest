@@ -1,29 +1,19 @@
 {
-  "name": "Kaffeeliste",
-  "short_name": "Kaffeeliste",
-  "description": "Gemeinsame Kaffeekasse fürs Büro – Passkey-Anmeldung, ein Knopf pro Kaffee.",
-  "id": "/",
-  "start_url": "/",
-  "scope": "/",
-  "display": "standalone",
+  "name": "Coffee Time",
+  "short_name": "Coffee Time",
+  "description": "A shared office coffee tab with passkey sign-in and one-tap coffee tracking.",
+  "id": "/", "start_url": "/", "scope": "/", "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],
-  "orientation": "portrait-primary",
-  "background_color": "#f6f1ea",
-  "theme_color": "#7a4a21",
-  "lang": "de",
+  "orientation": "portrait-primary", "background_color": "#f6f1ea", "theme_color": "#7a4a21", "lang": "en",
   "icons": [
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
     { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
-  "shortcuts": [
-    {
-      "name": "Kaffee buchen",
-      "short_name": "Kaffee",
-      "description": "Bucht sofort einen Kaffee, ohne die App erst zu öffnen. Dieselbe Adresse funktioniert auch als Link auf einem NFC-Tag.",
-      "url": "/?book=1",
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
-    }
-  ]
+  "shortcuts": [{
+    "name": "Book a coffee", "short_name": "Coffee",
+    "description": "Books a coffee immediately. The same URL can be stored on an NFC tag.",
+    "url": "/?book=1", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+  }]
 }

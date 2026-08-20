@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Kaffeeliste – Offline-Werkzeug für den Administrator.
+ * Coffee Time offline administration tool.
  *
  * Liest die SQLite-Datei nur lesend, öffnet die versiegelten Namen mit dem
  * privaten Schlüssel und gibt je Benutzer genau eine Zeile aus:
@@ -21,8 +21,8 @@ declare(strict_types=1);
  *                      schuldet, wird ausserhalb der App geklärt.
  *     --genkey         erzeugt ein neues Schlüsselpaar (Hex) und beendet
  *
- * Abhängigkeiten: sodium, pdo_sqlite und – nur für --xlsx – zip. Kein
- * Composer, kein Autoloader, keine Anwendungsklasse.
+ * Dependencies: OpenSSL, PDO SQLite, and ZipArchive only for --xlsx. The tool
+ * does not use Composer or application classes.
  */
 
 const EXIT_OK = 0;
@@ -31,7 +31,7 @@ const EXIT_USAGE = 2;
 
 function fail(string $message, int $code = EXIT_ERROR): never
 {
-    fwrite(STDERR, 'Fehler: ' . $message . PHP_EOL);
+    fwrite(STDERR, 'Error: ' . $message . PHP_EOL);
     exit($code);
 }
 
@@ -39,7 +39,7 @@ function usage(): never
 {
     fwrite(
         STDERR,
-        'Aufruf: php tools/decrypt-users.php --db <pfad> --key <pfad> [--price <cent>] [--xlsx <pfad>]' . PHP_EOL
+        'Usage: php tools/decrypt-users.php --db <path> --key <path> [--price <cents>] [--xlsx <path>]' . PHP_EOL
     );
     exit(EXIT_USAGE);
 }
@@ -78,31 +78,31 @@ function parseArguments(array $argv): array
 
 function generateKeyPair(): never
 {
-    $keyPair = sodium_crypto_box_keypair();
-    echo 'private: ' . sodium_bin2hex(sodium_crypto_box_secretkey($keyPair)) . PHP_EOL;
-    echo 'public:  ' . sodium_bin2hex(sodium_crypto_box_publickey($keyPair)) . PHP_EOL;
+    $key = openssl_pkey_new(['private_key_bits' => 4096, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    if ($key === false || !openssl_pkey_export($key, $privateKey)) {
+        fail('Could not generate an RSA key pair.');
+    }
+    $publicKey = openssl_pkey_get_details($key)['key'] ?? '';
+    file_put_contents('admin-private.pem', $privateKey);
+    file_put_contents('admin-public.pem', $publicKey);
+    echo "Created admin-private.pem and admin-public.pem\n";
+    echo "Keep admin-private.pem offline and copy the public PEM into config.php.\n";
     exit(EXIT_OK);
 }
 
 function loadSecretKey(string $path): string
 {
     if (!is_file($path) || !is_readable($path)) {
-        fail('Schlüsseldatei nicht lesbar: ' . $path);
+        fail('Key file is not readable: ' . $path);
     }
     $raw = file_get_contents($path);
     if ($raw === false) {
-        fail('Schlüsseldatei nicht lesbar: ' . $path);
+        fail('Key file is not readable: ' . $path);
     }
-    $hex = trim($raw);
-    if (preg_match('/^[0-9a-fA-F]{64}$/', $hex) !== 1) {
-        fail('Der private Schlüssel muss 64 Hex-Zeichen (32 Byte) enthalten.');
+    if (openssl_pkey_get_private($raw) === false) {
+        fail('The file does not contain a valid, unencrypted PEM private key.');
     }
-    $binary = hex2bin(strtolower($hex));
-    if ($binary === false || strlen($binary) !== SODIUM_CRYPTO_BOX_SECRETKEYBYTES) {
-        fail('Der private Schlüssel ist kein gültiger X25519-Schlüssel.');
-    }
-
-    return $binary;
+    return $raw;
 }
 
 function resolvePriceCents(array $options): int
@@ -110,7 +110,7 @@ function resolvePriceCents(array $options): int
     if (isset($options['price'])) {
         $value = (string) $options['price'];
         if (preg_match('/^-?[0-9]+$/', $value) !== 1) {
-            fail('--price erwartet eine ganze Zahl in Cent.');
+            fail('--price expects an integer number of cents.');
         }
 
         return (int) $value;
@@ -125,7 +125,7 @@ function resolvePriceCents(array $options): int
         }
     }
 
-    fwrite(STDERR, 'Hinweis: kein Preis gefunden (--price oder config.php), es wird mit 0 gerechnet.' . PHP_EOL);
+    fwrite(STDERR, 'Warning: no price found (--price or config.php); using 0.' . PHP_EOL);
 
     return 0;
 }
@@ -133,7 +133,7 @@ function resolvePriceCents(array $options): int
 function openDatabase(string $path): PDO
 {
     if (!is_file($path) || !is_readable($path)) {
-        fail('Datenbank nicht lesbar: ' . $path);
+        fail('Database is not readable: ' . $path);
     }
     $options = [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC];
     try {
@@ -143,29 +143,34 @@ function openDatabase(string $path): PDO
         try {
             return new PDO('sqlite:' . $path, null, null, $options);
         } catch (Throwable $e) {
-            fail('Datenbank kann nicht geöffnet werden: ' . $e->getMessage());
+            fail('Could not open database: ' . $e->getMessage());
         }
     }
 }
 
 /** @return array{0: string, 1: string} */
-function openSealedName(string $ciphertextBase64, string $keyPair, int|string $id): array
+function openSealedName(string $ciphertextBase64, string $privateKey, int|string $id): array
 {
+    $prefix = 'rsa-oaep-sha1:';
+    if (!str_starts_with($ciphertextBase64, $prefix)) {
+        fail('User ' . $id . ' uses an unsupported legacy encryption format.');
+    }
+    $ciphertextBase64 = substr($ciphertextBase64, strlen($prefix));
     $ciphertext = base64_decode($ciphertextBase64, true);
     if ($ciphertext === false) {
-        fail('Chiffrat von Benutzer ' . $id . ' ist kein gültiges Base64.');
+        fail('Ciphertext for user ' . $id . ' is not valid Base64.');
     }
     try {
-        $plain = sodium_crypto_box_seal_open($ciphertext, $keyPair);
+        $ok = openssl_private_decrypt($ciphertext, $plain, $privateKey, OPENSSL_PKCS1_OAEP_PADDING);
     } catch (Throwable $e) {
-        fail('Benutzer ' . $id . ' konnte nicht entschlüsselt werden: ' . $e->getMessage());
+        fail('Could not decrypt user ' . $id . ': ' . $e->getMessage());
     }
-    if ($plain === false) {
-        fail('Benutzer ' . $id . ' konnte nicht entschlüsselt werden – passt der private Schlüssel?');
+    if (!$ok) {
+        fail('Could not decrypt user ' . $id . '; does the private key match?');
     }
     $data = json_decode($plain, true);
     if (!is_array($data) || !isset($data['firstName'], $data['lastName'])) {
-        fail('Entschlüsselter Datensatz von Benutzer ' . $id . ' hat ein unbekanntes Format.');
+        fail('Decrypted record for user ' . $id . ' has an unknown format.');
     }
 
     return [(string) $data['firstName'], (string) $data['lastName']];
@@ -207,7 +212,7 @@ function xmlEscape(string $value): string
 function writeXlsx(string $path, array $headers, array $rows): void
 {
     if (!extension_loaded('zip')) {
-        fail('Die Erweiterung zip fehlt – für --xlsx erforderlich.');
+        fail('The zip extension is required for --xlsx.');
     }
 
     $columnLetter = static function (int $index): string {
@@ -255,7 +260,7 @@ function writeXlsx(string $path, array $headers, array $rows): void
 
     $workbook = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        . '<sheets><sheet name="Kaffeeliste" sheetId="1" r:id="rId1"/></sheets>'
+        . '<sheets><sheet name="Coffee Time" sheetId="1" r:id="rId1"/></sheets>'
         . '</workbook>';
 
     $workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -286,11 +291,11 @@ function writeXlsx(string $path, array $headers, array $rows): void
 
 // --------------------------------------------------------------------- Ablauf
 
-if (!extension_loaded('sodium')) {
-    fail('Die Erweiterung sodium fehlt.');
+if (!extension_loaded('openssl')) {
+    fail('The OpenSSL extension is missing.');
 }
 if (!extension_loaded('pdo_sqlite')) {
-    fail('Die Erweiterung pdo_sqlite fehlt.');
+    fail('The pdo_sqlite extension is missing.');
 }
 
 $options = parseArguments($argv);
@@ -308,9 +313,7 @@ if (isset($options['xlsx']) && !is_string($options['xlsx'])) {
 }
 $xlsxPath = isset($options['xlsx']) ? (string) $options['xlsx'] : null;
 
-$secretKey = loadSecretKey($options['key']);
-$publicKey = sodium_crypto_box_publickey_from_secretkey($secretKey);
-$keyPair = sodium_crypto_box_keypair_from_secretkey_and_publickey($secretKey, $publicKey);
+$privateKey = loadSecretKey($options['key']);
 
 $priceCents = resolvePriceCents($options);
 $pdo = openDatabase($options['db']);
@@ -321,7 +324,7 @@ try {
     );
     $rows = $statement === false ? [] : $statement->fetchAll();
 } catch (Throwable $e) {
-    fail('Die Tabelle users kann nicht gelesen werden: ' . $e->getMessage());
+    fail('Could not read the users table: ' . $e->getMessage());
 }
 
 // Erst alles entschlüsseln, dann ausgeben: bei einem falschen Schlüssel darf
@@ -335,7 +338,7 @@ foreach ($rows as $row) {
 
     $encrypted = $row['name_encrypted'] ?? null;
     if (is_string($encrypted) && $encrypted !== '') {
-        [$firstName, $lastName] = openSealedName($encrypted, $keyPair, $id);
+        [$firstName, $lastName] = openSealedName($encrypted, $privateKey, $id);
     } else {
         // Altbestand: der Name lag schon im Klartext in der Datenbank.
         [$firstName, $lastName] = splitLegacyName((string) ($row['name'] ?? ''));
@@ -366,10 +369,10 @@ foreach ($lines as $line) {
 if ($xlsxPath !== null) {
     writeXlsx(
         $xlsxPath,
-        ['ID', 'Vorname', 'Nachname', 'Kaffees', 'Offener Betrag (EUR)'],
+        ['ID', 'First name', 'Last name', 'Coffees', 'Outstanding (EUR)'],
         $xlsxRows
     );
-    fwrite(STDERR, 'xlsx geschrieben: ' . $xlsxPath . PHP_EOL);
+    fwrite(STDERR, 'Wrote xlsx: ' . $xlsxPath . PHP_EOL);
 }
 
 exit(EXIT_OK);
