@@ -243,20 +243,4 @@ final class WebAuthnService
         }
     }
 
-    /** @return list<PublicKeyCredentialDescriptor> */
-    public static function descriptorsForUser(string $userId): array
-    {
-        $descriptors = [];
-        foreach (Credentials::forUser($userId) as $row) {
-            $id = Encoding::base64UrlDecode((string) ($row['credential_id'] ?? ''));
-            if ($id !== null && $id !== '') {
-                $descriptors[] = PublicKeyCredentialDescriptor::create(
-                    PublicKeyCredentialDescriptor::CREDENTIAL_TYPE_PUBLIC_KEY,
-                    $id
-                );
-            }
-        }
-
-        return $descriptors;
-    }
 }

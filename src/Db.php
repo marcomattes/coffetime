@@ -15,7 +15,7 @@ use Throwable;
 final class Db
 {
     /** Zielversion des Schemas. */
-    public const SCHEMA_VERSION = 2;
+    public const SCHEMA_VERSION = 3;
 
     /** Wartezeit auf eine gesperrte Datenbank. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -248,6 +248,18 @@ final class Db
                     )'
                 );
             },
+            3 => static function (PDO $pdo): void {
+                // Ein Ereignis je gebuchtem Kaffee, nur für die Serienanzeige
+                // (Tage in Folge). Der coffees-Zähler bleibt die Wahrheit für den
+                // Stand; hier steht rein additiv nur, wann gebucht wurde.
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS coffee_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        created_at INTEGER NOT NULL DEFAULT 0
+                    )'
+                );
+            },
         ];
 
         // Schnellweg: nur lesende Prüfungen. Alles Schreibende darf nicht bei
@@ -302,7 +314,11 @@ final class Db
             return false;
         }
 
-        return in_array('challenge', self::columns($pdo, 'ceremonies'), true);
+        if (!in_array('challenge', self::columns($pdo, 'ceremonies'), true)) {
+            return false;
+        }
+
+        return self::tableExists($pdo, 'coffee_events');
     }
 
     /**
@@ -347,6 +363,10 @@ final class Db
                 'used' => 'INTEGER NOT NULL DEFAULT 0',
                 'created_at' => 'INTEGER NOT NULL DEFAULT 0',
             ],
+            'coffee_events' => [
+                'user_id' => 'INTEGER NOT NULL DEFAULT 0',
+                'created_at' => 'INTEGER NOT NULL DEFAULT 0',
+            ],
         ];
 
         foreach ($expected as $table => $columns) {
@@ -367,6 +387,7 @@ final class Db
             'CREATE INDEX IF NOT EXISTS idx_credentials_user ON credentials (user_id)',
             'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)',
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_ceremonies_challenge ON ceremonies (challenge)',
+            'CREATE INDEX IF NOT EXISTS idx_coffee_events_user ON coffee_events (user_id)',
         ];
         foreach ($indexes as $sql) {
             try {

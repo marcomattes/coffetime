@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var state = { me: null, users: [], selectedId: null };
+  var state = { me: null, users: [], pendingBook: false };
 
   function el(id) {
     return document.getElementById(id);
@@ -90,6 +90,32 @@
     text(el('counter'), String(me.coffees));
     text(el('balance'), money(me.balanceCents));
     text(el('price'), money(me.priceCents));
+
+    var streakNode = el('streak');
+    if (streakNode) {
+      var streak = typeof me.streakDays === 'number' ? me.streakDays : 0;
+      streakNode.hidden = streak < 2;
+      text(streakNode, '🔥 ' + streak + ' Tage in Folge');
+    }
+
+    updateBadge(me.balanceCents);
+  }
+
+  /* App-Icon-Badge: offener Betrag, aufgerundet auf ganze Euro. Rein kosmetisch. */
+  function updateBadge(balanceCents) {
+    if (!('setAppBadge' in navigator)) {
+      return;
+    }
+    var amount = Math.round((typeof balanceCents === 'number' ? balanceCents : 0) / 100);
+    try {
+      if (amount > 0) {
+        navigator.setAppBadge(amount).catch(function () {});
+      } else if ('clearAppBadge' in navigator) {
+        navigator.clearAppBadge().catch(function () {});
+      }
+    } catch (e) {
+      /* Badging API ist ein Bonus, kein Muss. */
+    }
   }
 
   function renderStats(stats) {
@@ -133,23 +159,14 @@
       empty.className = 'hint';
       empty.textContent = 'Noch niemand angemeldet.';
       container.appendChild(empty);
-      state.selectedId = null;
       return;
-    }
-    var stillThere = state.users.some(function (user) {
-      return user.id === state.selectedId;
-    });
-    if (!stillThere) {
-      state.selectedId = state.users[0].id;
     }
 
     state.users.forEach(function (user) {
-      var row = document.createElement('button');
-      row.type = 'button';
+      var row = document.createElement('div');
       row.className = 'row';
       row.setAttribute('data-testid', 'admin-row');
       row.setAttribute('data-user-id', user.id);
-      row.setAttribute('aria-pressed', user.id === state.selectedId ? 'true' : 'false');
 
       var head = document.createElement('span');
       head.className = 'row-head';
@@ -166,10 +183,6 @@
 
       row.appendChild(head);
       row.appendChild(cipher);
-      row.addEventListener('click', function () {
-        state.selectedId = user.id;
-        renderAdmin(state.users);
-      });
       container.appendChild(row);
     });
   }
@@ -181,6 +194,7 @@
       .then(function (me) {
         renderMe(me);
         show('app');
+        consumePendingBook();
         var jobs = [
           api('/api/stats').then(renderStats).catch(function () {})
         ];
@@ -379,6 +393,9 @@
           balanceCents: data.balanceCents,
           priceCents: state.me ? state.me.priceCents : 0
         });
+        vibrate([18, 40, 18]);
+        bump(el('counter'));
+        bump(el('btn-add'));
         return refresh();
       })
       .catch(function (error) {
@@ -425,73 +442,73 @@
       .then(function () {
         state.me = null;
         show('auth');
-      });
-  }
-
-  function addDevice() {
-    var button = el('btn-add-device');
-    var note = el('device-note');
-    text(note, '');
-    if (!window.PublicKeyCredential) {
-      text(note, 'passkeys_nicht_verfuegbar');
-      return;
-    }
-    var payload = { invite: el('device-invite-input').value };
-    busy(button, true);
-    api('/api/register/options', payload)
-      .then(function (options) {
-        return navigator.credentials.create({ publicKey: creationOptions(options) });
-      })
-      .then(function (credential) {
-        if (!credential) {
-          throw new Error('abgebrochen');
+        if ('clearAppBadge' in navigator) {
+          navigator.clearAppBadge().catch(function () {});
         }
-        return api('/api/register/verify', {
-          invite: payload.invite,
-          credential: serializeAttestation(credential)
-        });
-      })
-      .then(function () {
-        el('device-invite-input').value = '';
-        text(note, 'Gerät hinzugefügt.');
-        return refresh();
-      })
-      .catch(function (error) {
-        fail(note, error);
-      })
-      .then(function () {
-        busy(button, false);
       });
   }
 
-  function book() {
-    var errorNode = el('admin-error');
-    text(errorNode, '');
-    var amount = parseInt(el('admin-amount').value, 10);
-    if (!state.selectedId) {
-      text(errorNode, 'kein_konto_gewaehlt');
+  /* ------------------------------------------------------- Feedback ----- */
+
+  /* Kurzes, zufriedenes Doppel-Summen – bewusst kein einzelner harter Ruck. */
+  function vibrate(pattern) {
+    if (window.navigator && typeof window.navigator.vibrate === 'function') {
+      try {
+        window.navigator.vibrate(pattern);
+      } catch (e) {
+        /* Manche Browser werfen ausserhalb einer Nutzergeste – einfach ignorieren. */
+      }
+    }
+  }
+
+  function bump(node) {
+    if (!node) {
       return;
     }
-    if (!isFinite(amount) || amount < 0) {
-      text(errorNode, 'ungueltiger_betrag');
+    node.classList.remove('bump');
+    // Reflow erzwingen, damit die Animation bei wiederholtem Antippen neu startet.
+    void node.offsetWidth;
+    node.classList.add('bump');
+  }
+
+  /* ------------------------------------------------- Shortcut / NFC-Tag -- */
+
+  /*
+   * "/?book=1" bucht sofort einen Kaffee – dieselbe Adresse dient als
+   * App-Shortcut (Icon lange drücken) und als Ziel eines NFC-Tags am
+   * Automaten. Der Parameter wird sofort aus der URL entfernt, damit ein
+   * Neuladen nicht versehentlich erneut bucht.
+   */
+  function checkPendingBook() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('book') !== '1') {
       return;
     }
-    var button = el('btn-book');
-    busy(button, true);
-    api('/api/admin/payment', { userId: state.selectedId, amountCents: amount })
-      .then(function () {
-        el('admin-amount').value = '0';
-        return refresh();
-      })
-      .catch(function (error) {
-        fail(errorNode, error);
-      })
-      .then(function () {
-        busy(button, false);
-      });
+    state.pendingBook = true;
+    window.history.replaceState(null, '', window.location.pathname);
+    var hint = el('nfc-hint');
+    if (hint) {
+      hint.hidden = false;
+    }
+  }
+
+  function consumePendingBook() {
+    if (!state.pendingBook) {
+      return;
+    }
+    state.pendingBook = false;
+    addCoffee();
   }
 
   /* ---------------------------------------------------------- Start ----- */
+
+  function registerServiceWorker() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function () {
+        /* Offline-Cache ist ein Bonus, kein Muss – ohne SW läuft die App normal. */
+      });
+    }
+  }
 
   function ready() {
     el('btn-register').addEventListener('click', register);
@@ -499,8 +516,8 @@
     el('btn-add').addEventListener('click', addCoffee);
     el('btn-undo').addEventListener('click', undoCoffee);
     el('btn-logout').addEventListener('click', logout);
-    el('btn-book').addEventListener('click', book);
-    el('btn-add-device').addEventListener('click', addDevice);
+    checkPendingBook();
+    registerServiceWorker();
     show('auth');
     refresh();
   }

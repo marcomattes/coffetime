@@ -4,7 +4,7 @@ Entscheidungen, die man beim Lesen des Codes sonst rekonstruieren müsste.
 
 ## SQLite-Schema
 
-Schemaversion in `PRAGMA user_version`, Zielversion in `Db::SCHEMA_VERSION` (2).
+Schemaversion in `PRAGMA user_version`, Zielversion in `Db::SCHEMA_VERSION` (3).
 
 ```sql
 -- Version 1
@@ -49,10 +49,18 @@ CREATE TABLE ceremonies (
     created_at INTEGER NOT NULL DEFAULT 0
 );
 
+-- Version 3 (rein additiv)
+CREATE TABLE coffee_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE UNIQUE INDEX idx_users_name_hash ON users (name_hash) WHERE name_hash IS NOT NULL;
 CREATE UNIQUE INDEX idx_users_handle    ON users (user_handle) WHERE user_handle IS NOT NULL;
 CREATE UNIQUE INDEX idx_credentials_credential_id ON credentials (credential_id);
 CREATE UNIQUE INDEX idx_ceremonies_challenge      ON ceremonies (challenge);
+CREATE INDEX idx_coffee_events_user               ON coffee_events (user_id);
 ```
 
 Die beiden UNIQUE-Indizes auf `users` sind **partiell**: Zeilen aus Version 1
@@ -300,3 +308,64 @@ Analytics – nur `style.css` und `app.js` von derselben Herkunft.
 
 Nach jedem Zählerklick wird zusätzlich `/api/me` neu geladen, damit der angezeigte
 Stand auch bei mehreren schnellen Klicks der Serverwahrheit entspricht.
+
+## PWA und Zahlungsbuchung
+
+`manifest.webmanifest` und `sw.js` liegen in `public/` und werden wie
+`app.js`/`style.css` als statische Dateien ausgeliefert (siehe
+`public/.htaccess`). Der Service Worker cacht ausschliesslich die Hülle
+(`/`, `style.css`, `app.js`, Manifest, Icons); jede Anfrage unter `/api/`
+geht immer ans Netz – der Zähler bleibt serverautoritativ, auch offline
+zeigt die App nur den zuletzt bekannten Stand.
+
+`navigator.vibrate(...)` läuft bei jedem gebuchten Kaffee, zusammen mit einer
+kurzen CSS-Animation (`.bump`) auf Zähler und Knopf. Beides ist rein
+kosmetisches Feedback ohne Serverzustand; ein Browser ohne Vibration-API
+bekommt einfach nur die Animation.
+
+`POST /api/admin/payment` (Zahlung buchen) wurde entfernt, `paid_cents`
+bleibt als Spalte bestehen, wird aber ab Registrierung nie mehr geschrieben.
+Wer wem was schuldet, klärt `tools/decrypt-users.php --xlsx <pfad>` offline:
+dieselbe Entschlüsselung wie bisher, zusätzlich als `.xlsx` statt nur als
+Pipe-Text. Das hält die Kernidee bei – der Server entschlüsselt nie einen
+Namen –, verlagert das Verrechnen aber komplett aus der App heraus.
+
+## Serie (Streak)
+
+`coffee_events` protokolliert ein Ereignis je gebuchtem Kaffee (Version 3).
+`Users::addCoffee()`/`undoCoffee()` schreiben bzw. löschen das jeweils letzte
+Ereignis in derselben Transaktion wie das Hoch-/Runterzählen von
+`users.coffees` – die beiden Zähler laufen also immer synchron. `undoCoffee()`
+löscht dabei gezielt `ORDER BY id DESC LIMIT 1`, nicht irgendein Ereignis.
+
+`Users::streakDays()` gruppiert die Ereignisse eines Kontos per SQLite
+`date(created_at, 'unixepoch')` zu Kalendertagen und zählt von heute (oder,
+falls heute noch nichts gebucht wurde, von gestern) rückwärts, bis ein Tag
+fehlt. Rein additiv und rein lesend – `coffees`/`balanceCents` bleiben
+unverändert die Wahrheit, `streakDays` ist nur ein zusätzliches Feld in
+`meView()`. Mit Schema-Version 1/2 angelegte Konten haben keine Ereignisse
+und zeigen deshalb `streakDays: 0`, bis sie das erste Mal über die neue
+Version buchen.
+
+## Schnellstart: App-Shortcut, NFC-Tag, Badge
+
+`/?book=1` ist die gemeinsame Eintrittsstelle für den Manifest-Shortcut
+("Kaffee buchen" beim Icon-Long-Press) und einen extern beschriebenen
+NFC-Tag – beides sind einfach Links auf dieselbe URL, kein Sonderfall im
+Backend. `app.js` liest den Parameter beim Start (`checkPendingBook()`),
+entfernt ihn sofort per `history.replaceState` (kein versehentliches
+Doppelbuchen bei Reload) und merkt sich `state.pendingBook`. Ist man
+eingeloggt, holt `refresh()` die Buchung sofort nach; ist man es nicht,
+zeigt `#nfc-hint` einen Hinweis, und die Buchung läuft automatisch nach,
+sobald `refresh()` nach Login/Registrierung erfolgreich durchläuft.
+`sw.js` matcht Navigationsanfragen mit `{ ignoreSearch: true }`, damit
+`/?book=1` auch offline die gecachte Hülle `/` trifft.
+
+Web-NFC-*Schreiben* (`NDEFReader.write`) gibt es bewusst nicht: die API
+existiert nur unter Chrome/Android, auf iOS/Safari fehlt sie komplett. Tags
+werden extern beschrieben (z. B. mit einer NFC-Tools-App).
+
+Die App-Icon-Badge (`navigator.setAppBadge`/`clearAppBadge`) zeigt den
+offenen Betrag, auf ganze Euro gerundet; ohne Guthaben oder nach Logout wird
+sie gelöscht. Rein kosmetisch, mit Feature-Detection und leise
+verschluckten Fehlern – ein Browser ohne Badging API sieht einfach nichts.

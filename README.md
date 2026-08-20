@@ -1,10 +1,12 @@
 # Kaffeeliste
 
-Eine gemeinsame Kaffeekasse für ein Büro. Jede Person zählt ihre eigenen Kaffees:
-anmelden mit Passkey, ein Knopf pro Kaffee, darunter steht was offen ist.
-Niemand sieht den Namen oder den Zählerstand von jemand anderem – geteilt werden
-nur die Gesamtzahl und eine anonyme Rangliste. Zahlungen bucht eine Person mit
-Adminrechten.
+Eine gemeinsame Kaffeekasse für ein Büro, als installierbare PWA. Jede Person
+zählt ihre eigenen Kaffees: anmelden mit Passkey, ein Knopf pro Kaffee (das
+Handy vibriert kurz zur Bestätigung), darunter steht was offen ist. Niemand
+sieht den Namen oder den Zählerstand von jemand anderem – geteilt werden nur
+die Gesamtzahl und eine anonyme Rangliste. Wer wem was schuldet, klärt eine
+Person mit Adminrechten offline über einen Excel-Export – die App selbst
+bucht keine Zahlungen.
 
 Vor- und Nachname werden beim Anlegen des Kontos gegen einen öffentlichen
 Admin-Schlüssel versiegelt und danach nie wieder entschlüsselt – auch nicht für
@@ -15,13 +17,24 @@ kann die Namen lesen.
 
 - Anmeldung ausschliesslich per Passkey (WebAuthn), ohne Benutzername, ohne
   Passwort, ohne E-Mail. Die Anmeldung ist namenlos: das Gerät wählt den
-  auffindbaren Passkey selbst.
-- Ein Konto, beliebig viele Geräte.
+  auffindbaren Passkey selbst. Genau ein Passkey pro Konto, kein Hinzufügen
+  weiterer Geräte – Passkey weg heisst Konto weg, es gibt keine Wiederherstellung.
 - Serverautoritativer Zähler mit Rücknahme, die bei null stoppt.
 - `balanceCents = coffees × priceCents − paidCents`, Preis immer aus der
   Konfiguration.
 - Anonyme Statistik: Gesamtzahl, Anzahl der Konten, eigener Platz, Verteilung.
-- Adminansicht mit verschlüsselten Namen und Buchung von Zahlungen.
+- Adminansicht mit verschlüsselten Namen (nur lesend – Zahlungen werden nicht
+  in der App gebucht, siehe „Wer schuldet was?“ weiter unten).
+- Installierbare PWA: Manifest, Service Worker für die statische Hülle
+  (offline nutzbar, API-Aufrufe immer live), App-Icons. Kurze Vibration beim
+  Buchen eines Kaffees, sofern das Gerät die Vibration-API unterstützt.
+- App-Shortcut „Kaffee buchen“ (Icon lange drücken) und derselbe Link
+  (`/?book=1`) als Ziel für einen NFC-Tag am Automaten – siehe „Schnellstart
+  ohne App öffnen“ weiter unten.
+- Serie in Tagen („🔥 3 Tage in Folge“) als kleines Gamification-Element,
+  rein kosmetisch und ohne Einfluss auf Zähler oder Rangliste.
+- App-Icon-Badge (Badging API) mit dem offenen Betrag, sofern der Browser das
+  unterstützt.
 - Kein Framework, kein Build, kein npm. Eine einzige Composer-Abhängigkeit:
   `web-auth/webauthn-lib`.
 - Läuft unter dem eingebauten PHP-Server und unter Apache (mitgelieferte
@@ -36,6 +49,9 @@ composer.json           die eine Abhängigkeit
 public/                 das einzige Dokumentenverzeichnis
   index.php             Front-Controller: /api/* und die Oberfläche
   app.js, style.css     Vanilla JS und CSS
+  manifest.webmanifest  PWA-Manifest (Name, Icons, Farben, Startmodus)
+  sw.js                 Service Worker: cacht die statische Hülle, /api/* immer live
+  icons/                App-Icons in verschiedenen Größen (PNG)
 src/                    Anwendungsklassen (Namensraum Coffee\), nicht über HTTP erreichbar
 tools/decrypt-users.php Offline-Werkzeug für den Administrator
 tests/CryptoTest.php    Tests ohne Framework
@@ -139,6 +155,24 @@ dafür keine Spalte.
 Der private Schlüssel zu `adminPublicKey` gehört **nicht** auf den Server. Ohne
 ihn kann niemand – auch kein Angreifer mit vollem Dateizugriff – die Namen lesen.
 
+## Schnellstart ohne App öffnen
+
+`/?book=1` bucht sofort einen Kaffee für den angemeldeten Account und räumt den
+Parameter danach aus der URL, damit ein Neuladen nicht versehentlich erneut
+bucht. Zwei Wege, dieselbe Adresse zu nutzen:
+
+- **App-Shortcut**: Icon der installierten PWA lange drücken (Android/Desktop)
+  bzw. per Force-Touch (iOS) → „Kaffee buchen“. Steht im Manifest unter
+  `shortcuts`, kein zusätzlicher Code nötig.
+- **NFC-Tag am Automaten**: Tag mit einer beliebigen NFC-Schreib-App (z. B.
+  „NFC Tools“) auf die volle URL beschreiben, z. B.
+  `https://kaffee.example.org/?book=1`. Tippen des Handys ans Tag öffnet die
+  Adresse; ist man noch nicht angemeldet, zeigt die App einen Hinweis und holt
+  die Buchung automatisch nach, sobald man sich per Passkey anmeldet. Das
+  *Schreiben* selbst passiert ausserhalb der App – Web-NFC-Schreibzugriff aus
+  dem Browser gibt es bewusst nicht, weil er nur unter Chrome/Android
+  funktioniert und auf iOS ganz fehlt.
+
 ## Kodierung von `nameEncrypted`
 
 `GET /api/admin/users` liefert je Konto das Feld `nameEncrypted`: das Ergebnis von
@@ -188,9 +222,20 @@ php tools/decrypt-users.php --db ./coffee.sqlite --key ./admin.key \
   | awk -F'|' '$5 > 500 { printf "%s %s: %.2f EUR\n", $2, $3, $5/100 }'
 ```
 
-Zahlungen werden nicht mit dem Werkzeug gebucht, sondern in der Adminansicht der
-Anwendung: Konto antippen, Betrag in Cent eintragen, „Zahlung buchen“. Die
-Zuordnung erfolgt über die ID, die in beiden Ansichten dieselbe ist.
+### Excel-Export statt Zahlungsbuchung in der App
+
+Die App bucht keine Zahlungen – wer wem was schuldet, wird ausserhalb der App
+geklärt. `--xlsx <pfad>` schreibt zusätzlich zur Textausgabe eine echte
+`.xlsx`-Tabelle (ID, Vorname, Nachname, Kaffees, offener Betrag in Euro):
+
+```bash
+php tools/decrypt-users.php --db ./coffee.sqlite --key ./admin.key --xlsx ./kaffeeliste.xlsx
+```
+
+Die Datei lässt sich direkt in Excel, LibreOffice oder Google Sheets öffnen,
+zum Verteilen, Abgleichen oder Verrechnen ausserhalb der App. Sobald bezahlt
+wurde, ist das reine Absprache- bzw. Buchhaltungssache – die App selbst
+verändert `paid_cents` nach der Registrierung nicht mehr.
 
 ## Tests
 

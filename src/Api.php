@@ -54,7 +54,6 @@ final class Api
             '/api/coffee/undo' => ['POST', 'coffeeUndo'],
             '/api/stats' => ['GET', 'stats'],
             '/api/admin/users' => ['GET', 'adminUsers'],
-            '/api/admin/payment' => ['POST', 'adminPayment'],
         ];
 
         if (!isset($routes[$path])) {
@@ -98,21 +97,15 @@ final class Api
     }
 
     /**
-     * Prüft Vor- und Nachname. Beim Hinzufügen eines weiteren Geräts zu einem
-     * bestehenden Konto dürfen die Felder ganz fehlen – der Name des Kontos
-     * bleibt unangetastet. Mitgeschickte Werte werden immer validiert.
+     * Prüft Vor- und Nachname.
      *
      * @param array<string, mixed> $body
      * @return array{0: string, 1: string}
      */
-    private static function requireNames(array $body, bool $optional = false): array
+    private static function requireNames(array $body): array
     {
         $first = Http::stringField($body, 'firstName');
         $last = Http::stringField($body, 'lastName');
-        if ($optional && $first === null && $last === null
-            && !array_key_exists('firstName', $body) && !array_key_exists('lastName', $body)) {
-            return ['', ''];
-        }
         if ($first === null || $last === null) {
             Http::error('invalid_name', 400);
         }
@@ -144,36 +137,21 @@ final class Api
     {
         $body = Http::body();
         self::requireInvite($body);
-        $current = Sessions::currentUser();
-        [$first, $last] = self::requireNames($body, $current !== null);
+        [$first, $last] = self::requireNames($body);
         $crypto = self::crypto();
 
-        if ($current !== null) {
-            // Angemeldet: ein weiteres Gerät für dasselbe Konto, kein neuer
-            // Benutzer und keine Namensprüfung.
-            $userId = (string) $current['id'];
-            $handleRaw = self::handleFor($current);
-            $options = WebAuthnService::creationOptions(
-                $handleRaw,
-                self::userLabel(Encoding::base64UrlEncode($handleRaw)),
-                WebAuthnService::descriptorsForUser($userId)
-            );
-            $payload = ['mode' => 'add', 'userId' => $userId];
-        } else {
-            $nameHash = $crypto->nameHash($first, $last);
-            if (Users::idForNameHash($nameHash) !== null) {
-                Http::error('name_taken', 409);
-            }
-            $handleRaw = random_bytes(16);
-            $handleEncoded = Encoding::base64UrlEncode($handleRaw);
-            $options = WebAuthnService::creationOptions($handleRaw, self::userLabel($handleEncoded));
-            $payload = [
-                'mode' => 'new',
-                'nameEncrypted' => $crypto->sealName($first, $last),
-                'nameHash' => $nameHash,
-                'userHandle' => $handleEncoded,
-            ];
+        $nameHash = $crypto->nameHash($first, $last);
+        if (Users::idForNameHash($nameHash) !== null) {
+            Http::error('name_taken', 409);
         }
+        $handleRaw = random_bytes(16);
+        $handleEncoded = Encoding::base64UrlEncode($handleRaw);
+        $options = WebAuthnService::creationOptions($handleRaw, self::userLabel($handleEncoded));
+        $payload = [
+            'nameEncrypted' => $crypto->sealName($first, $last),
+            'nameHash' => $nameHash,
+            'userHandle' => $handleEncoded,
+        ];
 
         Ceremonies::create(
             Ceremonies::KIND_REGISTER,
@@ -189,7 +167,7 @@ final class Api
     {
         $body = Http::body();
         self::requireInvite($body);
-        self::requireNames($body, Sessions::currentUser() !== null);
+        self::requireNames($body);
 
         $raw = self::credentialFromBody($body);
         if ($raw === null) {
@@ -224,21 +202,6 @@ final class Api
 
         if (Credentials::exists(Encoding::base64UrlEncode($record->publicKeyCredentialId))) {
             Http::error('credential_exists', 409);
-        }
-
-        if (($payload['mode'] ?? '') === 'add') {
-            // Zweites Gerät: die Sitzung muss noch demselben Konto gehören.
-            $current = Sessions::currentUser();
-            $userId = (string) ($payload['userId'] ?? '');
-            if ($current === null || (string) $current['id'] !== $userId) {
-                Http::error('unauthorized', 401);
-            }
-            Credentials::store($userId, $record);
-            $user = Users::find($userId);
-            if ($user === null) {
-                Http::error('server_error', 500);
-            }
-            Http::json(['ok' => true, 'user' => self::meView($user)]);
         }
 
         $nameHash = (string) ($payload['nameHash'] ?? '');
@@ -383,39 +346,6 @@ final class Api
     }
 
     /** @param array<string, mixed> $user */
-    private static function adminPayment(array $user): never
-    {
-        self::requireAdmin($user);
-        $body = Http::body();
-
-        $userId = $body['userId'] ?? null;
-        if (is_int($userId)) {
-            $userId = (string) $userId;
-        }
-        if (!is_string($userId) || !Users::isValidId($userId)) {
-            Http::error('invalid_user', 400);
-        }
-
-        $amount = $body['amountCents'] ?? null;
-        if (is_bool($amount) || !is_numeric($amount)) {
-            Http::error('invalid_amount', 400);
-        }
-        $amount = (string) $amount;
-        if (preg_match('/^[0-9]{1,15}$/', $amount) !== 1) {
-            Http::error('invalid_amount', 400);
-        }
-        $amountCents = (int) $amount;
-
-        if (Users::find($userId) === null) {
-            Http::error('user_not_found', 404);
-        }
-
-        // Verändert ausschliesslich paid_cents dieses einen Benutzers.
-        $updated = Users::addPayment($userId, $amountCents);
-        Http::json(['user' => Users::adminView($updated)]);
-    }
-
-    /** @param array<string, mixed> $user */
     private static function requireAdmin(array $user): void
     {
         if (!Config::isAdmin((string) ($user['id'] ?? ''))) {
@@ -457,7 +387,7 @@ final class Api
     private static function testReset(): never
     {
         Db::transaction(static function (\PDO $pdo): void {
-            foreach (['sessions', 'credentials', 'ceremonies', 'users'] as $table) {
+            foreach (['sessions', 'credentials', 'ceremonies', 'coffee_events', 'users'] as $table) {
                 if (Db::tableExists($pdo, $table)) {
                     $pdo->exec('DELETE FROM ' . $table);
                 }
@@ -582,28 +512,6 @@ final class Api
         return null;
     }
 
-    /** @param array<string, mixed> $user */
-    private static function handleFor(array $user): string
-    {
-        $handle = $user['user_handle'] ?? null;
-        if (is_string($handle) && $handle !== '') {
-            $raw = Encoding::base64UrlDecode($handle);
-            if ($raw !== null && $raw !== '') {
-                return $raw;
-            }
-        }
-
-        // Altbestand ohne Handle bekommt eines – ohne den Namen zu berühren.
-        $new = random_bytes(16);
-        $encoded = Encoding::base64UrlEncode($new);
-        Db::transaction(static function (\PDO $pdo) use ($user, $encoded): void {
-            $statement = $pdo->prepare('UPDATE users SET user_handle = ? WHERE id = ?');
-            $statement->execute([$encoded, (int) $user['id']]);
-        });
-
-        return $new;
-    }
-
     private static function userLabel(string $handle): string
     {
         // Opakes Label: es darf nie ein Klarname in die Optionen geraten.
@@ -624,6 +532,7 @@ final class Api
             'coffees' => Users::coffees($user),
             'balanceCents' => Users::balanceCents($user),
             'priceCents' => Config::priceCents(),
+            'streakDays' => Users::streakDays($id),
         ];
     }
 

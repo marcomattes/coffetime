@@ -19,8 +19,16 @@ final class Frontend
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f1ea" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17120e" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kaffeeliste">
 <title>Kaffeeliste</title>
-<link rel="icon" href="data:,">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -29,6 +37,7 @@ final class Frontend
   <section id="view-auth" data-testid="view-auth" hidden>
     <h1 class="brand"><span aria-hidden="true">&#9749;</span> Kaffeeliste</h1>
     <p class="lead">Anmeldung mit Passkey &ndash; ohne Benutzername, ohne Passwort.</p>
+    <p id="nfc-hint" class="hint" hidden>Kaffee-Tag erkannt &ndash; nach der Anmeldung wird automatisch gebucht.</p>
 
     <div class="card">
       <h2>Anmelden</h2>
@@ -64,6 +73,7 @@ final class Frontend
     <div class="card tally">
       <p class="tally-label">Meine Kaffees</p>
       <p id="counter" data-testid="counter" class="tally-count">0</p>
+      <p id="streak" data-testid="streak" class="hint" hidden></p>
       <button type="button" id="btn-add" data-testid="btn-add" class="btn btn-add">
         <span aria-hidden="true">&#9749;</span> Kaffee nehmen
       </button>
@@ -95,20 +105,6 @@ final class Frontend
       <ol id="distribution" class="dist"></ol>
     </div>
 
-    <div class="card">
-      <h2>Weiteres Ger&auml;t</h2>
-      <p class="hint">Passkey auf einem zweiten Ger&auml;t einrichten &ndash; dasselbe Konto, kein neuer Eintrag.</p>
-      <div class="field">
-        <label for="device-invite-input">Einladungscode</label>
-        <input type="text" id="device-invite-input" data-testid="device-invite-input"
-               autocomplete="off" spellcheck="false">
-      </div>
-      <button type="button" id="btn-add-device" data-testid="btn-add-device" class="btn btn-quiet">
-        Passkey hinzuf&uuml;gen
-      </button>
-      <p id="device-note" class="hint" role="status"></p>
-    </div>
-
     <p id="app-error" class="error" role="alert"></p>
     <button type="button" id="btn-logout" data-testid="btn-logout" class="btn btn-quiet">Abmelden</button>
   </section>
@@ -116,14 +112,9 @@ final class Frontend
   <section id="view-admin" data-testid="view-admin" hidden>
     <div class="card">
       <h2>Verwaltung</h2>
-      <p class="hint">Namen bleiben verschlüsselt. Zahlung auf den gewählten Eintrag buchen.</p>
+      <p class="hint">Namen bleiben verschlüsselt &ndash; auch hier. Wer wieviel schuldet, klärt der
+        Offline-Export mit <code>tools/decrypt-users.php --xlsx</code> ausserhalb der App.</p>
       <div id="admin-users" data-testid="admin-users" class="rows"></div>
-      <div class="field">
-        <label for="admin-amount">Betrag in Cent</label>
-        <input type="number" id="admin-amount" data-testid="admin-amount" min="0" step="1" value="0">
-      </div>
-      <button type="button" id="btn-book" data-testid="btn-book" class="btn">Zahlung buchen</button>
-      <p id="admin-error" class="error" role="alert"></p>
     </div>
   </section>
 
