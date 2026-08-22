@@ -47,8 +47,52 @@ jobs:
       - name: TypeScript build matches committed output
         run: git diff --exit-code -- public/app.js public/sw.js
 
+  test-mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mariadb:10.11
+        env:
+          MYSQL_ROOT_PASSWORD: coffee-root-pass
+          MYSQL_DATABASE: coffee_test
+          MYSQL_USER: coffee
+          MYSQL_PASSWORD: coffee-pass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: openssl, pdo_sqlite, pdo_mysql
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      # tests/helpers.php drops and recreates the configured database before
+      # each test phase, which the MYSQL_USER above is not granted rights to
+      # do. The mariadb service image only lets us provision that user with
+      # its own database up front, not extra privileges, so the simplest
+      # setup that actually satisfies the drop/create contract is running the
+      # suite as root (which always has DROP/CREATE) against the same
+      # service; MYSQL_DATABASE/MYSQL_USER above still make sure the "coffee"
+      # user/database combination works for anyone using it outside CI.
+      - name: Run test suite against MySQL/MariaDB
+        env:
+          COFFEE_TEST_DB: '{"driver":"mysql","host":"127.0.0.1","port":3306,"database":"coffee_test","user":"root","password":"coffee-root-pass"}'
+        run: php tests/run.php
+
   build:
-    needs: test
+    needs: [test, test-mysql]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
