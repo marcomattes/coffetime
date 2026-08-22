@@ -5,21 +5,21 @@ declare(strict_types=1);
 /**
  * Coffee Time offline administration tool.
  *
- * Liest die SQLite-Datei nur lesend, öffnet die versiegelten Namen mit dem
- * privaten Schlüssel und gibt je Benutzer genau eine Zeile aus:
+ * Reads the SQLite file read-only, opens the sealed names with the private
+ * key, and prints exactly one line per user:
  *
  *     id|firstName|lastName|coffees|balanceCents
  *
- * Aufruf:
- *     php tools/decrypt-users.php --db <pfad> --key <pfad-zur-schlüsseldatei>
+ * Usage:
+ *     php tools/decrypt-users.php --db <path> --key <path-to-key-file>
  *
  * Optional:
- *     --price <cent>   Preis je Kaffee (sonst aus ../config.php)
- *     --xlsx <pfad>    schreibt zusätzlich eine Excel-Tabelle (.xlsx) mit
- *                      denselben Daten – Name, Kaffees, offener Betrag.
- *                      Ersetzt die Online-Zahlungsbuchung: wer wem was
- *                      schuldet, wird ausserhalb der App geklärt.
- *     --genkey         erzeugt ein neues Schlüsselpaar (Hex) und beendet
+ *     --price <cents>  price per coffee (otherwise from ../config.php)
+ *     --xlsx <path>    additionally writes an Excel spreadsheet (.xlsx)
+ *                      with the same data — name, coffees, outstanding
+ *                      amount. Replaces online payment booking: who owes
+ *                      whom what is settled outside the app.
+ *     --genkey         generates a new key pair (hex) and exits
  *
  * Dependencies: OpenSSL, PDO SQLite, and ZipArchive only for --xlsx. The tool
  * does not use Composer or application classes.
@@ -105,6 +105,7 @@ function loadSecretKey(string $path): string
     return $raw;
 }
 
+/** @param array<string, mixed> $options */
 function resolvePriceCents(array $options): int
 {
     if (isset($options['price'])) {
@@ -137,7 +138,7 @@ function openDatabase(string $path): PDO
     }
     $options = [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC];
     try {
-        // Nur lesender Zugriff, damit das Werkzeug nichts verändern kann.
+        // Read-only access, so the tool cannot alter anything.
         return new PDO('sqlite:file:' . $path . '?mode=ro', null, null, $options);
     } catch (Throwable) {
         try {
@@ -176,7 +177,11 @@ function openSealedName(string $ciphertextBase64, string $privateKey, int|string
     return [(string) $data['firstName'], (string) $data['lastName']];
 }
 
-/** Zerlegt einen Altbestands-Klartextnamen in Vor- und Nachname. */
+/**
+ * Splits a legacy plaintext name into first and last name.
+ *
+ * @return array{string, string}
+ */
 function splitLegacyName(string $name): array
 {
     $name = trim($name);
@@ -193,7 +198,7 @@ function splitLegacyName(string $name): array
 
 function sanitize(string $value): string
 {
-    // Zeilenumbrüche und Trennzeichen würden das Ausgabeformat zerstören.
+    // Line breaks and the delimiter would corrupt the output format.
     return str_replace(["\r", "\n", '|'], ' ', $value);
 }
 
@@ -203,8 +208,8 @@ function xmlEscape(string $value): string
 }
 
 /**
- * Schreibt eine minimale, aber gültige .xlsx-Datei mit einem einzigen
- * Arbeitsblatt – ohne Composer-Abhängigkeit, nur mit ZipArchive.
+ * Writes a minimal but valid .xlsx file with a single worksheet, using
+ * only ZipArchive, without a Composer dependency.
  *
  * @param list<string> $headers
  * @param list<list<int|float|string>> $rows
@@ -274,12 +279,12 @@ function writeXlsx(string $path, array $headers, array $rows): void
         . '</worksheet>';
 
     if (is_file($path) && !@unlink($path)) {
-        fail('Bestehende Datei kann nicht ersetzt werden: ' . $path);
+        fail('Could not replace existing file: ' . $path);
     }
 
     $zip = new ZipArchive();
     if ($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
-        fail('xlsx-Datei kann nicht angelegt werden: ' . $path);
+        fail('Could not create xlsx file: ' . $path);
     }
     $zip->addFromString('[Content_Types].xml', $contentTypes);
     $zip->addFromString('_rels/.rels', $rootRels);
@@ -289,7 +294,7 @@ function writeXlsx(string $path, array $headers, array $rows): void
     $zip->close();
 }
 
-// --------------------------------------------------------------------- Ablauf
+// ---------------------------------------------------------------------- Flow
 
 if (!extension_loaded('openssl')) {
     fail('The OpenSSL extension is missing.');
@@ -327,8 +332,8 @@ try {
     fail('Could not read the users table: ' . $e->getMessage());
 }
 
-// Erst alles entschlüsseln, dann ausgeben: bei einem falschen Schlüssel darf
-// keine einzige Datenzeile auf stdout landen.
+// Decrypt everything first, then print: with the wrong key, not a single
+// data line may reach stdout.
 $lines = [];
 $xlsxRows = [];
 foreach ($rows as $row) {
@@ -340,7 +345,7 @@ foreach ($rows as $row) {
     if (is_string($encrypted) && $encrypted !== '') {
         [$firstName, $lastName] = openSealedName($encrypted, $privateKey, $id);
     } else {
-        // Altbestand: der Name lag schon im Klartext in der Datenbank.
+        // Legacy record: the name was already stored as plaintext in the database.
         [$firstName, $lastName] = splitLegacyName((string) ($row['name'] ?? ''));
     }
 

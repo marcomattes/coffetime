@@ -52,7 +52,7 @@ test.describe('stats', () => {
   });
 
   test('history: today\'s count and the 14-day chart', async ({ page, testApi }) => {
-    const [u] = await testApi.seed([{ firstName: 'Kaffee', lastName: 'Tester' }]);
+    const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester' }]);
     await testApi.loginAs(page, u.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();
@@ -71,7 +71,7 @@ test.describe('stats', () => {
   });
 
   test('streak: consecutive days show the streak line; a single day stays hidden', async ({ page, testApi }) => {
-    const [u] = await testApi.seed([{ firstName: 'Kaffee', lastName: 'Tester' }]);
+    const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester' }]);
     await testApi.loginAs(page, u.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();

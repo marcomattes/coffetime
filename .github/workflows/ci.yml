@@ -129,8 +129,26 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
+  phpstan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run static analysis
+        run: composer analyse
+
   build:
-    needs: [test, test-mysql, test-e2e]
+    needs: [test, test-mysql, test-e2e, phpstan]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

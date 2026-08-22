@@ -7,11 +7,11 @@ namespace Coffee;
 use Throwable;
 
 /**
- * Front-Controller-Logik: Routing und alle Endpunkte.
+ * Front controller logic: routing and all endpoints.
  */
 final class Api
 {
-    /** Endpunkte ohne Sitzungszwang. */
+    /** Endpoints that do not require a session. */
     private const PUBLIC_PATHS = [
         '/api/register/options',
         '/api/register/verify',
@@ -25,9 +25,9 @@ final class Api
 
     public static function dispatch(): void
     {
-        // Datenbank und Migrationen laufen bei jedem Start, bevor irgendetwas
-        // beantwortet wird. Ein Request, der die Datenbank nicht braucht, soll
-        // sie trotzdem angelegt und aktuell vorfinden.
+        // The database and its migrations run on every start, before anything
+        // is answered. A request that does not need the database must still
+        // find it created and up to date.
         Db::pdo();
 
         $path = Http::path();
@@ -42,7 +42,7 @@ final class Api
 
     private static function dispatchApi(string $path, string $method): never
     {
-        // Die Teststeuerung existiert nur mit testMode und passendem Token.
+        // The test control surface exists only with testMode and a matching token.
         if (str_starts_with($path, '/api/test/')) {
             self::dispatchTest($path, $method);
         }
@@ -67,9 +67,9 @@ final class Api
             '/api/link/code' => ['POST', 'linkCode'],
             '/api/link/options' => ['POST', 'linkOptions'],
             '/api/link/verify' => ['POST', 'linkVerify'],
-            // Ein Pfad kann in dieser Routing-Tabelle nur eine Methode
-            // tragen – GET und POST für die Einstellungen leben deshalb auf
-            // zwei Pfaden statt auf einem gemeinsamen.
+            // A path can carry only one method in this routing table – GET and
+            // POST for the settings therefore live on two paths instead of one
+            // shared path.
             '/api/admin/settings' => ['GET', 'adminSettingsGet'],
             '/api/admin/settings/update' => ['POST', 'adminSettingsUpdate'],
             '/api/setup/status' => ['GET', 'setupStatus'],
@@ -83,8 +83,8 @@ final class Api
         [$expectedMethod, $handler] = $routes[$path];
         $needsSession = !in_array($path, self::PUBLIC_PATHS, true);
 
-        // Ohne Sitzung gibt es bei geschützten Endpunkten grundsätzlich 401 –
-        // auch dann, wenn die Methode nicht passt.
+        // Protected endpoints always answer 401 without a session – even when
+        // the method does not match.
         $user = $needsSession ? Sessions::currentUser() : null;
         if ($needsSession && $user === null) {
             Http::error('unauthorized', 401);
@@ -99,11 +99,11 @@ final class Api
         Http::error('server_error', 500);
     }
 
-    // ---------------------------------------------------------------- Auth ---
+    // --------------------------------------------------------------- Auth ---
 
     /**
-     * Prüft den Einladungscode. Das passiert auf beiden Registrierungs-
-     * Endpunkten als Erstes – vor jeder Validierung und vor jedem Schreibzugriff.
+     * Validates the invite code. Both registration endpoints do this first –
+     * before any other validation and before any write.
      *
      * @param array<string, mixed> $body
      */
@@ -117,7 +117,7 @@ final class Api
     }
 
     /**
-     * Prüft Vor- und Nachname.
+     * Validates first and last name and returns them normalized.
      *
      * @param array<string, mixed> $body
      * @return array{0: string, 1: string}
@@ -234,7 +234,7 @@ final class Api
             Http::error('name_taken', 409);
         }
 
-        // Registrierung ist die einzige Stelle, an der ein Benutzer entsteht.
+        // Registration is the only place where a user comes into existence.
         $user = Users::create($nameEncrypted, $nameHash, $handle);
         Credentials::store((string) $user['id'], $record);
         Sessions::start((string) $user['id']);
@@ -266,8 +266,8 @@ final class Api
             Http::error('invalid_credential', 400);
         }
 
-        // Die Challenge wird sofort verbraucht: ein Replay derselben
-        // clientDataJSON schlägt fehl.
+        // The challenge is consumed immediately: replaying the same
+        // clientDataJSON fails.
         $ceremony = Ceremonies::consume(Ceremonies::KIND_LOGIN, $challenge);
         if ($ceremony === null) {
             Http::error('unauthorized', 401);
@@ -303,7 +303,6 @@ final class Api
             Http::error('unauthorized', 401);
         }
 
-        // Geprüfter Signaturzähler zurückschreiben.
         Credentials::updateSignCount((string) $row['id'], $verified->counter);
         Sessions::start((string) $user['id']);
 
@@ -317,13 +316,12 @@ final class Api
         Http::json(['ok' => true]);
     }
 
-    // --------------------------------------------------- Geräteverknüpfung ---
+    // ----------------------------------------------------- Device linking ---
 
     /**
-     * Erzeugt einen Einmalcode, mit dem der aktuell angemeldete Benutzer ein
-     * zweites Gerät an sein eigenes Konto anhängen kann. Der Code wird der
-     * Oberfläche genau einmal gezeigt – er ist danach nirgendwo im Klartext
-     * gespeichert.
+     * Issues a single-use code with which the signed-in user can attach a
+     * second device to their own account. The code is handed to the interface
+     * exactly once – afterwards it is stored nowhere in cleartext.
      *
      * @param array<string, mixed> $user
      */
@@ -334,12 +332,12 @@ final class Api
     }
 
     /**
-     * Erzeugt Registrierungsoptionen für ein neues Gerät auf einem
-     * BESTEHENDEN Konto. Anders als registerOptions() entsteht hier kein
-     * neuer Benutzer: das existierende user_handle wird wiederverwendet,
-     * damit der neue Passkey als weiterer Faktor desselben Kontos zählt.
-     * Öffentlich erreichbar, da das neue Gerät noch keine Sitzung hat – der
-     * Einmalcode selbst ist der Nachweis der Berechtigung.
+     * Builds registration options for a new device on an EXISTING account.
+     * Unlike registerOptions(), no new user is created here: the existing
+     * user_handle is reused so that the new passkey counts as a further
+     * factor of the same account. Publicly reachable because the new device
+     * has no session yet – the single-use code itself is the proof of
+     * authorization.
      */
     private static function linkOptions(): never
     {
@@ -349,8 +347,8 @@ final class Api
             Http::error('invalid_code', 400);
         }
 
-        // Nur ein Blick, kein Verbrauch: derselbe Code muss auch nach einem
-        // abgebrochenen Versuch auf dem neuen Gerät noch einmal funktionieren.
+        // Peek only, no consume: the same code has to keep working after an
+        // aborted attempt on the new device.
         $row = LinkCodes::peek($code);
         if ($row === null) {
             Http::error('invalid_code', 400);
@@ -381,11 +379,11 @@ final class Api
     }
 
     /**
-     * Schliesst die Geräteverknüpfung ab: prüft die WebAuthn-Attestation wie
-     * registerVerify(), verbraucht aber danach den Einmalcode statt einen
-     * neuen Benutzer anzulegen. Der Code wird bewusst erst NACH erfolgreicher
-     * Attestation verbraucht – ein gescheiterter Versuch (falsches
-     * Credential, doppelte Credential-ID) darf den Code nicht verbrennen.
+     * Completes the device link: verifies the WebAuthn attestation as
+     * registerVerify() does, but then consumes the single-use code instead of
+     * creating a new user. The code is deliberately consumed only AFTER a
+     * successful attestation – a failed attempt (wrong credential, duplicate
+     * credential ID) must not burn the code.
      */
     private static function linkVerify(): never
     {
@@ -419,9 +417,9 @@ final class Api
             Http::error('challenge_invalid', 400);
         }
 
-        // Der im Body mitgeschickte Code muss zu genau dem Code gehören, für
-        // den diese Ceremonie erzeugt wurde – sonst liesse sich mit einer
-        // fremden Ceremonie ein anderer Code durchschleusen.
+        // The code sent in the body must be exactly the code this ceremony was
+        // created for – otherwise a foreign ceremony could be used to smuggle a
+        // different code through.
         $bodyCode = Http::stringField($body, 'code');
         $normalizedBody = $bodyCode !== null ? LinkCodes::normalize($bodyCode) : '';
         if ($normalizedBody === '' || !hash_equals($storedCode, $normalizedBody)) {
@@ -441,10 +439,10 @@ final class Api
             Http::error('credential_exists', 409);
         }
 
-        // Der Code wird erst jetzt verbraucht: die Attestation ist geprüft,
-        // die Credential-ID ist frei – ab hier kann die Verknüpfung nicht
-        // mehr scheitern, ausser der Code wurde inzwischen anderweitig
-        // verbraucht (paralleler Versuch).
+        // Only now is the code consumed: the attestation is verified and the
+        // credential ID is free – from here on the link can no longer fail,
+        // unless the code was consumed elsewhere in the meantime (concurrent
+        // attempt).
         $linkRow = LinkCodes::consume((string) $bodyCode);
         if ($linkRow === null) {
             Http::error('challenge_invalid', 400);
@@ -461,7 +459,7 @@ final class Api
         Http::json(['ok' => true, 'user' => self::meView($user)]);
     }
 
-    // ------------------------------------------------------------- Zähler ---
+    // ------------------------------------------------------------ Counter ---
 
     /** @param array<string, mixed> $user */
     private static function me(array $user): never
@@ -472,9 +470,10 @@ final class Api
     /** @param array<string, mixed> $user */
     private static function coffee(array $user): never
     {
-        // Der Zähler bleibt serverautoritativ – nur die optionale eventId aus
-        // dem Body wird gelesen, für die Idempotenz der Offline-Warteschlange
-        // (siehe Users::addCoffee). Fehlt sie (alte Clients), bucht wie bisher.
+        // The counter stays server-authoritative – only the optional eventId
+        // from the body is read, for idempotency of the offline queue (see
+        // Users::addCoffee). If it is absent (older clients), the booking
+        // proceeds as before.
         $body = Http::body();
         $eventId = Http::stringField($body, 'eventId');
         if ($eventId !== null && preg_match('/^[A-Za-z0-9-]{8,64}$/', $eventId) !== 1) {
@@ -510,14 +509,14 @@ final class Api
         Http::json(Users::history((string) $user['id']));
     }
 
-    // ------------------------------------------------------- Erinnerungen ---
+    // ---------------------------------------------------------- Reminders ---
 
     /**
-     * Fällige Erinnerungen für den angemeldeten Benutzer. Rein lesend – der
-     * Client (Service Worker oder Seite) zeigt die lokale Notification und
-     * bestätigt danach über /api/reminders/ack genau das, was er gezeigt
-     * hat. So erscheint jede Erinnerung über alle Geräte hinweg höchstens
-     * einmal, und ein Abruf ohne erfolgreiche Anzeige verbraucht nichts.
+     * Due reminders for the signed-in user. Read-only – the client (service
+     * worker or page) shows the local notification and afterwards acknowledges
+     * via /api/reminders/ack exactly what it displayed. Every reminder thus
+     * appears at most once across all devices, and a fetch without a successful
+     * display consumes nothing.
      *
      * @param array<string, mixed> $user
      */
@@ -525,8 +524,8 @@ final class Api
     {
         $balance = Users::balanceCents($user);
 
-        // Monatsende-Hinweis nur bei tatsächlich offenem Betrag und nur,
-        // solange er für diesen Monat noch nicht bestätigt wurde.
+        // Month-end notice only when an amount is actually outstanding, and
+        // only as long as it has not been acknowledged for this month.
         $monthEnd = null;
         $tag = Users::reminderMonthTag(Clock::now());
         if ($tag !== null && $balance > 0 && Users::remindedMonth($user) !== $tag) {
@@ -592,7 +591,7 @@ final class Api
             Http::error('unknown_user', 404);
         }
 
-        // Nur echte Ganzzahlen zulassen – kein bool, kein float, kein String.
+        // Accept genuine integers only – no bool, no float, no string.
         $amountRaw = $body['amountCents'] ?? null;
         if (!is_int($amountRaw) || $amountRaw === 0 || $amountRaw < -1000000 || $amountRaw > 1000000) {
             Http::error('invalid_amount', 400);
@@ -603,9 +602,9 @@ final class Api
     }
 
     /**
-     * Merkt eine Zahlungserinnerung für einen Benutzer vor. Sie erscheint
-     * als lokale Notification auf dessen Gerät, sobald es das nächste Mal
-     * /api/reminders abfragt (App-Start oder Periodic Background Sync).
+     * Queues a payment reminder for a user. It appears as a local notification
+     * on that user's device the next time the device polls /api/reminders (app
+     * start or periodic background sync).
      *
      * @param array<string, mixed> $user
      */
@@ -624,10 +623,10 @@ final class Api
     }
 
     /**
-     * Erzeugt einen Einmalcode, mit dem ein Admin ein neues Gerät an ein
-     * FREMDES Konto anhängen kann – der Geräteverlust-Fall. Länger gültig
-     * als der selbst erzeugte Code (ADMIN_TTL statt SELF_TTL), da der Code
-     * erst noch an den betroffenen Benutzer übermittelt werden muss.
+     * Issues a single-use code with which an admin can attach a new device to
+     * SOMEONE ELSE'S account – the lost-device case. Valid longer than a
+     * self-issued code (ADMIN_TTL instead of SELF_TTL), because the code still
+     * has to be delivered to the affected user.
      *
      * @param array<string, mixed> $user
      */
@@ -648,9 +647,8 @@ final class Api
     /** @param array<string, mixed> $user */
     private static function requireAdmin(array $user): void
     {
-        // Admin ist, wer in config.php gelistet ist ODER dessen Zeile das
-        // is_admin-Flag trägt (der erste registrierte Nutzer, siehe
-        // Users::create()).
+        // An admin is whoever is listed in config.php OR whose row carries the
+        // is_admin flag (the first registered user, see Users::create()).
         if (!Config::isAdmin((string) ($user['id'] ?? '')) && !Users::isAdminRow($user)) {
             Http::error('forbidden', 403);
         }
@@ -667,11 +665,10 @@ final class Api
     }
 
     /**
-     * Ändert Preis und/oder Einladungscode zur Laufzeit. Bewusst OHNE
-     * Möglichkeit, adminPublicKey oder namePepper zu ändern: beides würde
-     * bereits verschlüsselte Namen unlesbar machen bzw. bestehende
-     * Namens-HMACs entwerten und so Duplikatsprüfung/Entschlüsselung für
-     * Altbestand brechen.
+     * Changes price and/or invite code at runtime. Deliberately WITHOUT any way
+     * to change adminPublicKey or namePepper: the former would make already
+     * encrypted names unreadable, the latter would invalidate existing name
+     * HMACs, breaking duplicate detection and decryption for existing data.
      *
      * @param array<string, mixed> $user
      */
@@ -712,12 +709,12 @@ final class Api
         ]);
     }
 
-    // ------------------------------------------------------- Einrichtung ---
+    // -------------------------------------------------------------- Setup ---
 
     /**
-     * Ein frisches Deployment braucht keine handbearbeitete config.php mehr:
-     * ohne konfigurierten adminPublicKey und ohne Benutzer verlangt die
-     * Oberfläche den Einrichtungsassistenten statt Registrierung/Login.
+     * A fresh deployment no longer needs a hand-edited config.php: with no
+     * configured adminPublicKey and no users, the interface asks for the setup
+     * wizard instead of registration/login.
      */
     private static function needsSetup(): bool
     {
@@ -733,11 +730,10 @@ final class Api
     }
 
     /**
-     * Einmaliger Abschluss der Einrichtung: der öffentliche Admin-Schlüssel
-     * wird lokal im Browser erzeugt (der private Teil verlässt den Browser
-     * nie) und hier zusammen mit Preis und Einladungscode hinterlegt. Der
-     * erste danach registrierte Benutzer wird automatisch Admin (siehe
-     * Users::create()).
+     * One-time completion of the setup: the public admin key is generated
+     * locally in the browser (the private half never leaves it) and stored here
+     * together with price and invite code. The first user registered afterwards
+     * automatically becomes admin (see Users::create()).
      */
     private static function setupInit(): never
     {
@@ -752,9 +748,8 @@ final class Api
             Http::error('invalid_key', 400);
         }
         try {
-            // Nur zur Validierung instanziiert – der Pepper ist hier
-            // irrelevant, es geht ausschliesslich um den öffentlichen
-            // Schlüssel.
+            // Instantiated for validation only – the pepper is irrelevant
+            // here, this is solely about the public key.
             new Crypto($publicKey, 'probe');
         } catch (Throwable) {
             Http::error('invalid_key', 400);
@@ -771,11 +766,11 @@ final class Api
             Http::error('invalid_invite', 400);
         }
 
-        // Kleines, bewusst in Kauf genommenes Race-Fenster: zwei parallele
-        // erste Requests könnten beide bis hierher kommen, bevor einer von
-        // ihnen seine Einstellungen geschrieben hat. Der Assistent läuft
-        // genau einmal beim allerersten Deployment, nicht unter Last –
-        // ein echtes Lock lohnt den Aufwand hier nicht.
+        // Small, deliberately accepted race window: two concurrent first
+        // requests could both reach this point before either has written its
+        // settings. The wizard runs exactly once on the very first deployment,
+        // not under load – a real lock is not worth the effort here.
+        // @phpstan-ignore booleanNot.alwaysFalse (deliberate re-check: state can change between the guard at the top and here)
         if (!self::needsSetup()) {
             Http::error('already_initialized', 409);
         }
@@ -786,8 +781,8 @@ final class Api
             'invite' => $invite,
         ];
         if (Config::namePepper() === '') {
-            // Niemals einen bereits vorhandenen Pepper überschreiben – das
-            // würde alle bestehenden Namens-HMACs entwerten.
+            // Never overwrite an existing pepper – it would invalidate every
+            // existing name HMAC.
             $pairs['namePepper'] = bin2hex(random_bytes(32));
         }
 
@@ -796,13 +791,13 @@ final class Api
         Http::json(['ok' => true]);
     }
 
-    // --------------------------------------------------------- Teststeuerung ---
+    // ------------------------------------------------------- Test control ---
 
     private static function dispatchTest(string $path, string $method): never
     {
         $token = Config::testToken();
         $given = Http::header('X-Test-Token');
-        // Ohne testMode oder mit falschem Token existieren diese Endpunkte nicht.
+        // Without testMode, or with a wrong token, these endpoints do not exist.
         if (!Config::testMode() || $token === '' || $given === '' || !hash_equals($token, $given)) {
             Http::error('not_found', 404);
         }
@@ -838,15 +833,16 @@ final class Api
                     $pdo->exec('DELETE FROM ' . $table);
                 }
             }
-            // sqlite_sequence gibt es nur unter SQLite.
+            // sqlite_sequence exists under SQLite only.
             if (!$mysql && Db::tableExists($pdo, 'sqlite_sequence')) {
                 $pdo->exec('DELETE FROM sqlite_sequence');
             }
         });
 
         if ($mysql) {
-            // ALTER TABLE committet implizit – deshalb erst nach Abschluss der
-            // Transaktion und ausserhalb davon, sonst risse es sie mitten durch.
+            // ALTER TABLE commits implicitly – hence only after the transaction
+            // has finished and outside of it, otherwise it would tear the
+            // transaction apart midway.
             $pdo = Db::pdo();
             foreach (['users', 'credentials', 'ceremonies', 'link_codes', 'coffee_events'] as $table) {
                 if (Db::tableExists($pdo, $table)) {
@@ -876,7 +872,7 @@ final class Api
             $coffees = isset($entry['coffees']) && is_numeric($entry['coffees']) ? (int) $entry['coffees'] : 0;
             $paid = isset($entry['paidCents']) && is_numeric($entry['paidCents']) ? (int) $entry['paidCents'] : 0;
 
-            // Exakt derselbe Weg wie bei einer echten Registrierung.
+            // Exactly the same path as a real registration takes.
             $nameHash = $crypto->nameHash($first, $last);
             if (Users::idForNameHash($nameHash) !== null) {
                 Http::error('name_taken', 409);
@@ -934,7 +930,7 @@ final class Api
         Http::json(['ok' => true, 'offsetSeconds' => Clock::offset(), 'now' => Clock::now()]);
     }
 
-    /** Meldet einen Testbenutzer ohne WebAuthn-Zeremonie an – nur mit Testtoken erreichbar. */
+    /** Signs in a test user without a WebAuthn ceremony – reachable only with the test token. */
     private static function testLogin(): never
     {
         $body = Http::body();
@@ -947,7 +943,7 @@ final class Api
         Http::json(['ok' => true, 'userId' => $userId]);
     }
 
-    // ------------------------------------------------------------- Helfer ---
+    // ------------------------------------------------------------ Helpers ---
 
     /**
      * @param array<string, mixed> $body
@@ -959,7 +955,7 @@ final class Api
         if (is_array($credential) && isset($credential['response'])) {
             return $credential;
         }
-        // Auch ein nacktes PublicKeyCredential als Body wird akzeptiert.
+        // A bare PublicKeyCredential as the body is accepted as well.
         if (isset($body['response']) && is_array($body['response'])) {
             return $body;
         }
@@ -985,8 +981,8 @@ final class Api
 
     private static function userLabel(string $handle): string
     {
-        // Opakes Label: es darf nie ein Klarname in die Optionen geraten.
-        return 'kaffee-' . substr(preg_replace('/[^A-Za-z0-9]/', '', $handle) ?? '', 0, 10);
+        // Opaque label: a cleartext name must never end up in the options.
+        return 'coffee-' . substr(preg_replace('/[^A-Za-z0-9]/', '', $handle) ?? '', 0, 10);
     }
 
     /**
@@ -1008,16 +1004,16 @@ final class Api
         ];
     }
 
-    // --------------------------------------------------------- Frontend ---
+    // ----------------------------------------------------------- Frontend ---
 
-    /** Anwendungsrouten, die den HTML-Rumpf ausliefern. */
+    /** Application routes that serve the HTML shell. */
     private const APP_PATHS = ['/', '/app', '/admin', '/login'];
 
     private static function serveFrontend(string $path): never
     {
-        // Nur bekannte Anwendungsrouten liefern die Oberfläche. Alles andere
-        // existiert nicht – dieser Controller liest niemals eine Datei vom
-        // Dateisystem und kann darum auch keine ausliefern.
+        // Only known application routes serve the interface. Everything else
+        // does not exist – this controller never reads a file from the file
+        // system and therefore cannot serve one either.
         if (!in_array($path, self::APP_PATHS, true)) {
             Http::error('not_found', 404);
         }

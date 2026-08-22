@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace Coffee;
 
-use Symfony\Component\Serializer\SerializerInterface;
+use RuntimeException;
+use Symfony\Component\Serializer\Serializer;
 use Throwable;
 use Webauthn\AttestationStatement\AttestationStatementSupportManager;
 use Webauthn\AttestationStatement\NoneAttestationStatementSupport;
@@ -25,26 +26,34 @@ use Webauthn\PublicKeyCredentialRpEntity;
 use Webauthn\PublicKeyCredentialUserEntity;
 
 /**
- * Verdrahtung von web-auth/webauthn-lib.
+ * Wiring for web-auth/webauthn-lib.
  *
- * Registrierung: PublicKeyCredentialCreationOptions →
+ * Registration: PublicKeyCredentialCreationOptions →
  * AuthenticatorAttestationResponseValidator.
- * Anmeldung: PublicKeyCredentialRequestOptions →
+ * Login: PublicKeyCredentialRequestOptions →
  * AuthenticatorAssertionResponseValidator.
- * `rpId` und `origin` kommen ausschliesslich aus der Konfiguration.
+ * `rpId` and `origin` come exclusively from configuration.
  */
 final class WebAuthnService
 {
-    /** Challenge-Länge in Bytes. */
+    /** Challenge length in bytes. */
     private const CHALLENGE_BYTES = 32;
 
-    private static ?SerializerInterface $serializer = null;
+    private static ?Serializer $serializer = null;
 
-    public static function serializer(): SerializerInterface
+    /**
+     * The factory declares SerializerInterface, but callers also need the
+     * (de)normalization side, so pin the concrete Symfony Serializer.
+     */
+    public static function serializer(): Serializer
     {
         if (self::$serializer === null) {
             $support = new AttestationStatementSupportManager([new NoneAttestationStatementSupport()]);
-            self::$serializer = (new WebauthnSerializerFactory($support))->create();
+            $created = (new WebauthnSerializerFactory($support))->create();
+            if (!$created instanceof Serializer) {
+                throw new RuntimeException('Unexpected serializer implementation from webauthn-lib');
+            }
+            self::$serializer = $created;
         }
 
         return self::$serializer;
@@ -53,7 +62,7 @@ final class WebAuthnService
     private static function ceremonyFactory(): CeremonyStepManagerFactory
     {
         $factory = new CeremonyStepManagerFactory();
-        // Nur genau die konfigurierte Origin ist zulässig.
+        // Only exactly the configured origin is permitted.
         $factory->setAllowedOrigins([Config::origin()]);
 
         return $factory;
@@ -65,8 +74,8 @@ final class WebAuthnService
     }
 
     /**
-     * Optionen für eine Registrierung: auffindbarer Passkey (Resident Key) mit
-     * zwingender Nutzerverifikation.
+     * Options for a registration: discoverable passkey (resident key) with
+     * mandatory user verification.
      *
      * @param list<PublicKeyCredentialDescriptor> $excludeCredentials
      */
@@ -77,8 +86,8 @@ final class WebAuthnService
     ): PublicKeyCredentialCreationOptions {
         return PublicKeyCredentialCreationOptions::create(
             PublicKeyCredentialRpEntity::create('Coffee Time', Config::rpId()),
-            // In der Entität steht bewusst kein Klarname: die Optionen gehen an
-            // den Browser und dürfen keinen Namen preisgeben.
+            // The entity deliberately carries no real name: these options
+            // go to the browser and must not expose a name.
             PublicKeyCredentialUserEntity::create($userLabel, $userHandle, $userLabel),
             self::challenge(),
             [
@@ -97,8 +106,8 @@ final class WebAuthnService
     }
 
     /**
-     * Optionen für die Anmeldung ohne Benutzernamen: keine allowCredentials,
-     * Nutzerverifikation zwingend.
+     * Options for username-less login: no allowCredentials, mandatory user
+     * verification.
      */
     public static function requestOptions(): PublicKeyCredentialRequestOptions
     {
@@ -153,8 +162,7 @@ final class WebAuthnService
     }
 
     /**
-     * Wandelt das rohe Credential-JSON des Browsers in ein Objekt der
-     * Bibliothek.
+     * Converts the browser's raw credential JSON into a library object.
      *
      * @param array<mixed> $raw
      */
@@ -173,9 +181,9 @@ final class WebAuthnService
     }
 
     /**
-     * Liest die Challenge aus dem clientDataJSON des Credentials. Beim Verify
-     * kommt nur das nackte Credential an – die Challenge ist der einzige Bezug
-     * zur anstehenden Ceremonie.
+     * Reads the challenge from the credential's clientDataJSON. At verify
+     * time only the bare credential arrives — the challenge is the sole
+     * link back to the pending ceremony.
      *
      * @param array<mixed> $raw
      */
@@ -232,9 +240,9 @@ final class WebAuthnService
                 self::ceremonyFactory()->requestCeremony()
             );
 
-            // userHandle bleibt null: die Anmeldung ist namenlos, der Benutzer
-            // wird über die Credential-ID gefunden. Die Bibliothek prüft dann,
-            // dass das Handle aus der Assertion zum gespeicherten passt.
+            // userHandle stays null: login is username-less, the user is
+            // found via the credential ID. The library then verifies that
+            // the handle from the assertion matches the stored one.
             return $validator->check($record, $response, $options, Config::rpId(), null);
         } catch (Throwable $e) {
             error_log('[coffee] assertion rejected: ' . $e->getMessage());

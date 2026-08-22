@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Coffee;
 
 /**
- * Kleine Hülle um Request und Response. Jede Antwort ist JSON – ausser der
- * Anwendungsrumpf selbst.
+ * Thin wrapper around request and response. Every response is JSON except
+ * the application shell itself.
  */
 final class Http
 {
@@ -34,7 +34,7 @@ final class Http
         return is_string($method) ? strtoupper($method) : 'GET';
     }
 
-    /** Pfad ohne Querystring, ohne doppelte Slashes, ohne Trailing-Slash. */
+    /** Path without query string, without duplicate slashes, without trailing slash. */
     public static function path(): string
     {
         $uri = $_SERVER['REQUEST_URI'] ?? '/';
@@ -63,8 +63,8 @@ final class Http
     }
 
     /**
-     * Liest den Request-Body als JSON. Ein leerer, fehlerhafter oder falsch
-     * deklarierter Body ergibt ein leeres Array – kein Fehler, kein Absturz.
+     * Reads the request body as JSON. An empty, malformed, or mislabeled
+     * body yields an empty array — no error, no crash.
      *
      * @return array<string, mixed>
      */

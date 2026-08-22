@@ -1,5 +1,5 @@
-# Diese Dateien gehören nicht ins Web. Sicherheitsnetz, falls das
-# Dokumentenverzeichnis versehentlich auf den Projektstamm zeigt.
+# These files do not belong on the web. Safety net in case the document
+# root accidentally points at the project root.
 <IfModule mod_authz_core.c>
     Require all denied
 </IfModule>

@@ -1,4 +1,4 @@
-/* Coffee Time – mobile first, keine externen Ressourcen. */
+/* Coffee Time — mobile first, no external resources. */
 
 :root {
   --bg: #f6f1ea;
@@ -106,7 +106,7 @@ h2 {
   display: inline-block;
 }
 
-/* Kleiner, zufriedener "Plopp" beim Buchen – zusammen mit der Vibration. */
+/* A small, satisfying "plop" on booking, paired with the vibration. */
 @keyframes bump {
   0% {
     transform: scale(1);
@@ -210,7 +210,7 @@ input {
   gap: 10px;
 }
 
-/* Ein ungerades letztes Feld nimmt die volle Breite ein statt allein zu hängen. */
+/* An odd last item spans the full width instead of dangling alone. */
 .grid .stat:last-child:nth-child(odd) {
   grid-column: 1 / -1;
 }

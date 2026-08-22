@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8123:80"
+    volumes:
+      - coffee-data:/var/www/html/data
+      # The setup wizard runs out of the box; rpId/origin are derived from
+      # the request. For a fixed configuration, bind-mount your own:
+      # - ./config.php:/var/www/html/config.php:ro
+    restart: unless-stopped
+
+volumes:
+  coffee-data:

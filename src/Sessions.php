@@ -7,23 +7,21 @@ namespace Coffee;
 use PDO;
 
 /**
- * Serverseitige Sitzungen in SQLite.
+ * Server-side sessions in SQLite.
  *
- * Das Cookie enthält ausschliesslich ein zufälliges, opakes Token
- * (base64url von 32 Zufallsbytes). In der Datenbank liegt nur dessen
- * SHA-256-Hash, damit eine Kopie der Datei keine gültigen Tokens verrät.
+ * The cookie holds nothing but a random, opaque token (base64url of 32
+ * random bytes). The database stores only its SHA-256 hash, so a copy of
+ * the file reveals no valid tokens.
  */
 final class Sessions
 {
     public const COOKIE_NAME = 'coffee_session';
 
-    /** Cookie-Lebensdauer (ein Jahr). */
+    /** Cookie lifetime (one year). */
     public const COOKIE_MAX_AGE = 31536000;
 
-    /** Serverseitige Leerlauf-Lebensdauer einer Sitzung: 30 Tage. */
+    /** Server-side idle lifetime of a session: 30 days. */
     public const IDLE_LIFETIME = 2592000;
-
-    private static ?string $currentId = null;
 
     public static function start(string $userId): string
     {
@@ -32,7 +30,7 @@ final class Sessions
         $now = Clock::now();
 
         Db::transaction(static function (PDO $pdo) use ($id, $userId, $now): void {
-            // Aufräumen abgelaufener, nie abgemeldeter Sitzungen bei Gelegenheit.
+            // Opportunistically clean up expired sessions that were never logged out.
             $pdo->prepare('DELETE FROM sessions WHERE expires_at <= ?')->execute([$now]);
             $statement = $pdo->prepare(
                 'INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'
@@ -40,17 +38,16 @@ final class Sessions
             $statement->execute([$id, (int) $userId, $now, $now + self::IDLE_LIFETIME]);
         });
 
-        self::$currentId = $id;
         self::sendCookie($token, self::COOKIE_MAX_AGE);
 
         return $token;
     }
 
     /**
-     * Liest die Sitzung aus dem Cookie, verwirft abgelaufene Zeilen und
-     * verlängert eine gültige Sitzung – in der Datenbank, nicht nur im Cookie.
+     * Reads the session from the cookie, discards expired rows, and extends
+     * a valid session — in the database, not just in the cookie.
      *
-     * @return array<string, mixed>|null die zugehörige Benutzerzeile
+     * @return array<string, mixed>|null the associated user row
      */
     public static function currentUser(): ?array
     {
@@ -82,7 +79,6 @@ final class Sessions
             return null;
         }
 
-        self::$currentId = $id;
         self::touch($id, $now);
         self::sendCookie($token, self::COOKIE_MAX_AGE);
 
@@ -97,7 +93,7 @@ final class Sessions
         });
     }
 
-    /** Beendet ausschliesslich die aktuelle Sitzung. */
+    /** Ends only the current session. */
     public static function logoutCurrent(): void
     {
         $token = $_COOKIE[self::COOKIE_NAME] ?? null;
@@ -128,8 +124,8 @@ final class Sessions
     }
 
     /**
-     * Setzt das Sitzungscookie. Der Header wird selbst gebaut, damit `Max-Age`
-     * exakt der geforderten Lebensdauer entspricht.
+     * Sets the session cookie. The header is built manually so `Max-Age`
+     * matches the intended lifetime exactly.
      */
     private static function sendCookie(string $token, int $maxAge): void
     {

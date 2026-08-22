@@ -13,7 +13,7 @@ test.describe('booking', () => {
   });
 
   test('taking a coffee increments the counter and the balance', async ({ page, testApi }) => {
-    const [u] = await testApi.seed([{ firstName: 'Kaffee', lastName: 'Tester' }]);
+    const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester' }]);
     await testApi.loginAs(page, u.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();
@@ -32,7 +32,7 @@ test.describe('booking', () => {
   });
 
   test('three bookings aggregate', async ({ page, testApi }) => {
-    const [u] = await testApi.seed([{ firstName: 'Kaffee', lastName: 'Tester' }]);
+    const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester' }]);
     await testApi.loginAs(page, u.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();
@@ -51,7 +51,7 @@ test.describe('booking', () => {
   });
 
   test('undo reverts the counter and the balance', async ({ page, testApi }) => {
-    const [u] = await testApi.seed([{ firstName: 'Kaffee', lastName: 'Tester' }]);
+    const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester' }]);
     await testApi.loginAs(page, u.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();
@@ -73,7 +73,7 @@ test.describe('booking', () => {
   });
 
   test('undo at zero is a no-op', async ({ page, testApi }) => {
-    const [u] = await testApi.seed([{ firstName: 'Kaffee', lastName: 'Tester' }]);
+    const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester' }]);
     await testApi.loginAs(page, u.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();
@@ -95,7 +95,7 @@ test.describe('booking', () => {
   test('price freeze: an in-flight price change never re-prices past bookings', async ({ page, testApi }) => {
     // The single seeded user is the first user in a fresh DB, so it is the
     // administrator -- required to hit /api/admin/settings/update.
-    const [admin] = await testApi.seed([{ firstName: 'Kaffee', lastName: 'Admin' }]);
+    const [admin] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Admin' }]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();
@@ -137,7 +137,7 @@ test.describe('booking', () => {
   });
 
   test('a seeded starting balance is reflected in the outstanding amount', async ({ page, testApi }) => {
-    const [u] = await testApi.seed([{ firstName: 'Kaffee', lastName: 'Tester', coffees: 4, paidCents: 300 }]);
+    const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester', coffees: 4, paidCents: 300 }]);
     await testApi.loginAs(page, u.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();

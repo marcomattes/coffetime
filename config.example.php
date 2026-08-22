@@ -28,9 +28,12 @@ return [
     'admins' => [],
 
     // WebAuthn relying-party ID (host only, without scheme or port).
+    // If omitted, it is derived from the request's Host header — set it
+    // explicitly in production, especially behind a reverse proxy.
     'rpId' => 'localhost',
 
-    // Complete origin, including scheme and port.
+    // Complete origin, including scheme and port. Same fallback rule as
+    // rpId: derived from the request when omitted, pin it in production.
     'origin' => 'http://localhost:8123',
 
     // SQLite path. Keep it outside public/. Ignored when 'db' below selects

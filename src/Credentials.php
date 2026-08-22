@@ -11,8 +11,7 @@ use Webauthn\TrustPath\EmptyTrustPath;
 use Webauthn\TrustPath\TrustPath;
 
 /**
- * Gespeicherte Passkeys: Credential-ID, öffentlicher Schlüssel, Signaturzähler
- * und Besitzer.
+ * Stored passkeys: credential ID, public key, signature counter, and owner.
  */
 final class Credentials
 {
@@ -58,7 +57,7 @@ final class Credentials
         return is_numeric($value) ? (int) $value : 0;
     }
 
-    /** Anzahl der Passkeys eines einzelnen Kontos – für die "N Geräte"-Anzeige. */
+    /** Number of passkeys on a single account, for the "N devices" display. */
     public static function countForUser(string $userId): int
     {
         $value = Db::fetchValue('SELECT COUNT(*) AS total FROM credentials WHERE user_id = ?', [(int) $userId]);
@@ -67,8 +66,8 @@ final class Credentials
     }
 
     /**
-     * Baut aus der Zeile den `CredentialRecord`, den die Bibliothek zur Prüfung
-     * einer Assertion braucht.
+     * Builds from the row the `CredentialRecord` the library needs to
+     * verify an assertion.
      *
      * @param array<string, mixed> $row
      * @param array<string, mixed> $user
@@ -113,7 +112,7 @@ final class Credentials
                         return $path;
                     }
                 } catch (\Throwable) {
-                    // Fällt auf den leeren Pfad zurück.
+                    // Falls back to the empty trust path.
                 }
             }
         }
@@ -133,7 +132,7 @@ final class Credentials
     }
 
     /**
-     * Schreibt den geprüften Signaturzähler zurück.
+     * Writes back the verified signature counter.
      */
     public static function updateSignCount(string $rowId, int $signCount): void
     {

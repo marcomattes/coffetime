@@ -90,6 +90,24 @@ check('Config::isAdmin is false for anyone without admins configured', Config::i
 check('Config::testMode defaults to false', Config::testMode() === false);
 check('Config::rpId defaults to localhost', Config::rpId() === 'localhost');
 
+// Without configured values, rpId and origin derive from the Host header,
+// so an unconfigured instance works on any host/port.
+$originalHost = $_SERVER['HTTP_HOST'] ?? null;
+$_SERVER['HTTP_HOST'] = 'localhost:8123';
+Config::forget();
+check('Config::rpId derives the host (without port) from the request', Config::rpId() === 'localhost');
+check('Config::origin derives scheme and host:port from the request', Config::origin() === 'http://localhost:8123');
+$_SERVER['HTTP_HOST'] = 'bad host!';
+Config::forget();
+check('Config::rpId rejects an invalid Host header', Config::rpId() === 'localhost');
+check('Config::origin rejects an invalid Host header', Config::origin() === '');
+if ($originalHost !== null) {
+    $_SERVER['HTTP_HOST'] = $originalHost;
+} else {
+    unset($_SERVER['HTTP_HOST']);
+}
+Config::forget();
+
 // Phase 2: a real config file with overrides.
 $configPath = write_test_config($workspace, [
     'priceCents' => 200,

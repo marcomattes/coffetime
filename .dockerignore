@@ -1,0 +1,41 @@
+# Version control / editor / CI metadata
+.git
+.github
+.claude
+
+# Node toolchain and TypeScript sources (compiled JS is already committed
+# under public/; no Node runtime is needed to build or run the image)
+node_modules
+frontend
+package.json
+package-lock.json
+tsconfig.json
+tsconfig.sw.json
+
+# End-to-end and unit tests, and their tooling
+e2e
+tests
+playwright.config.ts
+
+# Local build output / scratch
+deploy
+docs
+scripts
+
+# App runtime data and any local config.php (never bake a developer's own
+# secrets/DB into the image; the Dockerfile writes its own minimal
+# config.php, and a real deployment overrides it with a bind mount)
+data
+config.php
+
+# Docs not needed at runtime
+ARCHITECTURE.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+README.md
+SECURITY.md
+
+# Docker build files themselves
+Dockerfile
+compose.yaml
+.dockerignore
