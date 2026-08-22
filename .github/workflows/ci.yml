@@ -33,8 +33,19 @@ jobs:
       - name: Check PHP syntax
         run: find public src tests tools -name '*.php' -print0 | xargs -0 -n1 php -l
 
-      - name: Check JavaScript syntax
-        run: node --check public/app.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build TypeScript frontend
+        run: npm run build
+
+      - name: TypeScript build matches committed output
+        run: git diff --exit-code -- public/app.js public/sw.js
 
   build:
     needs: test

@@ -69,6 +69,24 @@ with no web server, an HTTP integration run against the PHP built-in server,
 and the encryption tests) and aggregates the results. Each script is also
 runnable on its own, e.g. `php tests/UnitTest.php`.
 
+### Frontend build
+
+The PWA frontend is written in TypeScript under `frontend/` (`app.ts`,
+`sw.ts`) and compiled to the plain scripts the server actually ships,
+`public/app.js` and `public/sw.js`. There is no Node runtime on the
+production host, so the compiled output is committed to the repository like
+any other static asset.
+
+```bash
+npm ci
+npm run build
+```
+
+regenerates `public/app.js` and `public/sw.js` from `frontend/`. CI runs the
+same build and fails if it differs from what is committed, so a stale build
+never reaches production. Run `npm run check` for a type-check without
+writing files.
+
 ## Security and privacy
 
 The database contains IDs, encrypted names, keyed name fingerprints, counters, balances, and passkey material—no email addresses or passwords. Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).

@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "WebWorker"],
+    "strict": true,
+    "noEmitOnError": true,
+    "rootDir": "frontend",
+    "outDir": "public",
+    "removeComments": false
+  },
+  "files": ["frontend/sw.ts"]
+}
