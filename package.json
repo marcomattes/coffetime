@@ -5,9 +5,11 @@
   "description": "TypeScript sources for the Coffee Time PWA frontend (compiled to public/app.js and public/sw.js).",
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.sw.json",
-    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.sw.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.sw.json --noEmit",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "typescript": "^5.6.3"
   }
 }
