@@ -119,12 +119,72 @@ function write_test_config(string $dir, array $overrides = []): string
         'adminPublicKey' => '',
         'namePepper' => 'test-pepper',
     ];
+
+    $dbConfig = test_db_config();
+    if ($dbConfig !== null) {
+        $defaults['db'] = $dbConfig;
+    }
+
     $config = array_merge($defaults, $overrides);
 
     $path = $dir . '/config.php';
     file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
 
     return $path;
+}
+
+/**
+ * Opt-in MySQL/MariaDB target for the whole test suite, controlled by the
+ * COFFEE_TEST_DB environment variable (a JSON object, e.g.
+ * {"driver":"mysql","host":"127.0.0.1","port":3306,"database":"coffee_test",
+ * "user":"coffee","password":"x"}). Unset or non-mysql: returns null and
+ * every test keeps using its own SQLite file, exactly as before.
+ *
+ * Every call drops and recreates the configured database, so each call to
+ * write_test_config() starts from an empty schema — the same isolation a
+ * fresh SQLite file path gives each test phase.
+ *
+ * @return array<string, mixed>|null
+ */
+function test_db_config(): ?array
+{
+    $raw = getenv('COFFEE_TEST_DB');
+    if (!is_string($raw) || trim($raw) === '') {
+        return null;
+    }
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded) || ($decoded['driver'] ?? null) !== 'mysql') {
+        return null;
+    }
+
+    $host = is_string($decoded['host'] ?? null) ? $decoded['host'] : '127.0.0.1';
+    $port = is_numeric($decoded['port'] ?? null) ? (int) $decoded['port'] : 3306;
+    $database = is_string($decoded['database'] ?? null) ? $decoded['database'] : '';
+    $user = is_string($decoded['user'] ?? null) ? $decoded['user'] : '';
+    $password = is_string($decoded['password'] ?? null) ? $decoded['password'] : '';
+    if ($database === '' || $user === '') {
+        throw new RuntimeException('COFFEE_TEST_DB is missing "database" or "user"');
+    }
+
+    $pdo = new PDO(
+        sprintf('mysql:host=%s;port=%d;charset=utf8mb4', $host, $port),
+        $user,
+        $password,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+    $quoted = '`' . str_replace('`', '``', $database) . '`';
+    $pdo->exec('DROP DATABASE IF EXISTS ' . $quoted);
+    $pdo->exec('CREATE DATABASE ' . $quoted . ' CHARACTER SET utf8mb4');
+
+    return [
+        'driver' => 'mysql',
+        'host' => $host,
+        'port' => $port,
+        'database' => $database,
+        'user' => $user,
+        'password' => $password,
+        'charset' => 'utf8mb4',
+    ];
 }
 
 // ------------------------------------------------------------- HTTP server ---

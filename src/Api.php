@@ -416,16 +416,30 @@ final class Api
 
     private static function testReset(): never
     {
-        Db::transaction(static function (\PDO $pdo): void {
+        $mysql = Db::driver() === 'mysql';
+
+        Db::transaction(static function (\PDO $pdo) use ($mysql): void {
             foreach (['sessions', 'credentials', 'ceremonies', 'coffee_events', 'users'] as $table) {
                 if (Db::tableExists($pdo, $table)) {
                     $pdo->exec('DELETE FROM ' . $table);
                 }
             }
-            if (Db::tableExists($pdo, 'sqlite_sequence')) {
+            // sqlite_sequence gibt es nur unter SQLite.
+            if (!$mysql && Db::tableExists($pdo, 'sqlite_sequence')) {
                 $pdo->exec('DELETE FROM sqlite_sequence');
             }
         });
+
+        if ($mysql) {
+            // ALTER TABLE committet implizit – deshalb erst nach Abschluss der
+            // Transaktion und ausserhalb davon, sonst risse es sie mitten durch.
+            $pdo = Db::pdo();
+            foreach (['users', 'credentials', 'ceremonies', 'coffee_events'] as $table) {
+                if (Db::tableExists($pdo, $table)) {
+                    $pdo->exec('ALTER TABLE ' . $table . ' AUTO_INCREMENT = 1');
+                }
+            }
+        }
 
         Http::json(['ok' => true]);
     }

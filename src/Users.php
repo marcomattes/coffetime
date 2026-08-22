@@ -97,8 +97,12 @@ final class Users
     public static function addPayment(string $id, int $amountCents): array
     {
         return Db::transaction(static function (PDO $pdo) use ($id, $amountCents): array {
-            $statement = $pdo->prepare('UPDATE users SET paid_cents = MAX(0, paid_cents + ?) WHERE id = ?');
-            $statement->execute([$amountCents, (int) $id]);
+            // Portabel statt MAX(0, ...): MySQL/MariaDB kennt MAX() nur als
+            // Aggregatfunktion, nicht als Zwei-Argumente-Skalarfunktion.
+            $statement = $pdo->prepare(
+                'UPDATE users SET paid_cents = CASE WHEN paid_cents + ? < 0 THEN 0 ELSE paid_cents + ? END WHERE id = ?'
+            );
+            $statement->execute([$amountCents, $amountCents, (int) $id]);
 
             return self::rowInTransaction($pdo, $id);
         });
@@ -131,8 +135,9 @@ final class Users
      */
     public static function streakDays(string $id): int
     {
+        $dayExpr = Db::dayExpr('created_at');
         $rows = Db::fetchRows(
-            "SELECT DISTINCT date(created_at, 'unixepoch') AS day FROM coffee_events WHERE user_id = ?",
+            "SELECT DISTINCT {$dayExpr} AS day FROM coffee_events WHERE user_id = ?",
             [(int) $id]
         );
         $days = [];
@@ -169,8 +174,9 @@ final class Users
         $now = Clock::now();
         $cutoff = $now - $days * 86400;
 
+        $dayExpr = Db::dayExpr('created_at');
         $rows = Db::fetchRows(
-            "SELECT date(created_at, 'unixepoch') AS day, COUNT(*) AS n
+            "SELECT {$dayExpr} AS day, COUNT(*) AS n
              FROM coffee_events WHERE user_id = ? AND created_at >= ? GROUP BY day",
             [(int) $id, $cutoff]
         );

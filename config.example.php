@@ -20,8 +20,21 @@ return [
     // Complete origin, including scheme and port.
     'origin' => 'http://localhost:8123',
 
-    // SQLite path. Keep it outside public/.
+    // SQLite path. Keep it outside public/. Ignored when 'db' below selects
+    // the mysql driver.
     'dbPath' => __DIR__ . '/data/coffee.sqlite',
+
+    // Optional: use MySQL/MariaDB instead of SQLite. Uncomment and fill in
+    // your own values; an invalid or incomplete block falls back to SQLite.
+    // 'db' => [
+    //     'driver' => 'mysql',
+    //     'host' => '127.0.0.1',
+    //     'port' => 3306,
+    //     'database' => 'coffee',
+    //     'user' => 'coffee',
+    //     'password' => 'change-me',
+    //     'charset' => 'utf8mb4',
+    // ],
 
     // Test endpoints (/api/test/*). Always false in production.
     'testMode' => false,

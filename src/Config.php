@@ -116,6 +116,59 @@ final class Config
             : dirname(__DIR__) . '/data/coffee.sqlite';
     }
 
+    /**
+     * Normalisiert die 'db'-Option. Fehlt sie oder ist sie unbrauchbar, ist
+     * SQLite (über dbPath) der Treiber – das bestehende Verhalten bleibt also
+     * unverändert, solange niemand 'db' konfiguriert.
+     *
+     * @return array<string, mixed>
+     */
+    public static function db(): array
+    {
+        $value = self::get('db');
+        if (!is_array($value)) {
+            return ['driver' => 'sqlite'];
+        }
+
+        $driver = $value['driver'] ?? 'sqlite';
+        if (!is_string($driver) || !in_array($driver, ['sqlite', 'mysql'], true)) {
+            return ['driver' => 'sqlite'];
+        }
+        if ($driver === 'sqlite') {
+            return ['driver' => 'sqlite'];
+        }
+
+        $database = $value['database'] ?? null;
+        $user = $value['user'] ?? null;
+        if (!is_string($database) || $database === '' || !is_string($user) || $user === '') {
+            // Ohne Datenbankname und Benutzer ist die Konfiguration unbrauchbar.
+            return ['driver' => 'sqlite'];
+        }
+
+        $host = $value['host'] ?? '127.0.0.1';
+        $port = $value['port'] ?? 3306;
+        $password = $value['password'] ?? '';
+        $charset = $value['charset'] ?? 'utf8mb4';
+
+        return [
+            'driver' => 'mysql',
+            'host' => is_string($host) && $host !== '' ? $host : '127.0.0.1',
+            'port' => is_numeric($port) ? (int) $port : 3306,
+            'database' => $database,
+            'user' => $user,
+            'password' => is_string($password) ? $password : '',
+            'charset' => is_string($charset) && $charset !== '' ? $charset : 'utf8mb4',
+        ];
+    }
+
+    /** Bequemer Zugriff auf den aktiven Treiber, ohne das ganze Array zu lesen. */
+    public static function dbDriver(): string
+    {
+        $driver = self::db()['driver'] ?? 'sqlite';
+
+        return is_string($driver) ? $driver : 'sqlite';
+    }
+
     /** @return list<string> */
     public static function admins(): array
     {
