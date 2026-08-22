@@ -52,8 +52,12 @@ authenticator (CDP) — nothing in the app is mocked.
 2. "Generate key & download" downloads `admin-private.pem` (a PKCS#8
    `PRIVATE KEY` PEM) and enables "Finish setup".
 3. Client-side validation: invalid price shows `invalid_price`; a too-short
-   invite shows `invalid_invite`; finishing without generating a key shows
-   "Generate the key first." — no request leaves the page in these cases.
+   invite shows `invalid_invite` — no request leaves the page in these cases.
+   Finishing without a generated key is impossible through the UI: the button
+   ships `disabled` and only a successful key generation enables it, so the
+   suite asserts exactly that guarantee (button stays disabled, zero
+   `/api/setup/init` requests). The "Generate the key first." branch in
+   `initSetup()` is unreachable defensive code.
 4. Finish setup (price 2.00 €, invite `WIZARD-INVITE`) switches to the auth
    view; `/api/setup/status` now reports `needsSetup: false`.
 5. A second `/api/setup/init` returns 409 `already_initialized`.
