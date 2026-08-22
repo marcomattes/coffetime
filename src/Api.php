@@ -17,6 +17,10 @@ final class Api
         '/api/register/verify',
         '/api/login/options',
         '/api/login/verify',
+        '/api/setup/status',
+        '/api/setup/init',
+        '/api/link/options',
+        '/api/link/verify',
     ];
 
     public static function dispatch(): void
@@ -53,7 +57,20 @@ final class Api
             '/api/coffee' => ['POST', 'coffee'],
             '/api/coffee/undo' => ['POST', 'coffeeUndo'],
             '/api/stats' => ['GET', 'stats'],
+            '/api/history' => ['GET', 'history'],
             '/api/admin/users' => ['GET', 'adminUsers'],
+            '/api/admin/payment' => ['POST', 'adminPayment'],
+            '/api/admin/link-code' => ['POST', 'adminLinkCode'],
+            '/api/link/code' => ['POST', 'linkCode'],
+            '/api/link/options' => ['POST', 'linkOptions'],
+            '/api/link/verify' => ['POST', 'linkVerify'],
+            // Ein Pfad kann in dieser Routing-Tabelle nur eine Methode
+            // tragen – GET und POST für die Einstellungen leben deshalb auf
+            // zwei Pfaden statt auf einem gemeinsamen.
+            '/api/admin/settings' => ['GET', 'adminSettingsGet'],
+            '/api/admin/settings/update' => ['POST', 'adminSettingsUpdate'],
+            '/api/setup/status' => ['GET', 'setupStatus'],
+            '/api/setup/init' => ['POST', 'setupInit'],
         ];
 
         if (!isset($routes[$path])) {
@@ -297,6 +314,150 @@ final class Api
         Http::json(['ok' => true]);
     }
 
+    // --------------------------------------------------- Geräteverknüpfung ---
+
+    /**
+     * Erzeugt einen Einmalcode, mit dem der aktuell angemeldete Benutzer ein
+     * zweites Gerät an sein eigenes Konto anhängen kann. Der Code wird der
+     * Oberfläche genau einmal gezeigt – er ist danach nirgendwo im Klartext
+     * gespeichert.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function linkCode(array $user): never
+    {
+        $result = LinkCodes::create((string) $user['id'], 'self', LinkCodes::SELF_TTL);
+        Http::json(['code' => $result['code'], 'expiresAt' => $result['expiresAt']]);
+    }
+
+    /**
+     * Erzeugt Registrierungsoptionen für ein neues Gerät auf einem
+     * BESTEHENDEN Konto. Anders als registerOptions() entsteht hier kein
+     * neuer Benutzer: das existierende user_handle wird wiederverwendet,
+     * damit der neue Passkey als weiterer Faktor desselben Kontos zählt.
+     * Öffentlich erreichbar, da das neue Gerät noch keine Sitzung hat – der
+     * Einmalcode selbst ist der Nachweis der Berechtigung.
+     */
+    private static function linkOptions(): never
+    {
+        $body = Http::body();
+        $code = Http::stringField($body, 'code');
+        if ($code === null) {
+            Http::error('invalid_code', 400);
+        }
+
+        // Nur ein Blick, kein Verbrauch: derselbe Code muss auch nach einem
+        // abgebrochenen Versuch auf dem neuen Gerät noch einmal funktionieren.
+        $row = LinkCodes::peek($code);
+        if ($row === null) {
+            Http::error('invalid_code', 400);
+        }
+
+        $userId = (string) ($row['user_id'] ?? '');
+        $user = Users::find($userId);
+        $handle = $user !== null ? (string) ($user['user_handle'] ?? '') : '';
+        $handleRaw = $handle !== '' ? Encoding::base64UrlDecode($handle) : null;
+        if ($user === null || $handleRaw === null || $handleRaw === '') {
+            Http::error('invalid_code', 400);
+        }
+
+        $options = WebAuthnService::creationOptions($handleRaw, self::userLabel($handle));
+        $payload = [
+            'userId' => $userId,
+            'code' => LinkCodes::normalize($code),
+        ];
+
+        Ceremonies::create(
+            Ceremonies::KIND_LINK,
+            Encoding::base64UrlEncode($options->challenge),
+            WebAuthnService::optionsToJson($options),
+            $payload
+        );
+
+        Http::json(WebAuthnService::optionsToArray($options));
+    }
+
+    /**
+     * Schliesst die Geräteverknüpfung ab: prüft die WebAuthn-Attestation wie
+     * registerVerify(), verbraucht aber danach den Einmalcode statt einen
+     * neuen Benutzer anzulegen. Der Code wird bewusst erst NACH erfolgreicher
+     * Attestation verbraucht – ein gescheiterter Versuch (falsches
+     * Credential, doppelte Credential-ID) darf den Code nicht verbrennen.
+     */
+    private static function linkVerify(): never
+    {
+        $body = Http::body();
+
+        $raw = self::credentialFromBody($body);
+        if ($raw === null) {
+            Http::error('invalid_credential', 400);
+        }
+        $challenge = WebAuthnService::challengeFromCredential($raw);
+        if ($challenge === null) {
+            Http::error('invalid_credential', 400);
+        }
+
+        $ceremony = Ceremonies::consume(Ceremonies::KIND_LINK, $challenge);
+        if ($ceremony === null) {
+            Http::error('challenge_invalid', 400);
+        }
+        $options = WebAuthnService::creationOptionsFromJson((string) ($ceremony['options'] ?? ''));
+        if ($options === null) {
+            Http::error('challenge_invalid', 400);
+        }
+        $payload = json_decode((string) ($ceremony['payload'] ?? '[]'), true);
+        if (!is_array($payload)) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        $userId = (string) ($payload['userId'] ?? '');
+        $storedCode = (string) ($payload['code'] ?? '');
+        if ($userId === '' || $storedCode === '') {
+            Http::error('challenge_invalid', 400);
+        }
+
+        // Der im Body mitgeschickte Code muss zu genau dem Code gehören, für
+        // den diese Ceremonie erzeugt wurde – sonst liesse sich mit einer
+        // fremden Ceremonie ein anderer Code durchschleusen.
+        $bodyCode = Http::stringField($body, 'code');
+        $normalizedBody = $bodyCode !== null ? LinkCodes::normalize($bodyCode) : '';
+        if ($normalizedBody === '' || !hash_equals($storedCode, $normalizedBody)) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        $credential = WebAuthnService::parseCredential($raw);
+        if ($credential === null) {
+            Http::error('invalid_credential', 400);
+        }
+        $record = WebAuthnService::verifyAttestation($credential, $options);
+        if ($record === null) {
+            Http::error('verification_failed', 400);
+        }
+
+        if (Credentials::exists(Encoding::base64UrlEncode($record->publicKeyCredentialId))) {
+            Http::error('credential_exists', 409);
+        }
+
+        // Der Code wird erst jetzt verbraucht: die Attestation ist geprüft,
+        // die Credential-ID ist frei – ab hier kann die Verknüpfung nicht
+        // mehr scheitern, ausser der Code wurde inzwischen anderweitig
+        // verbraucht (paralleler Versuch).
+        $linkRow = LinkCodes::consume((string) $bodyCode);
+        if ($linkRow === null) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        $user = Users::find($userId);
+        if ($user === null) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        Credentials::store($userId, $record);
+        Sessions::start($userId);
+
+        Http::json(['ok' => true, 'user' => self::meView($user)]);
+    }
+
     // ------------------------------------------------------------- Zähler ---
 
     /** @param array<string, mixed> $user */
@@ -308,8 +469,16 @@ final class Api
     /** @param array<string, mixed> $user */
     private static function coffee(array $user): never
     {
-        // Der Body wird bewusst ignoriert – der Zähler ist serverautoritativ.
-        $updated = Users::addCoffee((string) $user['id']);
+        // Der Zähler bleibt serverautoritativ – nur die optionale eventId aus
+        // dem Body wird gelesen, für die Idempotenz der Offline-Warteschlange
+        // (siehe Users::addCoffee). Fehlt sie (alte Clients), bucht wie bisher.
+        $body = Http::body();
+        $eventId = Http::stringField($body, 'eventId');
+        if ($eventId !== null && preg_match('/^[A-Za-z0-9-]{8,64}$/', $eventId) !== 1) {
+            Http::error('invalid_event', 400);
+        }
+
+        $updated = Users::addCoffee((string) $user['id'], $eventId);
         Http::json([
             'coffees' => Users::coffees($updated),
             'balanceCents' => Users::balanceCents($updated),
@@ -332,6 +501,12 @@ final class Api
         Http::json(Users::stats((string) $user['id']));
     }
 
+    /** @param array<string, mixed> $user */
+    private static function history(array $user): never
+    {
+        Http::json(Users::history((string) $user['id']));
+    }
+
     // -------------------------------------------------------------- Admin ---
 
     /** @param array<string, mixed> $user */
@@ -346,11 +521,197 @@ final class Api
     }
 
     /** @param array<string, mixed> $user */
+    private static function adminPayment(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
+            Http::error('unknown_user', 404);
+        }
+
+        // Nur echte Ganzzahlen zulassen – kein bool, kein float, kein String.
+        $amountRaw = $body['amountCents'] ?? null;
+        if (!is_int($amountRaw) || $amountRaw === 0 || $amountRaw < -1000000 || $amountRaw > 1000000) {
+            Http::error('invalid_amount', 400);
+        }
+
+        $updated = Users::addPayment($userId, $amountRaw);
+        Http::json(['ok' => true, 'user' => Users::adminView($updated)]);
+    }
+
+    /**
+     * Erzeugt einen Einmalcode, mit dem ein Admin ein neues Gerät an ein
+     * FREMDES Konto anhängen kann – der Geräteverlust-Fall. Länger gültig
+     * als der selbst erzeugte Code (ADMIN_TTL statt SELF_TTL), da der Code
+     * erst noch an den betroffenen Benutzer übermittelt werden muss.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function adminLinkCode(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
+            Http::error('unknown_user', 404);
+        }
+
+        $result = LinkCodes::create($userId, 'admin', LinkCodes::ADMIN_TTL);
+        Http::json(['code' => $result['code'], 'expiresAt' => $result['expiresAt']]);
+    }
+
+    /** @param array<string, mixed> $user */
     private static function requireAdmin(array $user): void
     {
-        if (!Config::isAdmin((string) ($user['id'] ?? ''))) {
+        // Admin ist, wer in config.php gelistet ist ODER dessen Zeile das
+        // is_admin-Flag trägt (der erste registrierte Nutzer, siehe
+        // Users::create()).
+        if (!Config::isAdmin((string) ($user['id'] ?? '')) && !Users::isAdminRow($user)) {
             Http::error('forbidden', 403);
         }
+    }
+
+    /** @param array<string, mixed> $user */
+    private static function adminSettingsGet(array $user): never
+    {
+        self::requireAdmin($user);
+        Http::json([
+            'priceCents' => Config::priceCents(),
+            'invite' => Config::invite(),
+        ]);
+    }
+
+    /**
+     * Ändert Preis und/oder Einladungscode zur Laufzeit. Bewusst OHNE
+     * Möglichkeit, adminPublicKey oder namePepper zu ändern: beides würde
+     * bereits verschlüsselte Namen unlesbar machen bzw. bestehende
+     * Namens-HMACs entwerten und so Duplikatsprüfung/Entschlüsselung für
+     * Altbestand brechen.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function adminSettingsUpdate(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $hasPrice = array_key_exists('priceCents', $body);
+        $hasInvite = array_key_exists('invite', $body);
+        if (!$hasPrice && !$hasInvite) {
+            Http::error('invalid_settings', 400);
+        }
+
+        $pairs = [];
+        if ($hasPrice) {
+            $priceRaw = $body['priceCents'];
+            if (!is_int($priceRaw) || $priceRaw < 1 || $priceRaw > 100000) {
+                Http::error('invalid_settings', 400);
+            }
+            $pairs['priceCents'] = (string) $priceRaw;
+        }
+        if ($hasInvite) {
+            $inviteRaw = $body['invite'];
+            $invite = is_string($inviteRaw) ? trim($inviteRaw) : '';
+            if (mb_strlen($invite) < 4 || mb_strlen($invite) > 64) {
+                Http::error('invalid_settings', 400);
+            }
+            $pairs['invite'] = $invite;
+        }
+
+        Settings::setMany($pairs);
+
+        Http::json([
+            'ok' => true,
+            'priceCents' => Config::priceCents(),
+            'invite' => Config::invite(),
+        ]);
+    }
+
+    // ------------------------------------------------------- Einrichtung ---
+
+    /**
+     * Ein frisches Deployment braucht keine handbearbeitete config.php mehr:
+     * ohne konfigurierten adminPublicKey und ohne Benutzer verlangt die
+     * Oberfläche den Einrichtungsassistenten statt Registrierung/Login.
+     */
+    private static function needsSetup(): bool
+    {
+        return Config::adminPublicKey() === '' && Users::count() === 0;
+    }
+
+    private static function setupStatus(): never
+    {
+        Http::json([
+            'needsSetup' => self::needsSetup(),
+            'priceCents' => Config::priceCents(),
+        ]);
+    }
+
+    /**
+     * Einmaliger Abschluss der Einrichtung: der öffentliche Admin-Schlüssel
+     * wird lokal im Browser erzeugt (der private Teil verlässt den Browser
+     * nie) und hier zusammen mit Preis und Einladungscode hinterlegt. Der
+     * erste danach registrierte Benutzer wird automatisch Admin (siehe
+     * Users::create()).
+     */
+    private static function setupInit(): never
+    {
+        if (!self::needsSetup()) {
+            Http::error('already_initialized', 409);
+        }
+
+        $body = Http::body();
+
+        $publicKey = Http::stringField($body, 'adminPublicKey');
+        if ($publicKey === null || $publicKey === '') {
+            Http::error('invalid_key', 400);
+        }
+        try {
+            // Nur zur Validierung instanziiert – der Pepper ist hier
+            // irrelevant, es geht ausschliesslich um den öffentlichen
+            // Schlüssel.
+            new Crypto($publicKey, 'probe');
+        } catch (Throwable) {
+            Http::error('invalid_key', 400);
+        }
+
+        $priceRaw = $body['priceCents'] ?? null;
+        if (!is_int($priceRaw) || $priceRaw < 1 || $priceRaw > 100000) {
+            Http::error('invalid_price', 400);
+        }
+
+        $inviteRaw = Http::stringField($body, 'invite');
+        $invite = $inviteRaw !== null ? trim($inviteRaw) : '';
+        if (mb_strlen($invite) < 4 || mb_strlen($invite) > 64) {
+            Http::error('invalid_invite', 400);
+        }
+
+        // Kleines, bewusst in Kauf genommenes Race-Fenster: zwei parallele
+        // erste Requests könnten beide bis hierher kommen, bevor einer von
+        // ihnen seine Einstellungen geschrieben hat. Der Assistent läuft
+        // genau einmal beim allerersten Deployment, nicht unter Last –
+        // ein echtes Lock lohnt den Aufwand hier nicht.
+        if (!self::needsSetup()) {
+            Http::error('already_initialized', 409);
+        }
+
+        $pairs = [
+            'adminPublicKey' => $publicKey,
+            'priceCents' => (string) $priceRaw,
+            'invite' => $invite,
+        ];
+        if (Config::namePepper() === '') {
+            // Niemals einen bereits vorhandenen Pepper überschreiben – das
+            // würde alle bestehenden Namens-HMACs entwerten.
+            $pairs['namePepper'] = bin2hex(random_bytes(32));
+        }
+
+        Settings::setMany($pairs);
+
+        Http::json(['ok' => true]);
     }
 
     // --------------------------------------------------------- Teststeuerung ---
@@ -369,6 +730,7 @@ final class Api
             '/api/test/seed' => ['POST', 'testSeed'],
             '/api/test/state' => ['GET', 'testState'],
             '/api/test/clock' => ['POST', 'testClock'],
+            '/api/test/login' => ['POST', 'testLogin'],
         ];
         if (!isset($routes[$path])) {
             Http::error('not_found', 404);
@@ -386,16 +748,30 @@ final class Api
 
     private static function testReset(): never
     {
-        Db::transaction(static function (\PDO $pdo): void {
-            foreach (['sessions', 'credentials', 'ceremonies', 'coffee_events', 'users'] as $table) {
+        $mysql = Db::driver() === 'mysql';
+
+        Db::transaction(static function (\PDO $pdo) use ($mysql): void {
+            foreach (['sessions', 'credentials', 'ceremonies', 'link_codes', 'coffee_events', 'users'] as $table) {
                 if (Db::tableExists($pdo, $table)) {
                     $pdo->exec('DELETE FROM ' . $table);
                 }
             }
-            if (Db::tableExists($pdo, 'sqlite_sequence')) {
+            // sqlite_sequence gibt es nur unter SQLite.
+            if (!$mysql && Db::tableExists($pdo, 'sqlite_sequence')) {
                 $pdo->exec('DELETE FROM sqlite_sequence');
             }
         });
+
+        if ($mysql) {
+            // ALTER TABLE committet implizit – deshalb erst nach Abschluss der
+            // Transaktion und ausserhalb davon, sonst risse es sie mitten durch.
+            $pdo = Db::pdo();
+            foreach (['users', 'credentials', 'ceremonies', 'link_codes', 'coffee_events'] as $table) {
+                if (Db::tableExists($pdo, $table)) {
+                    $pdo->exec('ALTER TABLE ' . $table . ' AUTO_INCREMENT = 1');
+                }
+            }
+        }
 
         Http::json(['ok' => true]);
     }
@@ -449,7 +825,7 @@ final class Api
                 'coffees' => Users::coffees($row),
                 'paidCents' => Users::paidCents($row),
                 'balanceCents' => Users::balanceCents($row),
-                'admin' => Config::isAdmin((string) ($row['id'] ?? '')),
+                'admin' => Config::isAdmin((string) ($row['id'] ?? '')) || Users::isAdminRow($row),
             ];
         }
 
@@ -474,6 +850,19 @@ final class Api
         Clock::setOffset((int) $offset);
 
         Http::json(['ok' => true, 'offsetSeconds' => Clock::offset(), 'now' => Clock::now()]);
+    }
+
+    /** Meldet einen Testbenutzer ohne WebAuthn-Zeremonie an – nur mit Testtoken erreichbar. */
+    private static function testLogin(): never
+    {
+        $body = Http::body();
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
+            Http::error('unknown_user', 404);
+        }
+
+        Sessions::start($userId);
+        Http::json(['ok' => true, 'userId' => $userId]);
     }
 
     // ------------------------------------------------------------- Helfer ---
@@ -528,11 +917,12 @@ final class Api
 
         return [
             'id' => $id,
-            'admin' => Config::isAdmin($id),
+            'admin' => Config::isAdmin($id) || Users::isAdminRow($user),
             'coffees' => Users::coffees($user),
             'balanceCents' => Users::balanceCents($user),
             'priceCents' => Config::priceCents(),
             'streakDays' => Users::streakDays($id),
+            'credentials' => Credentials::countForUser($id),
         ];
     }
 

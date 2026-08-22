@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmitOnError": true,
+    "rootDir": "frontend",
+    "outDir": "public",
+    "removeComments": false
+  },
+  "files": ["frontend/app.ts"]
+}

@@ -52,18 +52,35 @@ final class Users
         int $coffees = 0,
         int $paidCents = 0
     ): array {
-        $id = Db::transaction(static function (PDO $pdo) use ($nameEncrypted, $nameHash, $userHandle, $coffees, $paidCents): string {
+        // Seed-/Altbestandssemantik: geerbte Kaffees werden zum aktuell
+        // konfigurierten Preis bewertet, da es für sie keine Einzelereignisse
+        // (und damit keine Einzelpreise) gibt.
+        $coffees = max(0, $coffees);
+        $tabCents = $coffees * Config::priceCents();
+
+        $id = Db::transaction(static function (PDO $pdo) use ($nameEncrypted, $nameHash, $userHandle, $coffees, $paidCents, $tabCents): string {
+            // Der allererste Benutzer einer Installation wird automatisch
+            // Admin – ohne diesen Schritt gäbe es nach dem Einrichtungs-
+            // assistenten (keine adminPublicKey/admins mehr in config.php)
+            // niemanden, der Preis oder Einladungscode ändern könnte. Die
+            // Zählung läuft in derselben Transaktion wie das INSERT, damit
+            // kein gleichzeitiger zweiter erster Benutzer entstehen kann.
+            $countBefore = Db::fetchValue('SELECT COUNT(*) AS total FROM users', [], $pdo);
+            $isFirstUser = is_numeric($countBefore) && (int) $countBefore === 0;
+
             $statement = $pdo->prepare(
-                'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, created_at)
-                 VALUES (NULL, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, tab_cents, created_at, is_admin)
+                 VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
             $statement->execute([
                 $nameEncrypted,
                 $nameHash,
                 $userHandle,
-                max(0, $coffees),
+                $coffees,
                 max(0, $paidCents),
+                $tabCents,
                 Clock::now(),
+                $isFirstUser ? 1 : 0,
             ]);
 
             return (string) $pdo->lastInsertId();
@@ -71,37 +88,114 @@ final class Users
 
         $row = self::find($id);
 
-        return $row ?? ['id' => $id, 'coffees' => $coffees, 'paid_cents' => $paidCents];
+        return $row ?? ['id' => $id, 'coffees' => $coffees, 'paid_cents' => $paidCents, 'tab_cents' => $tabCents];
     }
 
-    /** @return array<string, mixed> */
-    public static function addCoffee(string $id): array
+    /**
+     * Bucht einen Kaffee zum aktuell konfigurierten Preis. Der Preis wird
+     * einmal zu Beginn gelesen und sowohl in tab_cents als auch am
+     * Ereignis selbst festgeschrieben – spätere Preisänderungen wirken sich
+     * damit nie rückwirkend auf schon gebuchte Kaffees aus.
+     *
+     * $clientEventId trägt die Offline-Warteschlange ab: der Client vergibt
+     * die ID vor dem Absenden und kann dieselbe Buchung beliebig oft
+     * wiederholen (schlechtes WLAN, doppelte Zustellung), ohne doppelt zu
+     * buchen. Eine bereits bekannte ID liefert unverändert den aktuellen
+     * Stand zurück – kein Zähler-Inkrement, kein neues Ereignis.
+     *
+     * @return array<string, mixed>
+     */
+    public static function addCoffee(string $id, ?string $clientEventId = null): array
     {
-        return Db::transaction(static function (PDO $pdo) use ($id): array {
-            $statement = $pdo->prepare('UPDATE users SET coffees = coffees + 1 WHERE id = ?');
-            $statement->execute([(int) $id]);
-            // Ereignis für die Serienanzeige – ein Datensatz je gebuchtem Kaffee.
-            $event = $pdo->prepare('INSERT INTO coffee_events (user_id, created_at) VALUES (?, ?)');
-            $event->execute([(int) $id, Clock::now()]);
+        $price = Config::priceCents();
+
+        return Db::transaction(static function (PDO $pdo) use ($id, $price, $clientEventId): array {
+            if ($clientEventId !== null) {
+                $existing = Db::fetchRow(
+                    'SELECT 1 FROM coffee_events WHERE client_event_id = ?',
+                    [$clientEventId],
+                    $pdo
+                );
+                if ($existing !== null) {
+                    // Wiederholte Zustellung derselben Buchung: unverändert
+                    // den aktuellen Stand zurückgeben, nichts erneut buchen.
+                    return self::rowInTransaction($pdo, $id);
+                }
+            }
+
+            $statement = $pdo->prepare(
+                'UPDATE users SET coffees = coffees + 1, tab_cents = tab_cents + ? WHERE id = ?'
+            );
+            $statement->execute([$price, (int) $id]);
+            // Ereignis für die Serienanzeige und den Preis dieser Buchung –
+            // ein Datensatz je gebuchtem Kaffee.
+            $event = $pdo->prepare(
+                'INSERT INTO coffee_events (user_id, created_at, price_cents, client_event_id) VALUES (?, ?, ?, ?)'
+            );
+            $event->execute([(int) $id, Clock::now(), $price, $clientEventId]);
 
             return self::rowInTransaction($pdo, $id);
         });
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Bucht eine Zahlung. Additiv und atomar, niemals negativ – zu grosse
+     * negative Beträge werden bei Null gekappt statt den Zähler zu unterlaufen.
+     *
+     * @return array<string, mixed>
+     */
+    public static function addPayment(string $id, int $amountCents): array
+    {
+        return Db::transaction(static function (PDO $pdo) use ($id, $amountCents): array {
+            // Portabel statt MAX(0, ...): MySQL/MariaDB kennt MAX() nur als
+            // Aggregatfunktion, nicht als Zwei-Argumente-Skalarfunktion.
+            $statement = $pdo->prepare(
+                'UPDATE users SET paid_cents = CASE WHEN paid_cents + ? < 0 THEN 0 ELSE paid_cents + ? END WHERE id = ?'
+            );
+            $statement->execute([$amountCents, $amountCents, (int) $id]);
+
+            return self::rowInTransaction($pdo, $id);
+        });
+    }
+
+    /**
+     * Macht die letzte Buchung rückgängig – sowohl den Zähler als auch den
+     * dafür verbuchten Preis. Der Preis kommt aus dem zuletzt gebuchten
+     * Ereignis, nicht aus der aktuellen Konfiguration: nur so bleibt eine
+     * zwischenzeitliche Preisänderung ohne rückwirkenden Effekt. Fehlt ein
+     * Ereignis (Altbestand vor Schema v5), wird ersatzweise der aktuell
+     * konfigurierte Preis abgezogen.
+     *
+     * @return array<string, mixed>
+     */
     public static function undoCoffee(string $id): array
     {
-        return Db::transaction(static function (PDO $pdo) use ($id): array {
+        $fallbackPrice = Config::priceCents();
+
+        return Db::transaction(static function (PDO $pdo) use ($id, $fallbackPrice): array {
             // Stoppt bei null, wird niemals negativ.
             $statement = $pdo->prepare('UPDATE users SET coffees = coffees - 1 WHERE id = ? AND coffees > 0');
             $statement->execute([(int) $id]);
             if ($statement->rowCount() > 0) {
-                // Nur das zuletzt gebuchte Ereignis zurücknehmen, nicht irgendeins.
+                // Nur das zuletzt gebuchte Ereignis zurücknehmen, nicht irgendeins –
+                // und dessen Preis vor dem Löschen auslesen.
+                $event = Db::fetchRow(
+                    'SELECT id, price_cents FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+                    [(int) $id],
+                    $pdo
+                );
+                $refund = $event !== null && isset($event['price_cents']) && is_numeric($event['price_cents'])
+                    ? (int) $event['price_cents']
+                    : $fallbackPrice;
+
+                if ($event !== null) {
+                    $pdo->prepare('DELETE FROM coffee_events WHERE id = ?')->execute([$event['id']]);
+                }
+
+                // Portabel statt MAX(0, ...), analog zu addPayment: nie negativ.
                 $pdo->prepare(
-                    'DELETE FROM coffee_events WHERE id = (
-                        SELECT id FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1
-                    )'
-                )->execute([(int) $id]);
+                    'UPDATE users SET tab_cents = CASE WHEN tab_cents - ? < 0 THEN 0 ELSE tab_cents - ? END WHERE id = ?'
+                )->execute([$refund, $refund, (int) $id]);
             }
 
             return self::rowInTransaction($pdo, $id);
@@ -115,8 +209,9 @@ final class Users
      */
     public static function streakDays(string $id): int
     {
+        $dayExpr = Db::dayExpr('created_at');
         $rows = Db::fetchRows(
-            "SELECT DISTINCT date(created_at, 'unixepoch') AS day FROM coffee_events WHERE user_id = ?",
+            "SELECT DISTINCT {$dayExpr} AS day FROM coffee_events WHERE user_id = ?",
             [(int) $id]
         );
         $days = [];
@@ -140,6 +235,42 @@ final class Users
         }
 
         return $streak;
+    }
+
+    /**
+     * Kaffeeverlauf der letzten $days Kalendertage (inklusive heute), tagweise
+     * gezählt. Fehlende Tage werden mit 0 aufgefüllt, aufsteigend sortiert.
+     *
+     * @return array{today: int, days: list<array{date: string, coffees: int}>}
+     */
+    public static function history(string $id, int $days = 28): array
+    {
+        $now = Clock::now();
+        $cutoff = $now - $days * 86400;
+
+        $dayExpr = Db::dayExpr('created_at');
+        $rows = Db::fetchRows(
+            "SELECT {$dayExpr} AS day, COUNT(*) AS n
+             FROM coffee_events WHERE user_id = ? AND created_at >= ? GROUP BY day",
+            [(int) $id, $cutoff]
+        );
+        $counts = [];
+        foreach ($rows as $row) {
+            if (isset($row['day']) && is_string($row['day']) && $row['day'] !== '') {
+                $counts[$row['day']] = isset($row['n']) && is_numeric($row['n']) ? (int) $row['n'] : 0;
+            }
+        }
+
+        $out = [];
+        for ($offset = $days - 1; $offset >= 0; $offset--) {
+            $day = gmdate('Y-m-d', $now - $offset * 86400);
+            $out[] = ['date' => $day, 'coffees' => $counts[$day] ?? 0];
+        }
+
+        return [
+            'today' => $counts[gmdate('Y-m-d', $now)] ?? 0,
+            'days' => $out,
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -173,13 +304,21 @@ final class Users
         return isset($row['paid_cents']) && is_numeric($row['paid_cents']) ? (int) $row['paid_cents'] : 0;
     }
 
+    /** Summe der Preise aller gebuchten Kaffees, zum jeweiligen Buchungspreis. */
+    public static function tabCents(array $row): int
+    {
+        return isset($row['tab_cents']) && is_numeric($row['tab_cents']) ? (int) $row['tab_cents'] : 0;
+    }
+
     /**
-     * balanceCents = coffees × priceCents − paidCents.
-     * Der Preis kommt immer aus der Konfiguration.
+     * balanceCents = tabCents − paidCents.
+     * tabCents summiert die Preise der einzelnen Buchungen zum jeweiligen
+     * Buchungszeitpunkt – eine spätere Preisänderung bewertet keine bereits
+     * gebuchten Kaffees neu.
      */
     public static function balanceCents(array $row): int
     {
-        return self::coffees($row) * Config::priceCents() - self::paidCents($row);
+        return self::tabCents($row) - self::paidCents($row);
     }
 
     /** @return array<string, mixed> */
@@ -191,6 +330,7 @@ final class Users
             'id' => (string) ($row['id'] ?? ''),
             'nameEncrypted' => is_string($encrypted) ? $encrypted : '',
             'coffees' => self::coffees($row),
+            'paidCents' => self::paidCents($row),
             'balanceCents' => self::balanceCents($row),
         ];
     }
@@ -235,6 +375,20 @@ final class Users
             'rank' => $rank,
             'distribution' => $distribution,
         ];
+    }
+
+    /**
+     * Prüft das is_admin-Flag auf einer bereits geladenen Nutzerzeile – ohne
+     * zusätzliche Datenbankabfrage. Ergänzt Config::isAdmin() (statische
+     * Liste aus config.php); Aufrufer kombinieren i. d. R. beides.
+     *
+     * @param array<string, mixed> $row
+     */
+    public static function isAdminRow(array $row): bool
+    {
+        $value = $row['is_admin'] ?? 0;
+
+        return is_numeric($value) && (int) $value === 1;
     }
 
     public static function isValidId(string $id): bool
