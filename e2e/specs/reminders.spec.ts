@@ -46,6 +46,16 @@ async function loginContext(userId: string): Promise<APIRequestContext> {
   return ctx;
 }
 
+/*
+ * The default Chromium for headless runs is chrome-headless-shell, which has
+ * no Notifications API at all: `Notification.permission` is stuck on 'denied'
+ * there, even after grantPermissions(). This file is the only one that needs
+ * that API, so it asks for the full Chrome-for-Testing build instead (a new
+ * browser is launched for this file only). A local run whose config pins
+ * launchOptions.executablePath keeps that binary — see playwright.config.ts.
+ */
+test.use({ channel: 'chromium' });
+
 test.describe('reminders', () => {
   test.beforeEach(async ({ testApi }) => {
     await testApi.reset();

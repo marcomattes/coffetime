@@ -188,7 +188,10 @@ authenticator (CDP) — nothing in the app is mocked.
    `registration.getNotifications()` tags) and acknowledges them, after which
    `/api/reminders` reports nothing due. Date-dependent tests pin the server
    clock via `TestApi.clock()` and create sessions only after the jump
-   (sessions idle out after 30 days).
+   (sessions idle out after 30 days). This file pins `channel: 'chromium'`:
+   the default headless browser (chrome-headless-shell) has no Notifications
+   API, so `Notification.permission` reads 'denied' there even after
+   `grantPermissions()`.
 
 ## Conventions for implementers
 
