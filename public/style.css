@@ -397,6 +397,41 @@ input {
   overflow-wrap: anywhere;
 }
 
+/* ---------------------------------------------------------- Link codes -- */
+
+.link-code {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  background: var(--line);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  margin: 4px 0 10px;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.row-recovery {
+  display: block;
+  margin: 6px 0 0;
+}
+
+/* -------------------------------------------------------- Admin settings -- */
+
+.settings-form {
+  margin: 0;
+}
+
+.settings-btn {
+  width: auto;
+  display: inline-block;
+  min-height: 40px;
+  padding: 8px 14px;
+  margin: 4px 0 0;
+}
+
 @media (min-width: 700px) {
   .wrap {
     padding: 24px 16px 40px;

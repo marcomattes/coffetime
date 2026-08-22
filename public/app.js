@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var state = { me: null, users: [], pendingBook: false, adminKey: null };
+  var state = { me: null, users: [], pendingBook: false, adminKey: null, setupPublicKey: null };
 
   function el(id) {
     return document.getElementById(id);
@@ -237,12 +237,17 @@
   /* --------------------------------------------------------- Ansichten -- */
 
   function show(view) {
+    el('view-setup').hidden = view !== 'setup';
     el('view-auth').hidden = view !== 'auth';
     el('view-app').hidden = view !== 'app';
     el('view-admin').hidden = !(view === 'app' && state.me && state.me.admin === true);
   }
 
   function renderMe(me) {
+    // addCoffee()/undoCoffee() rebuild `me` from a smaller response and do
+    // not know the current passkey count – fall back to the previous value
+    // instead of flashing the device count to 0 in that case.
+    var previousCredentials = state.me ? state.me.credentials : undefined;
     state.me = me;
     text(el('counter'), String(me.coffees));
     text(el('balance'), money(me.balanceCents));
@@ -253,6 +258,12 @@
       var streak = typeof me.streakDays === 'number' ? me.streakDays : 0;
       streakNode.hidden = streak < 2;
       text(streakNode, '🔥 ' + streak + ' days in a row');
+    }
+
+    var credentials = typeof me.credentials === 'number' ? me.credentials : previousCredentials;
+    if (typeof credentials === 'number') {
+      state.me.credentials = credentials;
+      text(el('device-count'), credentials + (credentials === 1 ? ' passkey' : ' passkeys'));
     }
 
     updateBadge(me.balanceCents);
@@ -374,6 +385,17 @@
     );
   }
 
+  function renderAdminSettings(settings) {
+    var priceInput = el('admin-price-input');
+    var inviteInput = el('admin-invite-input');
+    if (priceInput && settings && typeof settings.priceCents === 'number') {
+      priceInput.value = (settings.priceCents / 100).toFixed(2);
+    }
+    if (inviteInput && settings && typeof settings.invite === 'string') {
+      inviteInput.value = settings.invite;
+    }
+  }
+
   function renderAdmin(users) {
     state.users = users || [];
     renderAdminTotals(state.users);
@@ -441,14 +463,47 @@
         recordPayment(user, input, payButton);
       });
 
+      var recoveryButton = document.createElement('button');
+      recoveryButton.type = 'button';
+      recoveryButton.className = 'btn btn-quiet row-payment-btn';
+      recoveryButton.textContent = 'Recovery code';
+      recoveryButton.setAttribute('data-testid', 'admin-recovery-btn');
+
+      var recoveryCode = document.createElement('span');
+      recoveryCode.className = 'hint row-recovery';
+      recoveryCode.setAttribute('data-testid', 'admin-recovery-code');
+      recoveryCode.hidden = true;
+
+      recoveryButton.addEventListener('click', function () {
+        requestRecoveryCode(user, recoveryButton, recoveryCode);
+      });
+
       form.appendChild(input);
       form.appendChild(payButton);
+      form.appendChild(recoveryButton);
 
       row.appendChild(head);
       row.appendChild(cipher);
       row.appendChild(form);
+      row.appendChild(recoveryCode);
       container.appendChild(row);
     });
+  }
+
+  function requestRecoveryCode(user, button, node) {
+    busy(button, true);
+    api('/api/admin/link-code', { userId: user.id })
+      .then(function (data) {
+        text(node, 'Code ' + data.code + ' — valid 60 min');
+        node.hidden = false;
+      })
+      .catch(function (error) {
+        text(node, error && error.code ? error.code : 'unknown_error');
+        node.hidden = false;
+      })
+      .then(function () {
+        busy(button, false);
+      });
   }
 
   function recordPayment(user, input, button) {
@@ -476,6 +531,41 @@
           }
         }
         renderAdmin(state.users);
+      })
+      .catch(function (error) {
+        fail(statusNode, error);
+      })
+      .then(function () {
+        busy(button, false);
+      });
+  }
+
+  function saveAdminSettings() {
+    var button = el('btn-admin-settings');
+    var statusNode = el('admin-settings-status');
+    text(statusNode, '');
+
+    var priceValue = parseFloat(el('admin-price-input').value);
+    if (!isFinite(priceValue) || priceValue <= 0 || priceValue > 1000) {
+      text(statusNode, 'invalid_settings');
+      return;
+    }
+    var priceCents = Math.round(priceValue * 100);
+
+    var inviteRaw = el('admin-invite-input').value;
+    var invite = typeof inviteRaw === 'string' ? inviteRaw.trim() : '';
+    if (invite.length < 4 || invite.length > 64) {
+      text(statusNode, 'invalid_settings');
+      return;
+    }
+
+    busy(button, true);
+    api('/api/admin/settings/update', { priceCents: priceCents, invite: invite })
+      .then(function () {
+        return refresh();
+      })
+      .then(function () {
+        text(statusNode, 'Saved. New bookings use the new price; existing tabs are unchanged.');
       })
       .catch(function (error) {
         fail(statusNode, error);
@@ -517,6 +607,33 @@
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  }
+
+  function downloadTextFile(content, filename) {
+    var blob = new Blob([content], { type: 'application/x-pem-file;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  /* DER (ArrayBuffer) -> PEM text, wrapped at 64 base64 characters per line. */
+  function toPem(buffer, label) {
+    var bytes = new Uint8Array(buffer);
+    var binary = '';
+    for (var i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    var base64 = btoa(binary);
+    var lines = [];
+    for (var j = 0; j < base64.length; j += 64) {
+      lines.push(base64.slice(j, j + 64));
+    }
+    return '-----BEGIN ' + label + '-----\n' + lines.join('\n') + '\n-----END ' + label + '-----\n';
   }
 
   function pemBytes(pem) {
@@ -583,6 +700,11 @@
               .then(function (data) {
                 renderAdmin(data.users);
               })
+              .catch(function () {})
+          );
+          jobs.push(
+            api('/api/admin/settings')
+              .then(renderAdminSettings)
               .catch(function () {})
           );
         }
@@ -760,6 +882,140 @@
       });
   }
 
+  function linkDevice() {
+    var button = el('btn-link-device');
+    var errorNode = el('auth-error');
+    text(errorNode, '');
+    if (!window.PublicKeyCredential) {
+      text(errorNode, 'passkeys_unavailable');
+      return;
+    }
+    var code = el('link-code-input').value;
+    busy(button, true);
+    api('/api/link/options', { code: code })
+      .then(function (options) {
+        return navigator.credentials.create({ publicKey: creationOptions(options) });
+      })
+      .then(function (credential) {
+        if (!credential) {
+          throw new Error('cancelled');
+        }
+        return api('/api/link/verify', { code: code, credential: serializeAttestation(credential) });
+      })
+      .then(function () {
+        el('link-code-input').value = '';
+        return refresh();
+      })
+      .catch(function (error) {
+        fail(errorNode, error);
+      })
+      .then(function () {
+        busy(button, false);
+      });
+  }
+
+  function linkCode() {
+    var button = el('btn-link-code');
+    var errorNode = el('link-code-error');
+    var display = el('link-code-display');
+    var hint = el('link-code-hint');
+    text(errorNode, '');
+    busy(button, true);
+    api('/api/link/code', {})
+      .then(function (data) {
+        text(display, data.code);
+        display.hidden = false;
+        hint.hidden = false;
+      })
+      .catch(function (error) {
+        fail(errorNode, error);
+      })
+      .then(function () {
+        busy(button, false);
+      });
+  }
+
+  function generateSetupKey() {
+    var button = el('btn-setup-generate');
+    var initButton = el('btn-setup-init');
+    var status = el('setup-status');
+    text(status, '');
+    if (!window.crypto || !crypto.subtle || typeof crypto.subtle.generateKey !== 'function') {
+      text(status, 'Setup needs a modern browser with Web Crypto support.');
+      return;
+    }
+    busy(button, true);
+    crypto.subtle.generateKey(
+      { name: 'RSA-OAEP', modulusLength: 4096, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-1' },
+      true,
+      ['encrypt', 'decrypt']
+    )
+      .then(function (pair) {
+        return Promise.all([
+          crypto.subtle.exportKey('pkcs8', pair.privateKey),
+          crypto.subtle.exportKey('spki', pair.publicKey)
+        ]);
+      })
+      .then(function (exported) {
+        var privatePem = toPem(exported[0], 'PRIVATE KEY');
+        var publicPem = toPem(exported[1], 'PUBLIC KEY');
+        state.setupPublicKey = publicPem;
+        downloadTextFile(privatePem, 'admin-private.pem');
+        text(
+          status,
+          'Key file downloaded. Store it safely — without it, names can never be ' +
+            'decrypted. It is never uploaded.'
+        );
+        if (initButton) {
+          initButton.disabled = false;
+        }
+      })
+      .catch(function () {
+        state.setupPublicKey = null;
+        text(status, 'Could not generate the key pair in this browser.');
+      })
+      .then(function () {
+        busy(button, false);
+      });
+  }
+
+  function initSetup() {
+    var button = el('btn-setup-init');
+    var status = el('setup-status');
+
+    var priceValue = parseFloat(el('setup-price').value);
+    if (!isFinite(priceValue) || priceValue <= 0 || priceValue > 1000) {
+      text(status, 'invalid_price');
+      return;
+    }
+    var priceCents = Math.round(priceValue * 100);
+
+    var inviteRaw = el('setup-invite').value;
+    var invite = typeof inviteRaw === 'string' ? inviteRaw.trim() : '';
+    if (invite.length < 4 || invite.length > 64) {
+      text(status, 'invalid_invite');
+      return;
+    }
+
+    if (!state.setupPublicKey) {
+      text(status, 'Generate the key first.');
+      return;
+    }
+
+    busy(button, true);
+    api('/api/setup/init', { adminPublicKey: state.setupPublicKey, priceCents: priceCents, invite: invite })
+      .then(function () {
+        text(status, 'Setup complete — register the first account below; it becomes the administrator.');
+        show('auth');
+      })
+      .catch(function (error) {
+        text(status, error && error.code ? error.code : 'unknown_error');
+      })
+      .then(function () {
+        busy(button, false);
+      });
+  }
+
   function addCoffee() {
     var button = el('btn-add');
     var eventId = newEventId();
@@ -908,21 +1164,41 @@
   function ready() {
     el('btn-register').addEventListener('click', register);
     el('btn-login').addEventListener('click', login);
+    el('btn-link-device').addEventListener('click', linkDevice);
+    el('btn-link-code').addEventListener('click', linkCode);
+    el('btn-setup-generate').addEventListener('click', generateSetupKey);
+    el('btn-setup-init').addEventListener('click', initSetup);
     el('btn-add').addEventListener('click', addCoffee);
     el('btn-undo').addEventListener('click', undoCoffee);
     el('btn-logout').addEventListener('click', logout);
     el('private-key-input').addEventListener('change', selectPrivateKey);
     el('btn-admin-csv').addEventListener('click', exportAdminCsv);
+    el('btn-admin-settings').addEventListener('click', saveAdminSettings);
     checkPendingBook();
     registerServiceWorker();
     updateQueueHint();
     window.addEventListener('online', function () {
       flushQueue();
     });
-    show('auth');
-    refresh().then(function () {
-      return flushQueue();
-    });
+
+    function startNormalFlow() {
+      show('auth');
+      return refresh().then(function () {
+        return flushQueue();
+      });
+    }
+
+    api('/api/setup/status')
+      .then(function (status) {
+        if (status && status.needsSetup) {
+          show('setup');
+          return undefined;
+        }
+        return startNormalFlow();
+      })
+      .catch(function () {
+        return startNormalFlow();
+      });
   }
 
   if (document.readyState === 'loading') {

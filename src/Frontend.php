@@ -34,6 +34,32 @@ final class Frontend
 <body>
 <main class="wrap">
 
+  <section id="view-setup" data-testid="view-setup" hidden>
+    <h1 class="brand"><span aria-hidden="true">&#9749;</span> Coffee Time</h1>
+    <p class="lead">First-run setup &ndash; this instance has no administrator yet.</p>
+
+    <div class="card">
+      <h2>Administrator setup</h2>
+      <p class="hint">This runs once. A key pair is generated in this browser: the public
+        key is sent to the server, the private key stays on this device and is required to
+        decrypt names later.</p>
+      <div class="field">
+        <label for="setup-price">Price per coffee (&euro;)</label>
+        <input type="number" id="setup-price" data-testid="setup-price"
+               step="0.01" min="0.01" inputmode="decimal" value="1.50">
+      </div>
+      <div class="field">
+        <label for="setup-invite">Invite code</label>
+        <input type="text" id="setup-invite" data-testid="setup-invite"
+               autocomplete="off" spellcheck="false" minlength="4" maxlength="64">
+        <p class="hint">4 to 64 characters. Anyone with this code can register.</p>
+      </div>
+      <button type="button" id="btn-setup-generate" data-testid="btn-setup-generate" class="btn">Generate key &amp; download</button>
+      <p id="setup-status" data-testid="setup-status" class="hint" role="status"></p>
+      <button type="button" id="btn-setup-init" data-testid="btn-setup-init" class="btn btn-primary" disabled>Finish setup</button>
+    </div>
+  </section>
+
   <section id="view-auth" data-testid="view-auth" hidden>
     <h1 class="brand"><span aria-hidden="true">&#9749;</span> Coffee Time</h1>
     <p class="lead">Sign in with a passkey &ndash; no username or password.</p>
@@ -64,6 +90,18 @@ final class Frontend
       </div>
       <button type="button" id="btn-register" data-testid="btn-register" class="btn">Create passkey</button>
       <p class="hint">Your name is encrypted and is never stored as plaintext.</p>
+    </div>
+
+    <div class="card">
+      <h2>Link this device</h2>
+      <p class="hint">Already have an account? Generate a code on your signed-in device and
+        enter it here to add this device to your account.</p>
+      <div class="field">
+        <label for="link-code-input">Code</label>
+        <input type="text" id="link-code-input" data-testid="link-code-input"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <button type="button" id="btn-link-device" data-testid="btn-link-device" class="btn btn-quiet">Link with code</button>
     </div>
 
     <p id="auth-error" data-testid="auth-error" class="error" role="alert"></p>
@@ -115,11 +153,38 @@ final class Frontend
       <ol id="distribution" class="dist"></ol>
     </div>
 
+    <div class="card">
+      <h2>Devices</h2>
+      <p id="device-count" data-testid="device-count" class="hint"></p>
+      <button type="button" id="btn-link-code" data-testid="btn-link-code" class="btn btn-quiet">Link another device</button>
+      <p id="link-code-display" data-testid="link-code-display" class="link-code" hidden></p>
+      <p id="link-code-hint" class="hint" hidden>Enter this code on the new device under &ldquo;Link this device&rdquo;. Valid for 15 minutes.</p>
+      <p id="link-code-error" data-testid="link-code-error" class="error" role="alert"></p>
+    </div>
+
     <p id="app-error" class="error" role="alert"></p>
     <button type="button" id="btn-logout" data-testid="btn-logout" class="btn btn-quiet">Sign out</button>
   </section>
 
   <section id="view-admin" data-testid="view-admin" hidden>
+    <div class="card">
+      <h2>Settings</h2>
+      <div class="settings-form">
+        <div class="field">
+          <label for="admin-price-input">Price per coffee (&euro;)</label>
+          <input type="number" id="admin-price-input" data-testid="admin-price-input"
+                 step="0.01" min="0.01" inputmode="decimal">
+        </div>
+        <div class="field">
+          <label for="admin-invite-input">Invite code</label>
+          <input type="text" id="admin-invite-input" data-testid="admin-invite-input"
+                 autocomplete="off" spellcheck="false" minlength="4" maxlength="64">
+        </div>
+        <button type="button" id="btn-admin-settings" data-testid="btn-admin-settings" class="btn settings-btn">Save settings</button>
+      </div>
+      <p id="admin-settings-status" data-testid="admin-settings-status" class="hint" role="status"></p>
+    </div>
+
     <div class="card">
       <h2>Administration</h2>
       <p class="hint">Select the RSA private-key PEM file. Decryption happens only in this browser;

@@ -1,7 +1,7 @@
 /* Coffee Time service worker: cache the static shell, never the API. */
 'use strict';
 
-var CACHE = 'kaffeeliste-v2';
+var CACHE = 'kaffeeliste-v3';
 var SHELL = [
   '/',
   '/style.css',
