@@ -74,6 +74,7 @@ final class Frontend
       <p class="tally-label">My coffees</p>
       <p id="counter" data-testid="counter" class="tally-count">0</p>
       <p id="streak" data-testid="streak" class="hint" hidden></p>
+      <p id="queue-hint" data-testid="queue-hint" class="hint" hidden></p>
       <button type="button" id="btn-add" data-testid="btn-add" class="btn btn-add">
         <span aria-hidden="true">&#9749;</span> Take a coffee
       </button>

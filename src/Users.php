@@ -97,13 +97,32 @@ final class Users
      * Ereignis selbst festgeschrieben – spätere Preisänderungen wirken sich
      * damit nie rückwirkend auf schon gebuchte Kaffees aus.
      *
+     * $clientEventId trägt die Offline-Warteschlange ab: der Client vergibt
+     * die ID vor dem Absenden und kann dieselbe Buchung beliebig oft
+     * wiederholen (schlechtes WLAN, doppelte Zustellung), ohne doppelt zu
+     * buchen. Eine bereits bekannte ID liefert unverändert den aktuellen
+     * Stand zurück – kein Zähler-Inkrement, kein neues Ereignis.
+     *
      * @return array<string, mixed>
      */
-    public static function addCoffee(string $id): array
+    public static function addCoffee(string $id, ?string $clientEventId = null): array
     {
         $price = Config::priceCents();
 
-        return Db::transaction(static function (PDO $pdo) use ($id, $price): array {
+        return Db::transaction(static function (PDO $pdo) use ($id, $price, $clientEventId): array {
+            if ($clientEventId !== null) {
+                $existing = Db::fetchRow(
+                    'SELECT 1 FROM coffee_events WHERE client_event_id = ?',
+                    [$clientEventId],
+                    $pdo
+                );
+                if ($existing !== null) {
+                    // Wiederholte Zustellung derselben Buchung: unverändert
+                    // den aktuellen Stand zurückgeben, nichts erneut buchen.
+                    return self::rowInTransaction($pdo, $id);
+                }
+            }
+
             $statement = $pdo->prepare(
                 'UPDATE users SET coffees = coffees + 1, tab_cents = tab_cents + ? WHERE id = ?'
             );
@@ -111,9 +130,9 @@ final class Users
             // Ereignis für die Serienanzeige und den Preis dieser Buchung –
             // ein Datensatz je gebuchtem Kaffee.
             $event = $pdo->prepare(
-                'INSERT INTO coffee_events (user_id, created_at, price_cents) VALUES (?, ?, ?)'
+                'INSERT INTO coffee_events (user_id, created_at, price_cents, client_event_id) VALUES (?, ?, ?, ?)'
             );
-            $event->execute([(int) $id, Clock::now(), $price]);
+            $event->execute([(int) $id, Clock::now(), $price, $clientEventId]);
 
             return self::rowInTransaction($pdo, $id);
         });

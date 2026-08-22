@@ -77,6 +77,163 @@
     });
   }
 
+  /* ---------------------------------------------------- Offline queue --- */
+
+  /*
+   * Coffee kitchens have bad wifi: a booking made while offline must not be
+   * lost. Every booking attempt carries a client-generated id; if the
+   * network request fails outright (not an HTTP error, a fetch rejection),
+   * the id is queued in localStorage and retried later with that SAME id,
+   * so the server-side idempotency check (see Users::addCoffee) collapses
+   * any retries into the single original booking.
+   */
+
+  var QUEUE_KEY = 'coffeeQueue';
+  var QUEUE_MAX = 50;
+
+  function newEventId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+    return randomHexId();
+  }
+
+  function randomHexId() {
+    var bytes = new Uint8Array(16);
+    if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+      window.crypto.getRandomValues(bytes);
+    } else {
+      for (var i = 0; i < bytes.length; i++) {
+        bytes[i] = Math.floor(Math.random() * 256);
+      }
+    }
+    var hex = '';
+    for (var j = 0; j < bytes.length; j++) {
+      var piece = bytes[j].toString(16);
+      hex += piece.length === 1 ? '0' + piece : piece;
+    }
+    return hex;
+  }
+
+  /* A network-level failure (fetch rejected) never sets .status; an HTTP
+     error response (401, 4xx, 5xx) always does, via api() above. */
+  function isNetworkError(error) {
+    return !!error && typeof error.status === 'undefined';
+  }
+
+  function isQueueEntry(value) {
+    return !!value && typeof value.id === 'string' && value.id !== '';
+  }
+
+  /* Storage may be unavailable (private browsing, cleared site data, quota) –
+     every read and write is wrapped so the app still works, just without a
+     persistent queue in that case. */
+  function loadQueue() {
+    var queue = [];
+    try {
+      var raw = window.localStorage.getItem(QUEUE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (Object.prototype.toString.call(parsed) === '[object Array]') {
+          for (var i = 0; i < parsed.length; i++) {
+            if (isQueueEntry(parsed[i])) {
+              queue.push({
+                id: parsed[i].id,
+                at: typeof parsed[i].at === 'number' ? parsed[i].at : Date.now()
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      queue = [];
+    }
+    return queue;
+  }
+
+  function saveQueue(queue) {
+    try {
+      window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+    } catch (e) {
+      /* Cannot persist (storage unavailable or full) – the in-memory queue
+         used for this call still gets its turn; it just will not survive
+         a reload. */
+    }
+  }
+
+  function updateQueueHint(queue) {
+    var hint = el('queue-hint');
+    if (!hint) {
+      return;
+    }
+    var list = queue || loadQueue();
+    if (list.length === 0) {
+      hint.hidden = true;
+      text(hint, '');
+      return;
+    }
+    hint.hidden = false;
+    text(
+      hint,
+      list.length + (list.length === 1 ? ' booking' : ' bookings') +
+        ' waiting for connection — they sync automatically.'
+    );
+  }
+
+  /* Returns false (and queues nothing) once QUEUE_MAX is reached – the
+     caller shows an error instead of silently dropping the tap. */
+  function enqueueBooking(id) {
+    var queue = loadQueue();
+    if (queue.length >= QUEUE_MAX) {
+      return false;
+    }
+    queue.push({ id: id, at: Date.now() });
+    saveQueue(queue);
+    updateQueueHint(queue);
+    return true;
+  }
+
+  /*
+   * Sends queued bookings one at a time, in order (a promise chain, not
+   * parallel requests). A network failure or a 401 stops the flush and
+   * keeps the remainder for the next trigger; any other HTTP error (e.g.
+   * invalid_event) can never succeed, so that entry is dropped and the
+   * flush continues. Never rejects – callers can always chain onto it.
+   */
+  function flushQueue() {
+    return flushStep(loadQueue(), false);
+  }
+
+  function flushStep(queue, changed) {
+    if (queue.length === 0) {
+      return changed ? refresh() : Promise.resolve();
+    }
+    var entry = queue[0];
+    return api('/api/coffee', { eventId: entry.id }).then(
+      function () {
+        queue.shift();
+        saveQueue(queue);
+        updateQueueHint(queue);
+        return flushStep(queue, true);
+      },
+      function (error) {
+        if (error && error.status === 401) {
+          // No session – the user must sign in again before this can sync.
+          return changed ? refresh() : undefined;
+        }
+        if (isNetworkError(error)) {
+          // Still offline – stop here, try again on the next trigger.
+          return changed ? refresh() : undefined;
+        }
+        // Any other rejection (e.g. invalid_event) will never succeed.
+        queue.shift();
+        saveQueue(queue);
+        updateQueueHint(queue);
+        return flushStep(queue, true);
+      }
+    );
+  }
+
   /* --------------------------------------------------------- Ansichten -- */
 
   function show(view) {
@@ -605,27 +762,45 @@
 
   function addCoffee() {
     var button = el('btn-add');
+    var eventId = newEventId();
     busy(button, true);
-    api('/api/coffee', {})
-      .then(function (data) {
-        renderMe({
-          id: state.me ? state.me.id : '',
-          admin: state.me ? state.me.admin : false,
-          coffees: data.coffees,
-          balanceCents: data.balanceCents,
-          priceCents: state.me ? state.me.priceCents : 0
-        });
-        vibrate([18, 40, 18]);
-        bump(el('counter'));
-        bump(el('btn-add'));
-        return refresh();
-      })
-      .catch(function (error) {
-        if (error && error.status === 401) {
-          show('auth');
-        } else {
+    api('/api/coffee', { eventId: eventId })
+      .then(
+        function (data) {
+          renderMe({
+            id: state.me ? state.me.id : '',
+            admin: state.me ? state.me.admin : false,
+            coffees: data.coffees,
+            balanceCents: data.balanceCents,
+            priceCents: state.me ? state.me.priceCents : 0
+          });
+          vibrate([18, 40, 18]);
+          bump(el('counter'));
+          bump(el('btn-add'));
+          return refresh();
+        },
+        function (error) {
+          // Only a rejected /api/coffee call lands here – a failure while
+          // rendering the result afterwards does not (see the .then/.catch
+          // split below), so a successful booking is never re-queued.
+          if (error && error.status === 401) {
+            show('auth');
+            return;
+          }
+          if (isNetworkError(error)) {
+            if (!enqueueBooking(eventId)) {
+              fail(el('app-error'), { code: 'queue_full' });
+            }
+            return;
+          }
           fail(el('app-error'), error);
         }
+      )
+      .then(function () {
+        return flushQueue();
+      })
+      .catch(function () {
+        /* flushQueue() never rejects; this only guards busy() below. */
       })
       .then(function () {
         busy(button, false);
@@ -740,8 +915,14 @@
     el('btn-admin-csv').addEventListener('click', exportAdminCsv);
     checkPendingBook();
     registerServiceWorker();
+    updateQueueHint();
+    window.addEventListener('online', function () {
+      flushQueue();
+    });
     show('auth');
-    refresh();
+    refresh().then(function () {
+      return flushQueue();
+    });
   }
 
   if (document.readyState === 'loading') {

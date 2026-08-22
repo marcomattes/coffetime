@@ -377,6 +377,50 @@ $priceTestConfig['priceCents'] = 150;
 file_put_contents($configPath, "<?php\nreturn " . var_export($priceTestConfig, true) . ";\n");
 $client->post('/api/coffee/undo'); // back to 0 coffees, zeroId is otherwise untouched below
 
+// ------------------------------------------------------ offline idempotency ---
+
+// zeroId is at 0 coffees here and otherwise unused for the rest of this
+// file, so it is a safe account for exercising the offline-queue
+// idempotency contract: a client-generated eventId lets a retried booking
+// collapse into the original instead of double-booking.
+
+$eventId = 'evt-' . bin2hex(random_bytes(6));
+$r = $client->post('/api/coffee', ['eventId' => $eventId]);
+check('booking with an eventId succeeds', $r['status'] === 200);
+check('booking with an eventId increments the counter', ($r['json']['coffees'] ?? null) === 1);
+
+$r = $client->post('/api/coffee', ['eventId' => $eventId]);
+check('replaying the SAME eventId is still 200 (idempotent, not an error)', $r['status'] === 200);
+check(
+    'replaying the SAME eventId returns the unchanged counter, not a second increment',
+    ($r['json']['coffees'] ?? null) === 1
+);
+
+$otherEventId = 'evt-' . bin2hex(random_bytes(6));
+$r = $client->post('/api/coffee', ['eventId' => $otherEventId]);
+check('a DIFFERENT eventId books normally and increments the counter', ($r['json']['coffees'] ?? null) === 2);
+
+foreach (['short', str_repeat('a', 65), 'has spaces!', 'bad$chars'] as $badEventId) {
+    $r = $client->post('/api/coffee', ['eventId' => $badEventId]);
+    check("a malformed eventId ({$badEventId}) is 400", $r['status'] === 400);
+    check("a malformed eventId ({$badEventId}) reports invalid_event", ($r['json']['error'] ?? null) === 'invalid_event');
+}
+$r = $client->get('/api/me');
+check('the counter is unchanged after every malformed-eventId attempt', ($r['json']['coffees'] ?? null) === 2);
+
+// Legacy clients that send no eventId at all must still work exactly as before.
+$r = $client->post('/api/coffee');
+check('booking WITHOUT an eventId (legacy client) still works', ($r['json']['coffees'] ?? null) === 3);
+
+// Clean up: bring zeroId back to 0 coffees (three real bookings happened
+// above: $eventId, $otherEventId, and the legacy one) so nothing lingers for
+// whatever runs after this block.
+$client->post('/api/coffee/undo');
+$client->post('/api/coffee/undo');
+$client->post('/api/coffee/undo');
+$r = $client->get('/api/me');
+check('zeroId is back to 0 coffees after cleanup', ($r['json']['coffees'] ?? null) === 0);
+
 // ------------------------------------------------------------ clock shift ---
 
 $r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);

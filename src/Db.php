@@ -20,7 +20,7 @@ use Throwable;
 final class Db
 {
     /** Zielversion des Schemas. */
-    public const SCHEMA_VERSION = 7;
+    public const SCHEMA_VERSION = 8;
 
     /** Wartezeit auf eine gesperrte Datenbank. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -529,6 +529,19 @@ final class Db
                     )'
                 );
             },
+            8 => static function (PDO $pdo): void {
+                // Idempotenzschlüssel für die Offline-Buchungswarteschlange:
+                // ein Client vergibt eine eigene Ereignis-ID vor dem Absenden
+                // und kann eine Buchung beliebig oft wiederholen (schlechtes
+                // WLAN in der Kaffeeküche), ohne doppelt zu buchen. NULL bei
+                // alten Clients ohne Ereignis-ID; der partielle Unique-Index
+                // lässt beliebig viele solcher NULLs zu.
+                self::ensureColumn($pdo, 'coffee_events', 'client_event_id', 'TEXT');
+                $pdo->exec(
+                    'CREATE UNIQUE INDEX IF NOT EXISTS idx_coffee_events_client
+                     ON coffee_events (client_event_id) WHERE client_event_id IS NOT NULL'
+                );
+            },
         ];
     }
 
@@ -643,6 +656,18 @@ final class Db
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
                 );
             },
+            8 => static function (PDO $pdo): void {
+                // Siehe Kommentar in sqliteSteps(). MySQL/MariaDB lässt in
+                // einem gewöhnlichen UNIQUE-Index beliebig viele NULLs zu –
+                // ein partieller Index (WHERE ...) ist hier nicht nötig.
+                self::ensureColumn($pdo, 'coffee_events', 'client_event_id', 'VARCHAR(64)');
+                if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_client')) {
+                    $pdo->exec(
+                        'CREATE UNIQUE INDEX idx_coffee_events_client
+                         ON coffee_events (client_event_id)'
+                    );
+                }
+            },
         ];
     }
 
@@ -735,6 +760,7 @@ final class Db
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_ceremonies_challenge ON ceremonies (challenge)',
             'CREATE INDEX IF NOT EXISTS idx_coffee_events_user ON coffee_events (user_id)',
             'CREATE INDEX IF NOT EXISTS idx_coffee_events_user_created ON coffee_events (user_id, created_at)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_coffee_events_client ON coffee_events (client_event_id) WHERE client_event_id IS NOT NULL',
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_link_codes_hash ON link_codes (code_hash)',
             'CREATE INDEX IF NOT EXISTS idx_link_codes_user ON link_codes (user_id)',
         ];
@@ -763,6 +789,7 @@ final class Db
             ['idx_ceremonies_challenge', 'ceremonies', 'UNIQUE', '(challenge)'],
             ['idx_coffee_events_user', 'coffee_events', '', '(user_id)'],
             ['idx_coffee_events_user_created', 'coffee_events', '', '(user_id, created_at)'],
+            ['idx_coffee_events_client', 'coffee_events', 'UNIQUE', '(client_event_id)'],
             ['idx_link_codes_hash', 'link_codes', 'UNIQUE', '(code_hash)'],
             ['idx_link_codes_user', 'link_codes', '', '(user_id)'],
         ];
@@ -834,6 +861,7 @@ final class Db
                     'user_id' => 'BIGINT NOT NULL DEFAULT 0',
                     'created_at' => 'BIGINT NOT NULL DEFAULT 0',
                     'price_cents' => 'BIGINT NOT NULL DEFAULT 0',
+                    'client_event_id' => 'VARCHAR(64)',
                 ],
                 'settings' => [
                     'value' => 'TEXT',
@@ -890,6 +918,7 @@ final class Db
                 'user_id' => 'INTEGER NOT NULL DEFAULT 0',
                 'created_at' => 'INTEGER NOT NULL DEFAULT 0',
                 'price_cents' => 'INTEGER NOT NULL DEFAULT 0',
+                'client_event_id' => 'TEXT',
             ],
             'settings' => [
                 'value' => 'TEXT',

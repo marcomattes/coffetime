@@ -469,8 +469,16 @@ final class Api
     /** @param array<string, mixed> $user */
     private static function coffee(array $user): never
     {
-        // Der Body wird bewusst ignoriert – der Zähler ist serverautoritativ.
-        $updated = Users::addCoffee((string) $user['id']);
+        // Der Zähler bleibt serverautoritativ – nur die optionale eventId aus
+        // dem Body wird gelesen, für die Idempotenz der Offline-Warteschlange
+        // (siehe Users::addCoffee). Fehlt sie (alte Clients), bucht wie bisher.
+        $body = Http::body();
+        $eventId = Http::stringField($body, 'eventId');
+        if ($eventId !== null && preg_match('/^[A-Za-z0-9-]{8,64}$/', $eventId) !== 1) {
+            Http::error('invalid_event', 400);
+        }
+
+        $updated = Users::addCoffee((string) $user['id'], $eventId);
         Http::json([
             'coffees' => Users::coffees($updated),
             'balanceCents' => Users::balanceCents($updated),

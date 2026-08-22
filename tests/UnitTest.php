@@ -122,7 +122,7 @@ check(
     'Db::migrate reaches the target schema version',
     Db::userVersion($migratePdo) === Db::SCHEMA_VERSION
 );
-check('Db::migrate reaches schema version 7', Db::userVersion($migratePdo) === 7);
+check('Db::migrate reaches schema version 8', Db::userVersion($migratePdo) === 8);
 foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events', 'settings', 'link_codes'] as $table) {
     check("Db::migrate creates the {$table} table", Db::tableExists($migratePdo, $table));
 }
@@ -136,6 +136,10 @@ check(
     'Db::migrate gives coffee_events a price_cents column',
     in_array('price_cents', Db::columns($migratePdo, 'coffee_events'), true)
 );
+check(
+    'Db::migrate gives coffee_events a client_event_id column',
+    in_array('client_event_id', Db::columns($migratePdo, 'coffee_events'), true)
+);
 foreach (['name', 'value'] as $column) {
     check(
         "Db::migrate gives settings a {$column} column",
@@ -145,7 +149,7 @@ foreach (['name', 'value'] as $column) {
 $indexNames = $migratePdo
     ->query("SELECT name FROM sqlite_master WHERE type = 'index'")
     ->fetchAll(PDO::FETCH_COLUMN);
-foreach (['idx_users_name_hash', 'idx_users_handle', 'idx_credentials_credential_id', 'idx_coffee_events_user_created', 'idx_link_codes_hash', 'idx_link_codes_user'] as $index) {
+foreach (['idx_users_name_hash', 'idx_users_handle', 'idx_credentials_credential_id', 'idx_coffee_events_user_created', 'idx_coffee_events_client', 'idx_link_codes_hash', 'idx_link_codes_user'] as $index) {
     check("Db::migrate creates the {$index} index", in_array($index, $indexNames, true));
 }
 
@@ -253,6 +257,62 @@ $stillThere = Db::fetchValue(
     [(int) $carol['id'], $latestEventId]
 );
 check('undoCoffee deletes the most recently booked event', (int) $stillThere === 0);
+
+// ------------------------------------------------ addCoffee (clientEventId) ---
+
+// Offline-queue idempotency: Users::addCoffee(id, null) must behave exactly
+// as before (this is the default, exercised throughout the rest of this
+// file), and a booking made without a client id stores a NULL there.
+$eve = Users::create('cipher-eve', 'hash-eve', 'handle-eve');
+$eveBefore = Users::coffees(Users::find((string) $eve['id']));
+$eveUpdated = Users::addCoffee((string) $eve['id']);
+check(
+    'addCoffee(id) without a clientEventId still increments the counter by one, as before',
+    Users::coffees($eveUpdated) === $eveBefore + 1
+);
+check(
+    'a booking made without a clientEventId stores a NULL client_event_id',
+    Db::fetchValue(
+        'SELECT client_event_id FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+        [(int) $eve['id']]
+    ) === null
+);
+
+$eveEventsBefore = (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $eve['id']]);
+$eveCoffeesBefore = Users::coffees(Users::find((string) $eve['id']));
+$eveTabBefore = Users::tabCents(Users::find((string) $eve['id']));
+$clientId = 'client-' . bin2hex(random_bytes(6));
+$price = Config::priceCents();
+
+$firstBooking = Users::addCoffee((string) $eve['id'], $clientId);
+check('addCoffee with a client id increments the counter by one', Users::coffees($firstBooking) === $eveCoffeesBefore + 1);
+check(
+    'addCoffee with a client id adds the price once to tab_cents',
+    Users::tabCents($firstBooking) === $eveTabBefore + $price
+);
+
+$secondBooking = Users::addCoffee((string) $eve['id'], $clientId);
+check(
+    'replaying the same client id a second time does not increment the counter again',
+    Users::coffees($secondBooking) === $eveCoffeesBefore + 1
+);
+check(
+    'replaying the same client id a second time does not add the price again',
+    Users::tabCents($secondBooking) === $eveTabBefore + $price
+);
+
+$eveEventsAfter = (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $eve['id']]);
+check(
+    'exactly one coffee_events row was created by the two identical client-id calls',
+    $eveEventsAfter === $eveEventsBefore + 1
+);
+check(
+    'the stored event row carries the client event id',
+    Db::fetchValue(
+        'SELECT client_event_id FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+        [(int) $eve['id']]
+    ) === $clientId
+);
 
 // ------------------------------------------------------------ addPayment ---
 
