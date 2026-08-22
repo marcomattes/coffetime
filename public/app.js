@@ -222,7 +222,7 @@
             await refresh();
         }
     }
-    /* ------------------------------------------------------- Erinnerungen -- */
+    /* ---------------------------------------------------------- Reminders -- */
     /*
      * Local month-end and admin payment reminders. The actual check-and-show
      * logic lives in the service worker (see sw.ts); the page only manages
@@ -321,7 +321,7 @@
                 .catch(() => { });
         }
     }
-    /* --------------------------------------------------------- Ansichten -- */
+    /* ------------------------------------------------------------- Views -- */
     function show(view) {
         el('view-setup').hidden = view !== 'setup';
         el('view-auth').hidden = view !== 'auth';
@@ -350,7 +350,7 @@
         }
         updateBadge(me.balanceCents);
     }
-    /* App-Icon-Badge: offener Betrag, aufgerundet auf ganze Euro. Rein kosmetisch. */
+    /* App icon badge: outstanding balance, rounded to whole euros. Purely cosmetic. */
     function updateBadge(balanceCents) {
         if (!('setAppBadge' in navigator)) {
             return;
@@ -365,7 +365,7 @@
             }
         }
         catch (e) {
-            /* Badging API ist ein Bonus, kein Muss. */
+            /* The badging API is a nice-to-have, not a requirement. */
         }
     }
     function renderHistory(history) {
@@ -738,7 +738,7 @@
             renderAdmin(state.users);
         }
     }
-    /* ----------------------------------------------------------- Laden ---- */
+    /* --------------------------------------------------------- Loading ---- */
     async function refresh() {
         try {
             const me = await api('/api/me');
@@ -779,7 +779,7 @@
             },
             challenge: fromBase64Url(options.challenge),
             pubKeyCredParams: options.pubKeyCredParams || [],
-            // Nur die Felder weitergeben, die der Browser kennt.
+            // Only pass through the fields the browser recognizes.
             authenticatorSelection: {
                 residentKey: selection.residentKey,
                 requireResidentKey: selection.requireResidentKey === true,
@@ -845,7 +845,7 @@
                 : {}
         };
     }
-    /* ------------------------------------------------------- Aktionen ----- */
+    /* -------------------------------------------------------- Actions ----- */
     function busy(button, isBusy) {
         if (button) {
             button.disabled = isBusy;
@@ -1103,14 +1103,14 @@
         }
     }
     /* ------------------------------------------------------- Feedback ----- */
-    /* Kurzes, zufriedenes Doppel-Summen – bewusst kein einzelner harter Ruck. */
+    /* Short, satisfied double buzz – deliberately not a single hard jolt. */
     function vibrate(pattern) {
         if (window.navigator && typeof window.navigator.vibrate === 'function') {
             try {
                 window.navigator.vibrate(pattern);
             }
             catch (e) {
-                /* Manche Browser werfen ausserhalb einer Nutzergeste – einfach ignorieren. */
+                /* Some browsers throw outside a user gesture – simply ignore it. */
             }
         }
     }
@@ -1119,11 +1119,11 @@
             return;
         }
         node.classList.remove('bump');
-        // Reflow erzwingen, damit die Animation bei wiederholtem Antippen neu startet.
+        // Force a reflow so the animation restarts on repeated taps.
         void node.offsetWidth;
         node.classList.add('bump');
     }
-    /* ------------------------------------------------- Shortcut / NFC-Tag -- */
+    /* ------------------------------------------------- Shortcut / NFC tag -- */
     /*
      * "/?book=1" immediately books a coffee. It is shared by the app shortcut
      * and NFC tags, and is removed immediately to prevent duplicate bookings.

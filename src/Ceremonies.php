@@ -7,10 +7,10 @@ namespace Coffee;
 use PDO;
 
 /**
- * Offene WebAuthn-Ceremonien (Registrierung und Anmeldung).
+ * Pending WebAuthn ceremonies (registration and login).
  *
- * Die Challenge wird serverseitig hinterlegt, ist an genau eine anstehende
- * Ceremonie gebunden und gilt exakt einmal.
+ * The challenge is stored server-side, bound to exactly one pending
+ * ceremony, and valid for exactly one use.
  */
 final class Ceremonies
 {
@@ -18,10 +18,10 @@ final class Ceremonies
 
     public const KIND_LOGIN = 'login';
 
-    /** Verknüpfung eines zweiten Geräts mit einem bestehenden Konto. */
+    /** Linking a second device to an existing account. */
     public const KIND_LINK = 'link';
 
-    /** Gültigkeitsdauer einer Challenge in Sekunden. */
+    /** Validity period of a challenge, in seconds. */
     public const LIFETIME = 600;
 
     /**
@@ -51,8 +51,8 @@ final class Ceremonies
     }
 
     /**
-     * Holt die Ceremonie zur Challenge und markiert sie sofort als verbraucht.
-     * Ein zweiter Aufruf mit derselben Challenge liefert null.
+     * Fetches the ceremony for the challenge and immediately marks it used.
+     * A second call with the same challenge returns null.
      *
      * @return array<string, mixed>|null
      */
@@ -77,7 +77,7 @@ final class Ceremonies
             $update = $pdo->prepare('UPDATE ceremonies SET used = 1 WHERE id = ? AND used = 0');
             $update->execute([$row['id']]);
             if ($update->rowCount() !== 1) {
-                // Ein paralleler Request war schneller.
+                // A concurrent request won the race.
                 return null;
             }
 
@@ -99,8 +99,8 @@ final class Ceremonies
     }
 
     /**
-     * Vereinheitlicht die Base64url-Schreibweise, damit Padding-Unterschiede
-     * beim Vergleich keine Rolle spielen.
+     * Normalizes base64url representation so padding differences don't
+     * affect comparison.
      */
     private static function normalizeChallenge(string $challenge): string
     {

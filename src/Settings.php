@@ -8,21 +8,20 @@ use PDO;
 use Throwable;
 
 /**
- * Datenbankgestützte Einstellungen. Diese haben Vorrang vor config.php (siehe
- * Config-Klasse): ein Admin kann Preis, Einladungscode & Co. zur Laufzeit
- * über die Anwendung ändern, ohne die Konfigurationsdatei anzufassen.
+ * Database-backed settings. These take precedence over config.php (see the
+ * Config class): an admin can change price, invite code, and similar values
+ * at runtime through the application, without touching the config file.
  *
- * Während der allerersten Migration eines frischen Deployments existiert die
- * Tabelle kurzzeitig noch nicht – ein lesender Zugriff in diesem Fenster darf
- * nicht abstürzen, sondern muss wie "keine Einstellung vorhanden" behandelt
- * werden; die Rückfallebene übernimmt dann Config.
+ * During the very first migration of a fresh deployment, the table briefly
+ * doesn't exist yet — a read in that window must not crash but must be
+ * treated as "no setting present", with Config providing the fallback.
  */
 final class Settings
 {
-    /** @var array<string, string>|null Pro-Request-Cache aller Zeilen. */
+    /** @var array<string, string>|null Per-request cache of all rows. */
     private static ?array $cache = null;
 
-    /** Liest eine Einstellung, oder null, falls keine Zeile existiert. */
+    /** Reads a setting, or null if no row exists. */
     public static function get(string $name): ?string
     {
         return self::all()[$name] ?? null;
@@ -38,9 +37,9 @@ final class Settings
         try {
             $rows = Db::fetchRows('SELECT name, value FROM settings');
         } catch (Throwable $e) {
-            // Tabelle fehlt noch (erste Migration läuft gerade) oder die
-            // Datenbank ist anderweitig nicht erreichbar – ohne Absturz auf
-            // "nichts gesetzt" zurückfallen, Config übernimmt den Rest.
+            // Table doesn't exist yet (first migration in progress) or the
+            // database is otherwise unreachable — fall back to "nothing
+            // set" without crashing; Config handles the rest.
             return self::$cache = [];
         }
 
@@ -70,14 +69,14 @@ final class Settings
 
         Db::transaction(static function (PDO $pdo) use ($pairs): void {
             foreach ($pairs as $name => $value) {
-                // Portables Upsert ohne dialektspezifische Syntax (kein
-                // "ON CONFLICT"/"ON DUPLICATE KEY"): erst per SELECT prüfen,
-                // ob die Zeile existiert, dann gezielt UPDATE oder INSERT.
-                // Bewusst NICHT über rowCount() der UPDATE-Anweisung
-                // entschieden – MySQL/MariaDB zählt dort nur tatsächlich
-                // geänderte Zeilen, nicht getroffene; ein Schreiben desselben
-                // Werts würde sonst fälschlich einen zweiten INSERT auf den
-                // bereits vorhandenen Primärschlüssel auslösen.
+                // Portable upsert without dialect-specific syntax (no
+                // "ON CONFLICT"/"ON DUPLICATE KEY"): check via SELECT
+                // whether the row exists, then issue a targeted UPDATE or
+                // INSERT. Deliberately NOT decided via the UPDATE
+                // statement's rowCount() — MySQL/MariaDB counts only rows
+                // actually changed there, not rows matched; writing the
+                // same value again would otherwise wrongly trigger a
+                // second INSERT against the already-existing primary key.
                 $exists = Db::fetchValue('SELECT 1 FROM settings WHERE name = ?', [$name], $pdo) !== null;
                 if ($exists) {
                     $pdo->prepare('UPDATE settings SET value = ? WHERE name = ?')->execute([$value, $name]);
@@ -90,7 +89,7 @@ final class Settings
         self::reset();
     }
 
-    /** Verwirft den Prozess-lokalen Cache (Tests, und nach jedem Schreiben). */
+    /** Discards the process-local cache (tests, and after every write). */
     public static function reset(): void
     {
         self::$cache = null;

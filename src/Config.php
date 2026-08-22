@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Coffee;
 
 /**
- * Zugriff auf `config.php` im Wurzelverzeichnis des Baums.
+ * Access to `config.php` in the tree's root directory.
  *
- * Die Datei wird pro Request frisch gelesen. Es gibt absichtlich keinen Cache
- * in einer Datei oder in der Datenbank: eine geänderte Konfiguration muss beim
- * unmittelbar folgenden Request wirksam sein.
+ * The file is read fresh per request. There is deliberately no file- or
+ * database-backed cache: a changed configuration must take effect on the
+ * very next request.
  */
 final class Config
 {
@@ -18,8 +18,8 @@ final class Config
 
     public static function path(): string
     {
-        // Für Tests und alternative Deployments: eine Umgebungsvariable
-        // überschreibt den Standardpfad, falls gesetzt und nicht leer.
+        // For tests and alternative deployments: an environment variable
+        // overrides the default path when set and non-empty.
         $override = getenv('COFFEE_CONFIG_PATH');
         if (is_string($override) && $override !== '') {
             return $override;
@@ -38,7 +38,7 @@ final class Config
         $path = self::path();
         $loaded = [];
         if (is_file($path)) {
-            // Falls OPcache aktiv ist, darf keine veraltete Kompilierung greifen.
+            // If OPcache is active, a stale compilation must not be used.
             if (function_exists('opcache_invalidate')) {
                 @opcache_invalidate($path, true);
             }
@@ -66,8 +66,8 @@ final class Config
     }
 
     /**
-     * Verwirft den Prozess-lokalen Cache. Wird nur innerhalb eines Requests
-     * benötigt (Tests), niemals über Requests hinweg.
+     * Discards the process-local cache. Only needed within a single request
+     * (tests), never across requests.
      */
     public static function forget(): void
     {
@@ -81,9 +81,9 @@ final class Config
 
     public static function priceCents(): int
     {
-        // Eine Datenbankeinstellung (vom Assistenten oder einem Admin
-        // gesetzt) hat Vorrang vor config.php; fehlt sie, bleibt das
-        // bisherige Verhalten unverändert.
+        // A database setting (set by the assistant or an admin) takes
+        // precedence over config.php; if absent, prior behavior is
+        // unchanged.
         $fromDb = Settings::get('priceCents');
         if ($fromDb !== null && is_numeric($fromDb)) {
             return (int) $fromDb;
@@ -131,12 +131,12 @@ final class Config
             return '';
         }
 
-        // Rückfallebene ohne explizite Konfiguration: Schema aus HTTPS-Server-
-        // variable, Host aus dem Host-Header. Achtung – hinter einem
-        // Reverse-Proxy muss der Host-Header vertrauenswürdig sein (z. B.
-        // weil der Proxy ihn setzt statt ihn vom Client durchzureichen);
-        // produktive Deployments sollten origin/rpId weiterhin explizit in
-        // config.php setzen.
+        // Fallback without explicit configuration: scheme from the HTTPS
+        // server variable, host from the Host header. Caution: behind a
+        // reverse proxy, the Host header must be trustworthy (e.g. because
+        // the proxy sets it rather than passing the client's value
+        // through); production deployments should still set origin/rpId
+        // explicitly in config.php.
         $https = $_SERVER['HTTPS'] ?? '';
         $scheme = is_string($https) && $https !== '' && strtolower($https) !== 'off' ? 'https' : 'http';
 
@@ -144,9 +144,9 @@ final class Config
     }
 
     /**
-     * Liest und validiert $_SERVER['HTTP_HOST'] für die origin-/rpId-
-     * Rückfallableitung. Liefert '' bei einem fehlenden oder verdächtigen
-     * Header (nie ungeprüft in eine Antwort oder einen Vergleich übernehmen).
+     * Reads and validates $_SERVER['HTTP_HOST'] for the origin/rpId fallback
+     * derivation. Returns '' for a missing or suspicious header (never use
+     * it unchecked in a response or a comparison).
      */
     private static function requestHost(bool $withPort): string
     {
@@ -168,9 +168,9 @@ final class Config
     }
 
     /**
-     * Normalisiert die 'db'-Option. Fehlt sie oder ist sie unbrauchbar, ist
-     * SQLite (über dbPath) der Treiber – das bestehende Verhalten bleibt also
-     * unverändert, solange niemand 'db' konfiguriert.
+     * Normalizes the 'db' option. If absent or unusable, SQLite (via
+     * dbPath) is the driver, so existing behavior is unchanged as long as
+     * nobody configures 'db'.
      *
      * @return array<string, mixed>
      */
@@ -192,7 +192,7 @@ final class Config
         $database = $value['database'] ?? null;
         $user = $value['user'] ?? null;
         if (!is_string($database) || $database === '' || !is_string($user) || $user === '') {
-            // Ohne Datenbankname und Benutzer ist die Konfiguration unbrauchbar.
+            // Without a database name and user, the configuration is unusable.
             return ['driver' => 'sqlite'];
         }
 
@@ -212,7 +212,7 @@ final class Config
         ];
     }
 
-    /** Bequemer Zugriff auf den aktiven Treiber, ohne das ganze Array zu lesen. */
+    /** Convenient access to the active driver without reading the whole array. */
     public static function dbDriver(): string
     {
         $driver = self::db()['driver'] ?? 'sqlite';
@@ -238,12 +238,11 @@ final class Config
     }
 
     /**
-     * Prüft NUR die statische Admin-Liste aus config.php. Das serverseitige
-     * is_admin-Flag (vom ersten registrierten Nutzer, siehe Users::create())
-     * kommt bewusst nicht hier hinein, um pro Aufruf keine zusätzliche
-     * Datenbankabfrage zu erzwingen: Aufrufer, die bereits eine geladene
-     * Nutzerzeile besitzen, kombinieren stattdessen
-     * `Config::isAdmin($id) || Users::isAdminRow($row)`.
+     * Checks ONLY the static admin list from config.php. The server-side
+     * is_admin flag (set on the first registered user, see Users::create())
+     * is deliberately excluded here to avoid forcing an extra database
+     * query per call: callers that already hold a loaded user row combine
+     * `Config::isAdmin($id) || Users::isAdminRow($row)` instead.
      */
     public static function isAdmin(string $userId): bool
     {

@@ -5,17 +5,17 @@ declare(strict_types=1);
 namespace Coffee;
 
 /**
- * Einzige Zeitquelle der Anwendung.
+ * The application's single source of time.
  *
- * Alles Serverseitige mit Zeitstempel geht durch `Clock::now()`; `time()` wird
- * ausschliesslich hier aufgerufen. Über `/api/test/clock` kann die Uhr für die
- * laufende Serverinstanz verschoben werden.
+ * Every server-side timestamp goes through `Clock::now()`; `time()` is
+ * called only here. `/api/test/clock` can shift the clock for the running
+ * server instance.
  *
- * Der Offset liegt in einer Datei neben der Datenbank, damit alle Worker des
- * eingebauten PHP-Servers denselben Wert sehen. Damit er einen Neustart *nicht*
- * überlebt, wird die PID des setzenden Prozesses mitgeschrieben: lebt dieser
- * Prozess nicht mehr, ist der Offset ungültig. Die Worker des eingebauten
- * Servers leben so lange wie der Server selbst.
+ * The offset is stored in a file next to the database so every worker of
+ * the built-in PHP server sees the same value. For the offset to *not*
+ * survive a restart, the PID of the process that set it is recorded
+ * alongside it: once that process is gone, the offset is invalid. Workers
+ * of the built-in server live as long as the server itself.
  */
 final class Clock
 {
@@ -44,7 +44,7 @@ final class Clock
             return 0;
         }
         if (!self::processIsAlive((int) $data['pid'])) {
-            // Offset einer früheren Serverinstanz: verwerfen.
+            // Offset from a previous server instance: discard it.
             @unlink(self::offsetFile());
 
             return 0;
@@ -87,7 +87,7 @@ final class Clock
             return true;
         }
         if (is_dir('/proc')) {
-            // Linux mit /proc: das Fehlen des Verzeichnisses ist eindeutig.
+            // Linux with /proc: the directory's absence is conclusive.
             return false;
         }
         if (function_exists('posix_kill')) {

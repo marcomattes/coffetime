@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Coffee;
 
 /**
- * Lädt die Anwendungsklassen und stellt sicher, dass niemals PHP-Ausgaben
- * (Notices, Warnings, Stacktraces) in einen Response-Body gelangen.
+ * Loads the application classes and ensures PHP output (notices, warnings,
+ * stack traces) never leaks into a response body.
  */
 final class Bootstrap
 {
@@ -19,7 +19,7 @@ final class Bootstrap
         }
         self::$done = true;
 
-        // Niemals Fehler ausgeben – sie werden ausschliesslich geloggt.
+        // Never display errors; they are logged exclusively.
         @ini_set('display_errors', '0');
         @ini_set('display_startup_errors', '0');
         @ini_set('html_errors', '0');
@@ -39,13 +39,13 @@ final class Bootstrap
         });
 
         set_error_handler(static function (int $severity, string $message, string $file = '', int $line = 0): bool {
-            // Mit @ unterdrückte Meldungen bleiben unterdrückt – auch im Log.
+            // Messages suppressed with @ stay suppressed, even from the log.
             if ((error_reporting() & $severity) === 0) {
                 return true;
             }
-            // Alles andere wird verschluckt und geloggt; die Bibliothek löst
-            // u. a. E_USER_DEPRECATED aus, was den Request nicht abbrechen und
-            // erst gar nicht im Response landen darf.
+            // Everything else is swallowed and logged; the library raises
+            // E_USER_DEPRECATED among others, which must not abort the
+            // request or reach the response.
             error_log(sprintf('[coffee] php-error %d: %s in %s:%d', $severity, $message, $file, $line));
 
             return true;

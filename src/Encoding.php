@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Coffee;
 
 /**
- * Base64url ohne Padding – das Transportformat von WebAuthn.
+ * Base64url without padding — the WebAuthn transport format.
  */
 final class Encoding
 {
