@@ -444,6 +444,117 @@ check('streakDays is at least 1 right after booking on the shifted day', ($r['js
 // Restore the clock so nothing lingers for whatever runs next on this host.
 $client->post('/api/test/clock', ['offsetSeconds' => 0], $testHeaders);
 
+// ------------------------------------------------------------- reminders ---
+
+// The reminder endpoints must be deterministic regardless of the real date
+// this suite runs on, so every check below pins the server clock to a fixed
+// timestamp via the test clock (offset = target - now).
+$clockTo = static function (int $target) use ($client, $testHeaders): void {
+    $client->post('/api/test/clock', ['offsetSeconds' => $target - time()], $testHeaders);
+};
+
+$client->clearCookies();
+$r = $client->get('/api/reminders');
+check('GET /api/reminders without a session is 401', $r['status'] === 401);
+
+// Sessions idle out after 30 days, so every clock jump below is followed by
+// a fresh test/login (which is public and stamps the session at the shifted
+// clock). normalId's balance at this point: tab 4 * 150 = 600, paid 500 ->
+// +100 open.
+$clockTo(gmmktime(12, 0, 0, 6, 15, 2031)); // mid-month: nothing is due
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('test/login as the non-admin user for the reminder tests succeeds', $r['status'] === 200);
+
+$r = $client->get('/api/reminders');
+check('GET /api/reminders mid-month is 200', $r['status'] === 200);
+check('mid-month, no month-end reminder is due', ($r['json']['monthEnd'] ?? null) === null && array_key_exists('monthEnd', $r['json']));
+check('without an admin request, no admin reminder is due', ($r['json']['admin'] ?? null) === null && array_key_exists('admin', $r['json']));
+
+// A non-admin cannot queue reminders for others.
+$r = $client->post('/api/admin/remind', ['userId' => $adminId]);
+check('POST /api/admin/remind as a non-admin is 403', $r['status'] === 403);
+
+$r = $client->post('/api/test/login', ['userId' => $adminId], $testHeaders);
+check('test/login as the admin for the reminder tests succeeds', $r['status'] === 200);
+
+$r = $client->post('/api/admin/remind', ['userId' => '999999']);
+check('admin/remind for an unknown user is 404', $r['status'] === 404);
+check('admin/remind for an unknown user reports unknown_user', ($r['json']['error'] ?? null) === 'unknown_user');
+
+$r = $client->post('/api/admin/remind', ['userId' => $normalId]);
+check('admin/remind for a real user succeeds', $r['status'] === 200 && ($r['json']['ok'] ?? false) === true);
+
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('re-login as the non-admin user after the admin queued a reminder succeeds', $r['status'] === 200);
+
+$r = $client->get('/api/reminders');
+$adminReminder = $r['json']['admin'] ?? null;
+check('after admin/remind, GET /api/reminders carries the admin reminder', is_array($adminReminder));
+$remindRequestedAt = $adminReminder['requestedAt'] ?? null;
+check('the admin reminder carries a positive requestedAt timestamp', is_int($remindRequestedAt) && $remindRequestedAt > 0);
+check('the admin reminder carries the open balance', ($adminReminder['balanceCents'] ?? null) === 100);
+check('the admin request alone does not make a month-end reminder due', ($r['json']['monthEnd'] ?? null) === null && array_key_exists('monthEnd', $r['json']));
+
+$clockTo(gmmktime(12, 0, 0, 6, 30, 2031)); // last day of the month
+$r = $client->get('/api/reminders');
+$monthEnd = $r['json']['monthEnd'] ?? null;
+check('on the last day of the month, the month-end reminder is due', is_array($monthEnd));
+check('the month-end reminder names the current month', ($monthEnd['month'] ?? null) === '2031-06');
+check('the month-end reminder carries the open balance', ($monthEnd['balanceCents'] ?? null) === 100);
+
+// Reading is not consuming: a second GET still reports both reminders.
+$r = $client->get('/api/reminders');
+check('a second GET still reports the month-end reminder (read does not consume)', is_array($r['json']['monthEnd'] ?? null));
+check('a second GET still reports the admin reminder (read does not consume)', is_array($r['json']['admin'] ?? null));
+
+// Malformed acks are rejected wholesale.
+$r = $client->post('/api/reminders/ack', []);
+check('an empty ack is 400', $r['status'] === 400);
+check('an empty ack reports invalid_ack', ($r['json']['error'] ?? null) === 'invalid_ack');
+$r = $client->post('/api/reminders/ack', ['month' => '2031-13']);
+check('an ack with an impossible month is 400', $r['status'] === 400);
+$r = $client->post('/api/reminders/ack', ['adminRequestedAt' => 0]);
+check('an ack with a zero adminRequestedAt is 400', $r['status'] === 400);
+
+// A stale admin ack (device showed an older request) must not clear the
+// currently open one.
+$r = $client->post('/api/reminders/ack', ['adminRequestedAt' => $remindRequestedAt - 1]);
+check('an ack with a stale requestedAt still succeeds', $r['status'] === 200);
+$r = $client->get('/api/reminders');
+check('the open admin reminder survives a stale ack', is_array($r['json']['admin'] ?? null));
+
+$r = $client->post('/api/reminders/ack', ['month' => '2031-06', 'adminRequestedAt' => $remindRequestedAt]);
+check('acknowledging both shown reminders succeeds', $r['status'] === 200 && ($r['json']['ok'] ?? false) === true);
+$r = $client->get('/api/reminders');
+check('after the ack, the month-end reminder is gone', ($r['json']['monthEnd'] ?? null) === null && array_key_exists('monthEnd', $r['json']));
+check('after the ack, the admin reminder is gone', ($r['json']['admin'] ?? null) === null && array_key_exists('admin', $r['json']));
+
+// Catch-up: shortly into the next month the previous month's reminder is
+// still the due one -- but here it was already acknowledged, so nothing shows.
+$clockTo(gmmktime(12, 0, 0, 7, 3, 2031));
+$r = $client->get('/api/reminders');
+check('early next month, the already-acknowledged previous month stays silent', ($r['json']['monthEnd'] ?? null) === null && array_key_exists('monthEnd', $r['json']));
+
+// A month that was never acknowledged IS caught up early in the next month.
+$clockTo(gmmktime(12, 0, 0, 8, 5, 2031)); // July was never shown; Aug 5 is in the window
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('re-login as the non-admin user after the two-month jump succeeds', $r['status'] === 200);
+$r = $client->get('/api/reminders');
+check('a missed month-end reminder is caught up early in the following month', (($r['json']['monthEnd']['month'] ?? null) === '2031-07'));
+
+// Without an open balance there is nothing to remind about.
+$r = $client->post('/api/test/login', ['userId' => $adminId], $testHeaders);
+check('re-login as the admin to settle the balance succeeds', $r['status'] === 200);
+$r = $client->post('/api/admin/payment', ['userId' => $normalId, 'amountCents' => 100]);
+check('settling the remaining 100 cents succeeds', $r['status'] === 200);
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('re-login as the non-admin user with a settled tab succeeds', $r['status'] === 200);
+$r = $client->get('/api/reminders');
+check('with a settled tab, no month-end reminder is due even in the window', ($r['json']['monthEnd'] ?? null) === null && array_key_exists('monthEnd', $r['json']));
+
+// Restore the clock so nothing lingers for whatever runs next on this host.
+$client->post('/api/test/clock', ['offsetSeconds' => 0], $testHeaders);
+
 // ------------------------------------------------------ decryption roundtrip ---
 
 check('the admin user\'s encrypted name was captured earlier', $adminEncryptedName !== null);

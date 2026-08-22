@@ -20,8 +20,11 @@ const PROTECTED_ENDPOINTS: Array<{ path: string; method: 'GET' | 'POST' }> = [
   { path: '/api/history', method: 'GET' },
   { path: '/api/logout', method: 'POST' },
   { path: '/api/link/code', method: 'POST' },
+  { path: '/api/reminders', method: 'GET' },
+  { path: '/api/reminders/ack', method: 'POST' },
   { path: '/api/admin/users', method: 'GET' },
   { path: '/api/admin/payment', method: 'POST' },
+  { path: '/api/admin/remind', method: 'POST' },
   { path: '/api/admin/link-code', method: 'POST' },
   { path: '/api/admin/settings', method: 'GET' },
   { path: '/api/admin/settings/update', method: 'POST' },
@@ -77,6 +80,10 @@ test.describe('security', () => {
 
       const settingsRes = await ctx.get('/api/admin/settings');
       expect(settingsRes.status()).toBe(403);
+
+      const remindRes = await ctx.post('/api/admin/remind', { data: { userId: admin.id } });
+      expect(remindRes.status()).toBe(403);
+      expect((await remindRes.json()).error).toBe('forbidden');
     } finally {
       await ctx.dispose();
     }

@@ -20,7 +20,7 @@ use Throwable;
 final class Db
 {
     /** Zielversion des Schemas. */
-    public const SCHEMA_VERSION = 8;
+    public const SCHEMA_VERSION = 9;
 
     /** Wartezeit auf eine gesperrte Datenbank. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -542,6 +542,16 @@ final class Db
                      ON coffee_events (client_event_id) WHERE client_event_id IS NOT NULL'
                 );
             },
+            9 => static function (PDO $pdo): void {
+                // Lokale Zahlungserinnerungen ohne Push-Server: der Client
+                // fragt /api/reminders ab und zeigt lokale Notifications.
+                // remind_requested_at trägt eine offene Admin-Erinnerung
+                // (0 = keine), reminded_month den zuletzt bestätigten
+                // Monatsende-Hinweis ('YYYY-MM'), damit jede Erinnerung über
+                // alle Geräte eines Nutzers hinweg höchstens einmal erscheint.
+                self::ensureColumn($pdo, 'users', 'remind_requested_at', 'INTEGER NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'reminded_month', 'TEXT');
+            },
         ];
     }
 
@@ -667,6 +677,11 @@ final class Db
                          ON coffee_events (client_event_id)'
                     );
                 }
+            },
+            9 => static function (PDO $pdo): void {
+                // Siehe Kommentar in sqliteSteps().
+                self::ensureColumn($pdo, 'users', 'remind_requested_at', 'BIGINT NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'reminded_month', 'VARCHAR(7)');
             },
         ];
     }
@@ -831,6 +846,8 @@ final class Db
                     'user_handle' => 'VARCHAR(32)',
                     'tab_cents' => 'BIGINT NOT NULL DEFAULT 0',
                     'is_admin' => 'TINYINT NOT NULL DEFAULT 0',
+                    'remind_requested_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'reminded_month' => 'VARCHAR(7)',
                 ],
                 'credentials' => [
                     'user_id' => 'BIGINT NOT NULL DEFAULT 0',
@@ -888,6 +905,8 @@ final class Db
                 'user_handle' => 'TEXT',
                 'tab_cents' => 'INTEGER NOT NULL DEFAULT 0',
                 'is_admin' => 'INTEGER NOT NULL DEFAULT 0',
+                'remind_requested_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'reminded_month' => 'TEXT',
             ],
             'credentials' => [
                 'user_id' => 'INTEGER NOT NULL DEFAULT 0',

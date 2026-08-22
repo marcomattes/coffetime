@@ -18,6 +18,7 @@ from silently selecting packages that production cannot install.
 - In-app admin settings to change the coffee price and invite code at runtime.
 - Passkey device linking (a signed-in device generates a short-lived code for a new device) and admin-issued recovery codes for lost devices.
 - An offline booking queue: bookings made without a connection are queued on the device and sent once it is back online.
+- Local payment reminders without a push server: an opt-in notification at the end of the month while the tab is still open, plus an admin "Remind" button per account. Reminders appear in the background where periodic background sync is available (installed PWA on Chromium), and on the next app start everywhere else.
 - Names encrypted with the administrator's RSA public key; the server never receives the private key.
 - An administrator screen that accepts a private-key file and decrypts names **locally with Web Crypto**, including a CSV export. The file is neither uploaded nor persisted.
 - An offline CLI and optional XLSX export for accounting.

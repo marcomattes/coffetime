@@ -377,6 +377,79 @@ final class Users
         ];
     }
 
+    // ------------------------------------------------------- Erinnerungen ---
+
+    /**
+     * Wie viele Tage in den Folgemonat hinein ein noch nicht gezeigter
+     * Monatsende-Hinweis nachgeholt wird (Gerät war aus, App blieb zu).
+     */
+    private const REMINDER_CATCHUP_DAYS = 7;
+
+    /**
+     * Der Monat ('YYYY-MM'), für den JETZT ein Monatsende-Hinweis fällig
+     * wäre: am letzten Tag eines Monats dieser Monat selbst, in den ersten
+     * REMINDER_CATCHUP_DAYS Tagen des Folgemonats noch der Vormonat, sonst
+     * keiner. Rein von $now abhängig (UTC, wie alle Tagesgrenzen der App).
+     */
+    public static function reminderMonthTag(int $now): ?string
+    {
+        $day = (int) gmdate('j', $now);
+        if ($day === (int) gmdate('t', $now)) {
+            return gmdate('Y-m', $now);
+        }
+        if ($day <= self::REMINDER_CATCHUP_DAYS) {
+            // $day Tage zurück landet immer im Vormonat, egal zu welcher Uhrzeit.
+            return gmdate('Y-m', $now - $day * 86400);
+        }
+
+        return null;
+    }
+
+    /** Zeitpunkt der offenen Admin-Erinnerung, 0 = keine offen. */
+    public static function remindRequestedAt(array $row): int
+    {
+        $value = $row['remind_requested_at'] ?? 0;
+
+        return is_numeric($value) ? (int) $value : 0;
+    }
+
+    /** Zuletzt bestätigter Monatsende-Hinweis ('YYYY-MM'), '' = noch keiner. */
+    public static function remindedMonth(array $row): string
+    {
+        $value = $row['reminded_month'] ?? '';
+
+        return is_string($value) ? $value : '';
+    }
+
+    /** Merkt eine Admin-Erinnerung vor; eine zweite ersetzt die erste. */
+    public static function requestReminder(string $id): void
+    {
+        Db::transaction(static function (PDO $pdo) use ($id): void {
+            $pdo->prepare('UPDATE users SET remind_requested_at = ? WHERE id = ?')
+                ->execute([Clock::now(), (int) $id]);
+        });
+    }
+
+    /**
+     * Bestätigt gezeigte Erinnerungen. Die Admin-Erinnerung wird nur
+     * gelöscht, wenn der bestätigte Zeitstempel noch der offene ist – eine
+     * zwischen Abruf und Bestätigung neu vorgemerkte Erinnerung bleibt so
+     * erhalten statt ungesehen mitgelöscht zu werden.
+     */
+    public static function ackReminders(string $id, ?string $month, ?int $adminRequestedAt): void
+    {
+        Db::transaction(static function (PDO $pdo) use ($id, $month, $adminRequestedAt): void {
+            if ($month !== null) {
+                $pdo->prepare('UPDATE users SET reminded_month = ? WHERE id = ?')
+                    ->execute([$month, (int) $id]);
+            }
+            if ($adminRequestedAt !== null) {
+                $pdo->prepare('UPDATE users SET remind_requested_at = 0 WHERE id = ? AND remind_requested_at = ?')
+                    ->execute([(int) $id, $adminRequestedAt]);
+            }
+        });
+    }
+
     /**
      * Prüft das is_admin-Flag auf einer bereits geladenen Nutzerzeile – ohne
      * zusätzliche Datenbankabfrage. Ergänzt Config::isAdmin() (statische
