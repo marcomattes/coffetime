@@ -18,6 +18,13 @@ final class Config
 
     public static function path(): string
     {
+        // Für Tests und alternative Deployments: eine Umgebungsvariable
+        // überschreibt den Standardpfad, falls gesetzt und nicht leer.
+        $override = getenv('COFFEE_CONFIG_PATH');
+        if (is_string($override) && $override !== '') {
+            return $override;
+        }
+
         return dirname(__DIR__) . '/config.php';
     }
 

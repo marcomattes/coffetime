@@ -97,6 +97,15 @@ final class Frontend
         <span class="stat-label">All coffees</span>
         <strong id="total" data-testid="total" class="stat-value">0</strong>
       </div>
+      <div class="stat">
+        <span class="stat-label">Today</span>
+        <strong id="today" data-testid="today" class="stat-value">0</strong>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Last 14 days</h2>
+      <div id="history-chart" data-testid="history-chart" class="chart"></div>
     </div>
 
     <div class="card">
@@ -119,6 +128,10 @@ final class Frontend
         <input type="file" id="private-key-input" data-testid="private-key-input" accept=".pem,.key,text/plain">
       </div>
       <p id="admin-key-status" class="hint" role="status">Encrypted names are shown until a key is selected.</p>
+      <p id="admin-totals" data-testid="admin-totals" class="hint"></p>
+      <button type="button" id="btn-admin-csv" data-testid="btn-admin-csv" class="btn btn-quiet">Export CSV</button>
+      <p class="hint">Names appear in the CSV only after the matching private key file has been loaded.</p>
+      <p id="admin-status" data-testid="admin-status" class="error" role="alert"></p>
       <div id="admin-users" data-testid="admin-users" class="rows"></div>
     </div>
   </section>

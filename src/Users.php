@@ -88,6 +88,22 @@ final class Users
         });
     }
 
+    /**
+     * Bucht eine Zahlung. Additiv und atomar, niemals negativ – zu grosse
+     * negative Beträge werden bei Null gekappt statt den Zähler zu unterlaufen.
+     *
+     * @return array<string, mixed>
+     */
+    public static function addPayment(string $id, int $amountCents): array
+    {
+        return Db::transaction(static function (PDO $pdo) use ($id, $amountCents): array {
+            $statement = $pdo->prepare('UPDATE users SET paid_cents = MAX(0, paid_cents + ?) WHERE id = ?');
+            $statement->execute([$amountCents, (int) $id]);
+
+            return self::rowInTransaction($pdo, $id);
+        });
+    }
+
     /** @return array<string, mixed> */
     public static function undoCoffee(string $id): array
     {
@@ -142,6 +158,41 @@ final class Users
         return $streak;
     }
 
+    /**
+     * Kaffeeverlauf der letzten $days Kalendertage (inklusive heute), tagweise
+     * gezählt. Fehlende Tage werden mit 0 aufgefüllt, aufsteigend sortiert.
+     *
+     * @return array{today: int, days: list<array{date: string, coffees: int}>}
+     */
+    public static function history(string $id, int $days = 28): array
+    {
+        $now = Clock::now();
+        $cutoff = $now - $days * 86400;
+
+        $rows = Db::fetchRows(
+            "SELECT date(created_at, 'unixepoch') AS day, COUNT(*) AS n
+             FROM coffee_events WHERE user_id = ? AND created_at >= ? GROUP BY day",
+            [(int) $id, $cutoff]
+        );
+        $counts = [];
+        foreach ($rows as $row) {
+            if (isset($row['day']) && is_string($row['day']) && $row['day'] !== '') {
+                $counts[$row['day']] = isset($row['n']) && is_numeric($row['n']) ? (int) $row['n'] : 0;
+            }
+        }
+
+        $out = [];
+        for ($offset = $days - 1; $offset >= 0; $offset--) {
+            $day = gmdate('Y-m-d', $now - $offset * 86400);
+            $out[] = ['date' => $day, 'coffees' => $counts[$day] ?? 0];
+        }
+
+        return [
+            'today' => $counts[gmdate('Y-m-d', $now)] ?? 0,
+            'days' => $out,
+        ];
+    }
+
     /** @return array<string, mixed> */
     private static function rowInTransaction(PDO $pdo, string $id): array
     {
@@ -191,6 +242,7 @@ final class Users
             'id' => (string) ($row['id'] ?? ''),
             'nameEncrypted' => is_string($encrypted) ? $encrypted : '',
             'coffees' => self::coffees($row),
+            'paidCents' => self::paidCents($row),
             'balanceCents' => self::balanceCents($row),
         ];
     }

@@ -210,6 +210,11 @@ input {
   gap: 10px;
 }
 
+/* Ein ungerades letztes Feld nimmt die volle Breite ein statt allein zu hängen. */
+.grid .stat:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 .stat {
   min-width: 0;
 }
@@ -284,6 +289,104 @@ input {
   color: var(--muted);
   overflow-wrap: anywhere;
   word-break: break-all;
+}
+
+.row-amounts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+
+.row-paid {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.row-payment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.row-payment-input {
+  flex: 1 1 96px;
+  min-width: 80px;
+  width: auto;
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
+.row-payment-btn {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 40px;
+  margin: 0;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+#admin-totals {
+  font-variant-numeric: tabular-nums;
+}
+
+#btn-admin-csv {
+  width: auto;
+  display: inline-block;
+  min-height: 40px;
+  padding: 8px 14px;
+  margin: 0 0 10px;
+}
+
+/* -------------------------------------------------------------- Chart -- */
+
+.chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.chart-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.chart-track {
+  width: 100%;
+  max-width: 22px;
+  height: 90px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.chart-bar {
+  width: 100%;
+  min-height: 3px;
+  background: var(--accent);
+  opacity: 0.45;
+  border-radius: calc(var(--radius) / 3) calc(var(--radius) / 3) 0 0;
+}
+
+.chart-bar.bar-today {
+  opacity: 1;
+}
+
+.chart-label {
+  margin-top: 4px;
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-col-today .chart-label {
+  color: var(--ink);
+  font-weight: 700;
 }
 
 .error {

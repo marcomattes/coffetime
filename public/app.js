@@ -118,6 +118,57 @@
     }
   }
 
+  function renderHistory(history) {
+    text(el('today'), String(history && typeof history.today === 'number' ? history.today : 0));
+
+    var container = el('history-chart');
+    if (!container) {
+      return;
+    }
+    container.textContent = '';
+
+    var days = (history && history.days ? history.days : []).slice(-14);
+    var max = 0;
+    days.forEach(function (day) {
+      if (typeof day.coffees === 'number' && day.coffees > max) {
+        max = day.coffees;
+      }
+    });
+
+    days.forEach(function (day, index) {
+      var isToday = index === days.length - 1;
+      var coffees = typeof day.coffees === 'number' ? day.coffees : 0;
+      var pct = max > 0 ? Math.round((coffees / max) * 100) : 0;
+      var label = day.date + ': ' + coffees + (coffees === 1 ? ' coffee' : ' coffees');
+      var date = new Date(day.date + 'T00:00:00Z');
+
+      var col = document.createElement('div');
+      col.className = 'chart-col' + (isToday ? ' chart-col-today' : '');
+      col.setAttribute('data-testid', 'history-day');
+      col.setAttribute('role', 'img');
+      col.setAttribute('aria-label', label);
+      col.title = label;
+
+      var track = document.createElement('div');
+      track.className = 'chart-track';
+      track.setAttribute('aria-hidden', 'true');
+
+      var bar = document.createElement('div');
+      bar.className = 'chart-bar' + (isToday ? ' bar-today' : '');
+      bar.style.height = pct + '%';
+      track.appendChild(bar);
+
+      var dayLabel = document.createElement('span');
+      dayLabel.className = 'chart-label';
+      dayLabel.setAttribute('aria-hidden', 'true');
+      dayLabel.textContent = String(date.getUTCDate());
+
+      col.appendChild(track);
+      col.appendChild(dayLabel);
+      container.appendChild(col);
+    });
+  }
+
   function renderStats(stats) {
     text(el('total'), String(stats.total));
     text(el('rank'), stats.rank === null || stats.rank === undefined ? '-' : String(stats.rank));
@@ -147,8 +198,29 @@
     });
   }
 
+  function renderAdminTotals(users) {
+    var totalsNode = el('admin-totals');
+    if (!totalsNode) {
+      return;
+    }
+    var coffees = 0;
+    var balance = 0;
+    users.forEach(function (user) {
+      coffees += typeof user.coffees === 'number' ? user.coffees : 0;
+      balance += typeof user.balanceCents === 'number' ? user.balanceCents : 0;
+    });
+    text(
+      totalsNode,
+      users.length + (users.length === 1 ? ' account' : ' accounts') +
+        ' · ' + coffees + (coffees === 1 ? ' coffee' : ' coffees') +
+        ' · ' + money(balance) + ' outstanding'
+    );
+  }
+
   function renderAdmin(users) {
     state.users = users || [];
+    renderAdminTotals(state.users);
+
     var container = el('admin-users');
     if (!container) {
       return;
@@ -172,8 +244,17 @@
       head.className = 'row-head';
       var left = document.createElement('span');
       left.textContent = 'Account ' + user.id + ' · ' + user.coffees + (user.coffees === 1 ? ' coffee' : ' coffees');
+
       var right = document.createElement('span');
-      right.textContent = money(user.balanceCents);
+      right.className = 'row-amounts';
+      var balanceLine = document.createElement('strong');
+      balanceLine.textContent = money(user.balanceCents);
+      var paidLine = document.createElement('span');
+      paidLine.className = 'row-paid';
+      paidLine.textContent = 'paid ' + money(user.paidCents);
+      right.appendChild(balanceLine);
+      right.appendChild(paidLine);
+
       head.appendChild(left);
       head.appendChild(right);
 
@@ -181,10 +262,104 @@
       cipher.className = 'row-cipher';
       cipher.textContent = user.decryptedName || user.nameEncrypted || '(no ciphertext)';
 
+      var form = document.createElement('div');
+      form.className = 'row-payment';
+
+      var input = document.createElement('input');
+      input.type = 'number';
+      input.step = '0.01';
+      input.min = '0.01';
+      input.setAttribute('inputmode', 'decimal');
+      input.placeholder = '€';
+      input.className = 'row-payment-input';
+      input.setAttribute('data-testid', 'admin-payment-input');
+      input.setAttribute('aria-label', 'Payment amount for account ' + user.id);
+
+      var payButton = document.createElement('button');
+      payButton.type = 'button';
+      payButton.className = 'btn btn-quiet row-payment-btn';
+      payButton.textContent = 'Record payment';
+      payButton.setAttribute('data-testid', 'admin-payment-btn');
+      payButton.addEventListener('click', function () {
+        recordPayment(user, input, payButton);
+      });
+
+      form.appendChild(input);
+      form.appendChild(payButton);
+
       row.appendChild(head);
       row.appendChild(cipher);
+      row.appendChild(form);
       container.appendChild(row);
     });
+  }
+
+  function recordPayment(user, input, button) {
+    var statusNode = el('admin-status');
+    text(statusNode, '');
+
+    var value = parseFloat(input.value);
+    if (!isFinite(value) || value <= 0 || value > 10000) {
+      text(statusNode, 'invalid_amount');
+      return;
+    }
+    var amountCents = Math.round(value * 100);
+
+    busy(button, true);
+    api('/api/admin/payment', { userId: user.id, amountCents: amountCents })
+      .then(function (data) {
+        var updated = data.user;
+        if (user.decryptedName) {
+          updated.decryptedName = user.decryptedName;
+        }
+        for (var i = 0; i < state.users.length; i++) {
+          if (state.users[i].id === user.id) {
+            state.users[i] = updated;
+            break;
+          }
+        }
+        renderAdmin(state.users);
+      })
+      .catch(function (error) {
+        fail(statusNode, error);
+      })
+      .then(function () {
+        busy(button, false);
+      });
+  }
+
+  function csvField(value) {
+    var str = value === undefined || value === null ? '' : String(value);
+    if (/[",\n]/.test(str)) {
+      str = '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }
+
+  function exportAdminCsv() {
+    var rows = [['id', 'name', 'coffees', 'paidEuros', 'balanceEuros']];
+    state.users.forEach(function (user) {
+      rows.push([
+        user.id,
+        user.decryptedName || '',
+        typeof user.coffees === 'number' ? user.coffees : 0,
+        ((typeof user.paidCents === 'number' ? user.paidCents : 0) / 100).toFixed(2),
+        ((typeof user.balanceCents === 'number' ? user.balanceCents : 0) / 100).toFixed(2)
+      ]);
+    });
+    var csv = rows.map(function (row) {
+      return row.map(csvField).join(',');
+    }).join('\r\n');
+
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'coffee-time.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 
   function pemBytes(pem) {
@@ -242,7 +417,8 @@
         show('app');
         consumePendingBook();
         var jobs = [
-          api('/api/stats').then(renderStats).catch(function () {})
+          api('/api/stats').then(renderStats).catch(function () {}),
+          api('/api/history').then(renderHistory).catch(function () {})
         ];
         if (me.admin === true) {
           jobs.push(
@@ -561,6 +737,7 @@
     el('btn-undo').addEventListener('click', undoCoffee);
     el('btn-logout').addEventListener('click', logout);
     el('private-key-input').addEventListener('change', selectPrivateKey);
+    el('btn-admin-csv').addEventListener('click', exportAdminCsv);
     checkPendingBook();
     registerServiceWorker();
     show('auth');

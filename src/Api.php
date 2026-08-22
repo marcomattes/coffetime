@@ -53,7 +53,9 @@ final class Api
             '/api/coffee' => ['POST', 'coffee'],
             '/api/coffee/undo' => ['POST', 'coffeeUndo'],
             '/api/stats' => ['GET', 'stats'],
+            '/api/history' => ['GET', 'history'],
             '/api/admin/users' => ['GET', 'adminUsers'],
+            '/api/admin/payment' => ['POST', 'adminPayment'],
         ];
 
         if (!isset($routes[$path])) {
@@ -332,6 +334,12 @@ final class Api
         Http::json(Users::stats((string) $user['id']));
     }
 
+    /** @param array<string, mixed> $user */
+    private static function history(array $user): never
+    {
+        Http::json(Users::history((string) $user['id']));
+    }
+
     // -------------------------------------------------------------- Admin ---
 
     /** @param array<string, mixed> $user */
@@ -343,6 +351,27 @@ final class Api
             $users[] = Users::adminView($row);
         }
         Http::json(['users' => $users]);
+    }
+
+    /** @param array<string, mixed> $user */
+    private static function adminPayment(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
+            Http::error('unknown_user', 404);
+        }
+
+        // Nur echte Ganzzahlen zulassen – kein bool, kein float, kein String.
+        $amountRaw = $body['amountCents'] ?? null;
+        if (!is_int($amountRaw) || $amountRaw === 0 || $amountRaw < -1000000 || $amountRaw > 1000000) {
+            Http::error('invalid_amount', 400);
+        }
+
+        $updated = Users::addPayment($userId, $amountRaw);
+        Http::json(['ok' => true, 'user' => Users::adminView($updated)]);
     }
 
     /** @param array<string, mixed> $user */
@@ -369,6 +398,7 @@ final class Api
             '/api/test/seed' => ['POST', 'testSeed'],
             '/api/test/state' => ['GET', 'testState'],
             '/api/test/clock' => ['POST', 'testClock'],
+            '/api/test/login' => ['POST', 'testLogin'],
         ];
         if (!isset($routes[$path])) {
             Http::error('not_found', 404);
@@ -474,6 +504,19 @@ final class Api
         Clock::setOffset((int) $offset);
 
         Http::json(['ok' => true, 'offsetSeconds' => Clock::offset(), 'now' => Clock::now()]);
+    }
+
+    /** Meldet einen Testbenutzer ohne WebAuthn-Zeremonie an – nur mit Testtoken erreichbar. */
+    private static function testLogin(): never
+    {
+        $body = Http::body();
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
+            Http::error('unknown_user', 404);
+        }
+
+        Sessions::start($userId);
+        Http::json(['ok' => true, 'userId' => $userId]);
     }
 
     // ------------------------------------------------------------- Helfer ---

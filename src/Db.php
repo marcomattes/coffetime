@@ -15,7 +15,7 @@ use Throwable;
 final class Db
 {
     /** Zielversion des Schemas. */
-    public const SCHEMA_VERSION = 3;
+    public const SCHEMA_VERSION = 4;
 
     /** Wartezeit auf eine gesperrte Datenbank. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -260,6 +260,14 @@ final class Db
                     )'
                 );
             },
+            4 => static function (PDO $pdo): void {
+                // Nur ein zusammengesetzter Index für den Verlauf (user_id,
+                // created_at) – die Tabelle selbst ist bereits vollständig.
+                $pdo->exec(
+                    'CREATE INDEX IF NOT EXISTS idx_coffee_events_user_created
+                     ON coffee_events (user_id, created_at)'
+                );
+            },
         ];
 
         // Schnellweg: nur lesende Prüfungen. Alles Schreibende darf nicht bei
@@ -388,6 +396,7 @@ final class Db
             'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)',
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_ceremonies_challenge ON ceremonies (challenge)',
             'CREATE INDEX IF NOT EXISTS idx_coffee_events_user ON coffee_events (user_id)',
+            'CREATE INDEX IF NOT EXISTS idx_coffee_events_user_created ON coffee_events (user_id, created_at)',
         ];
         foreach ($indexes as $sql) {
             try {

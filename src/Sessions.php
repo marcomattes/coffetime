@@ -32,6 +32,8 @@ final class Sessions
         $now = Clock::now();
 
         Db::transaction(static function (PDO $pdo) use ($id, $userId, $now): void {
+            // Aufräumen abgelaufener, nie abgemeldeter Sitzungen bei Gelegenheit.
+            $pdo->prepare('DELETE FROM sessions WHERE expires_at <= ?')->execute([$now]);
             $statement = $pdo->prepare(
                 'INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'
             );
