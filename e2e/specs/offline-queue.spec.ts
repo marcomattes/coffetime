@@ -9,10 +9,32 @@
  * (enqueueBooking/flushQueue/updateQueueHint).
  */
 
-import { Page } from '@playwright/test';
+import { BrowserContext, Page } from '@playwright/test';
 
 import { test, expect } from '../helpers/fixtures';
 import { TestApi } from '../helpers/test-api';
+
+/**
+ * Cuts the network for the page AND aborts every /api request at the routing
+ * layer. setOffline alone is not enough once the test navigates while
+ * offline: Chromium re-applies network emulation to the new document, and on
+ * a slow machine the app's startup queue flush can win that race and sneak a
+ * queued booking out to the server (observed on CI). Routing applies
+ * deterministically across navigations, and the service worker passes /api/*
+ * through untouched, so these requests stay interceptable.
+ */
+async function goOffline(context: BrowserContext): Promise<void> {
+  await context.route('**/api/**', (route) => route.abort('internetdisconnected'));
+  await context.setOffline(true);
+}
+
+async function goOnline(context: BrowserContext, page: Page): Promise<void> {
+  await context.unroute('**/api/**');
+  await context.setOffline(false);
+  // Deterministic trigger instead of relying on the browser's own
+  // connectivity detection: flushQueue() is wired to this event.
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+}
 
 function hintText(count: number): string {
   return count + (count === 1 ? ' booking' : ' bookings') + ' waiting for connection — they sync automatically.';
@@ -39,7 +61,7 @@ test.describe('offline queue', () => {
   test('an offline booking is queued locally while the server stays at zero', async ({ page, context, testApi }) => {
     const user = await seedAndSignIn(page, testApi, 'Off', 'Line');
 
-    await context.setOffline(true);
+    await goOffline(context);
     await page.getByTestId('btn-add').click();
 
     await expect(page.getByTestId('queue-hint')).toHaveText(hintText(1));
@@ -55,14 +77,11 @@ test.describe('offline queue', () => {
   test('going back online flushes the queued booking exactly once', async ({ page, context, testApi }) => {
     const user = await seedAndSignIn(page, testApi, 'Off', 'Line');
 
-    await context.setOffline(true);
+    await goOffline(context);
     await page.getByTestId('btn-add').click();
     await expect(page.getByTestId('queue-hint')).toHaveText(hintText(1));
 
-    await context.setOffline(false);
-    // Deterministic trigger instead of relying on the browser's own
-    // connectivity detection: flushQueue() is wired to this event.
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await goOnline(context, page);
 
     await expect(page.getByTestId('counter')).toHaveText('1');
     await expect(page.getByTestId('queue-hint')).toBeHidden();
@@ -74,7 +93,7 @@ test.describe('offline queue', () => {
   test('multiple offline bookings all queue and flush completely', async ({ page, context, testApi }) => {
     const user = await seedAndSignIn(page, testApi, 'Off', 'Line');
 
-    await context.setOffline(true);
+    await goOffline(context);
     await page.getByTestId('btn-add').click();
     await expect(page.getByTestId('queue-hint')).toHaveText(hintText(1));
     await expect(page.getByTestId('btn-add')).toBeEnabled();
@@ -86,8 +105,7 @@ test.describe('offline queue', () => {
     // Still queued, still zero server-side.
     expect(await serverCoffees(testApi, user.id)).toBe(0);
 
-    await context.setOffline(false);
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await goOnline(context, page);
 
     await expect(page.getByTestId('counter')).toHaveText('3');
     await expect(page.getByTestId('queue-hint')).toBeHidden();
@@ -106,7 +124,7 @@ test.describe('offline queue', () => {
     await expect(page.getByTestId('view-app')).toBeVisible();
     await page.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
 
-    await context.setOffline(true);
+    await goOffline(context);
     await page.getByTestId('btn-add').click();
     await expect(page.getByTestId('queue-hint')).toHaveText(hintText(1));
     await expect(page.getByTestId('btn-add')).toBeEnabled();
@@ -122,8 +140,7 @@ test.describe('offline queue', () => {
     await expect(page.getByTestId('queue-hint')).toHaveText(hintText(2));
     expect(await serverCoffees(testApi, user.id)).toBe(0);
 
-    await context.setOffline(false);
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await goOnline(context, page);
 
     await expect(page.getByTestId('view-app')).toBeVisible();
     await expect(page.getByTestId('counter')).toHaveText('2');
