@@ -18,6 +18,7 @@ use Coffee\Config;
 use Coffee\Db;
 use Coffee\Encoding;
 use Coffee\Http;
+use Coffee\LinkCodes;
 use Coffee\Sessions;
 use Coffee\Settings;
 use Coffee\Users;
@@ -121,8 +122,8 @@ check(
     'Db::migrate reaches the target schema version',
     Db::userVersion($migratePdo) === Db::SCHEMA_VERSION
 );
-check('Db::migrate reaches schema version 6', Db::userVersion($migratePdo) === 6);
-foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events', 'settings'] as $table) {
+check('Db::migrate reaches schema version 7', Db::userVersion($migratePdo) === 7);
+foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events', 'settings', 'link_codes'] as $table) {
     check("Db::migrate creates the {$table} table", Db::tableExists($migratePdo, $table));
 }
 foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents', 'is_admin'] as $column) {
@@ -144,7 +145,7 @@ foreach (['name', 'value'] as $column) {
 $indexNames = $migratePdo
     ->query("SELECT name FROM sqlite_master WHERE type = 'index'")
     ->fetchAll(PDO::FETCH_COLUMN);
-foreach (['idx_users_name_hash', 'idx_users_handle', 'idx_credentials_credential_id', 'idx_coffee_events_user_created'] as $index) {
+foreach (['idx_users_name_hash', 'idx_users_handle', 'idx_credentials_credential_id', 'idx_coffee_events_user_created', 'idx_link_codes_hash', 'idx_link_codes_user'] as $index) {
     check("Db::migrate creates the {$index} index", in_array($index, $indexNames, true));
 }
 
@@ -470,6 +471,75 @@ Db::pdo()->prepare('INSERT INTO sessions (id, user_id, created_at, expires_at) V
 check('the manually inserted expired session exists before pruning', Db::fetchRow('SELECT * FROM sessions WHERE id = ?', [$expiredId]) !== null);
 Sessions::start((string) $sessionUser['id']);
 check('Sessions::start prunes expired sessions as a side effect', Db::fetchRow('SELECT * FROM sessions WHERE id = ?', [$expiredId]) === null);
+
+// -------------------------------------------------------------- LinkCodes ---
+
+Db::reset();
+$linkConfig = write_test_config($workspace, [
+    'dbPath' => $workspace . '/data/link-codes.sqlite',
+]);
+putenv('COFFEE_CONFIG_PATH=' . $linkConfig);
+Config::forget();
+Db::reset();
+
+// normalize(): formatting, dashes/lowercase are accepted, wrong length fails.
+check('LinkCodes::normalize uppercases and strips the dash', LinkCodes::normalize('ab2d-3efg') === 'AB2D3EFG');
+check('LinkCodes::normalize strips arbitrary non-alphabet characters', LinkCodes::normalize(' AB2D 3EFG!') === 'AB2D3EFG');
+check('LinkCodes::normalize rejects a too-short result', LinkCodes::normalize('AB2D-3EF') === '');
+check('LinkCodes::normalize rejects a too-long result', LinkCodes::normalize('AB2D-3EFGH') === '');
+check('LinkCodes::normalize of an empty string is empty string', LinkCodes::normalize('') === '');
+
+$linkUser = Users::create('cipher-link', 'hash-link', 'handle-link');
+$linkUserId = (string) $linkUser['id'];
+
+$beforeCreate = Clock::now();
+$created = LinkCodes::create($linkUserId, 'self', LinkCodes::SELF_TTL);
+check('LinkCodes::create returns a code in XXXX-XXXX format', preg_match('/^[A-Z2-9]{4}-[A-Z2-9]{4}$/', $created['code']) === 1);
+check('LinkCodes::create returns an expiresAt in the future', $created['expiresAt'] > $beforeCreate);
+check(
+    'LinkCodes::create sets expiresAt exactly SELF_TTL seconds ahead',
+    $created['expiresAt'] === $beforeCreate + LinkCodes::SELF_TTL
+);
+
+// The plaintext code must never be stored – only its sha256 hash.
+$normalizedCreated = LinkCodes::normalize($created['code']);
+$rowByHash = Db::fetchRow('SELECT * FROM link_codes WHERE code_hash = ?', [hash('sha256', $normalizedCreated)]);
+check('the stored row is found by sha256(code), not by the plaintext code', $rowByHash !== null);
+check(
+    'the stored code_hash column never equals the plaintext code',
+    ($rowByHash['code_hash'] ?? null) !== $normalizedCreated
+);
+check('no row stores the plaintext code as code_hash anywhere', Db::fetchRow('SELECT * FROM link_codes WHERE code_hash = ?', [$normalizedCreated]) === null);
+
+// peek() finds the code and does NOT consume it.
+$peeked = LinkCodes::peek($created['code']);
+check('LinkCodes::peek finds a freshly created code', $peeked !== null);
+check('LinkCodes::peek reports the correct user_id', $peeked !== null && (int) $peeked['user_id'] === (int) $linkUserId);
+$peekedAgain = LinkCodes::peek($created['code']);
+check('LinkCodes::peek does not consume the code (a second peek still finds it)', $peekedAgain !== null);
+
+// consume() marks it used; a second consume() must fail.
+$consumed = LinkCodes::consume($created['code']);
+check('LinkCodes::consume returns the row on first use', $consumed !== null);
+$consumedAgain = LinkCodes::consume($created['code']);
+check('LinkCodes::consume returns null on a second attempt (already used)', $consumedAgain === null);
+check('a consumed code no longer peeks as valid', LinkCodes::peek($created['code']) === null);
+
+// One active code per account: creating a second code invalidates the first.
+$first = LinkCodes::create($linkUserId, 'self', LinkCodes::SELF_TTL);
+check('the first of two codes peeks fine right after creation', LinkCodes::peek($first['code']) !== null);
+$second = LinkCodes::create($linkUserId, 'self', LinkCodes::SELF_TTL);
+check('creating a second code invalidates the first', LinkCodes::peek($first['code']) === null);
+check('the second code is still valid', LinkCodes::peek($second['code']) !== null);
+check('LinkCodes::consume also fails for the invalidated first code', LinkCodes::consume($first['code']) === null);
+
+// Expiry: move the clock (and thus Clock::now()) past expires_at.
+$expiring = LinkCodes::create($linkUserId, 'admin', LinkCodes::ADMIN_TTL);
+check('LinkCodes::create honors a custom TTL (ADMIN_TTL)', $expiring['expiresAt'] === Clock::now() + LinkCodes::ADMIN_TTL);
+Clock::setOffset(LinkCodes::ADMIN_TTL + 60);
+check('an expired code no longer peeks as valid', LinkCodes::peek($expiring['code']) === null);
+check('an expired code cannot be consumed either', LinkCodes::consume($expiring['code']) === null);
+Clock::setOffset(0);
 
 Db::reset();
 Config::forget();

@@ -20,7 +20,7 @@ use Throwable;
 final class Db
 {
     /** Zielversion des Schemas. */
-    public const SCHEMA_VERSION = 6;
+    public const SCHEMA_VERSION = 7;
 
     /** Wartezeit auf eine gesperrte Datenbank. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -512,6 +512,23 @@ final class Db
                     )'
                 );
             },
+            7 => static function (PDO $pdo): void {
+                // Einmalcodes zum Verknüpfen eines zweiten Geräts mit einem
+                // bestehenden Konto: selbst erzeugt ("self") oder von einem
+                // Admin bei Geräteverlust ("admin"). Wie bei ceremonies wird
+                // nur der SHA-256-Hash gespeichert, nie der Klartextcode.
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS link_codes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        code_hash TEXT NOT NULL,
+                        created_by TEXT NOT NULL,
+                        used INTEGER NOT NULL DEFAULT 0,
+                        expires_at INTEGER NOT NULL DEFAULT 0,
+                        created_at INTEGER NOT NULL DEFAULT 0
+                    )'
+                );
+            },
         ];
     }
 
@@ -612,6 +629,20 @@ final class Db
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
                 );
             },
+            7 => static function (PDO $pdo): void {
+                // Siehe Kommentar in sqliteSteps().
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS link_codes (
+                        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        code_hash VARCHAR(64) NOT NULL,
+                        created_by VARCHAR(16) NOT NULL,
+                        used BIGINT NOT NULL DEFAULT 0,
+                        expires_at BIGINT NOT NULL DEFAULT 0,
+                        created_at BIGINT NOT NULL DEFAULT 0
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+                );
+            },
         ];
     }
 
@@ -661,7 +692,11 @@ final class Db
             return false;
         }
 
-        return self::tableExists($pdo, 'settings');
+        if (!self::tableExists($pdo, 'settings')) {
+            return false;
+        }
+
+        return self::tableExists($pdo, 'link_codes');
     }
 
     /**
@@ -700,6 +735,8 @@ final class Db
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_ceremonies_challenge ON ceremonies (challenge)',
             'CREATE INDEX IF NOT EXISTS idx_coffee_events_user ON coffee_events (user_id)',
             'CREATE INDEX IF NOT EXISTS idx_coffee_events_user_created ON coffee_events (user_id, created_at)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_link_codes_hash ON link_codes (code_hash)',
+            'CREATE INDEX IF NOT EXISTS idx_link_codes_user ON link_codes (user_id)',
         ];
         foreach ($indexes as $sql) {
             try {
@@ -726,6 +763,8 @@ final class Db
             ['idx_ceremonies_challenge', 'ceremonies', 'UNIQUE', '(challenge)'],
             ['idx_coffee_events_user', 'coffee_events', '', '(user_id)'],
             ['idx_coffee_events_user_created', 'coffee_events', '', '(user_id, created_at)'],
+            ['idx_link_codes_hash', 'link_codes', 'UNIQUE', '(code_hash)'],
+            ['idx_link_codes_user', 'link_codes', '', '(user_id)'],
         ];
         foreach ($indexes as [$name, $table, $modifier, $columnsSql]) {
             if (!self::tableExists($pdo, $table) || self::indexExists($pdo, $table, $name)) {
@@ -799,6 +838,14 @@ final class Db
                 'settings' => [
                     'value' => 'TEXT',
                 ],
+                'link_codes' => [
+                    'user_id' => 'BIGINT NOT NULL DEFAULT 0',
+                    'code_hash' => 'VARCHAR(64)',
+                    'created_by' => 'VARCHAR(16)',
+                    'used' => 'BIGINT NOT NULL DEFAULT 0',
+                    'expires_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'created_at' => 'BIGINT NOT NULL DEFAULT 0',
+                ],
             ];
         }
 
@@ -846,6 +893,14 @@ final class Db
             ],
             'settings' => [
                 'value' => 'TEXT',
+            ],
+            'link_codes' => [
+                'user_id' => 'INTEGER NOT NULL DEFAULT 0',
+                'code_hash' => 'TEXT',
+                'created_by' => 'TEXT',
+                'used' => 'INTEGER NOT NULL DEFAULT 0',
+                'expires_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'created_at' => 'INTEGER NOT NULL DEFAULT 0',
             ],
         ];
     }

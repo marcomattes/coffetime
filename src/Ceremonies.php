@@ -18,6 +18,9 @@ final class Ceremonies
 
     public const KIND_LOGIN = 'login';
 
+    /** Verknüpfung eines zweiten Geräts mit einem bestehenden Konto. */
+    public const KIND_LINK = 'link';
+
     /** Gültigkeitsdauer einer Challenge in Sekunden. */
     public const LIFETIME = 600;
 

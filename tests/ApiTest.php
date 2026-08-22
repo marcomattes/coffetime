@@ -158,6 +158,119 @@ check('undo below zero stays at zero', ($r['json']['coffees'] ?? null) === 0);
 $r = $client->post('/api/coffee/undo');
 check('a second undo at zero still stays at zero', ($r['json']['coffees'] ?? null) === 0);
 
+// ---------------------------------------------------- device linking codes ---
+
+// linkCode without a session is 401 (a protected endpoint).
+$client->clearCookies();
+$r = $client->post('/api/link/code');
+check('POST /api/link/code without a session is 401', $r['status'] === 401);
+
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('test/login as the non-admin user for the linking tests succeeds', $r['status'] === 200);
+
+$r = $client->post('/api/link/code');
+check('POST /api/link/code with a session is 200', $r['status'] === 200);
+$selfCode = $r['json']['code'] ?? '';
+check(
+    'the self-service code matches the XXXX-XXXX unambiguous-alphabet format',
+    is_string($selfCode) && preg_match('/^[A-Z2-9]{4}-[A-Z2-9]{4}$/', $selfCode) === 1
+);
+check('the self-service code carries an expiresAt in the future', (($r['json']['expiresAt'] ?? 0) > time()));
+
+// /api/admin/link-code as a non-admin is 403.
+$r = $client->post('/api/admin/link-code', ['userId' => $normalId]);
+check('POST /api/admin/link-code as a non-admin is 403', $r['status'] === 403);
+
+// As admin: unknown userId is 404, a real one succeeds.
+$r = $client->post('/api/test/login', ['userId' => $adminId], $testHeaders);
+check('test/login as the admin user for the linking tests succeeds', $r['status'] === 200);
+
+$r = $client->post('/api/admin/link-code', ['userId' => '999999']);
+check('POST /api/admin/link-code for an unknown user is 404', $r['status'] === 404);
+check('POST /api/admin/link-code for an unknown user reports unknown_user', ($r['json']['error'] ?? null) === 'unknown_user');
+
+$r = $client->post('/api/admin/link-code', ['userId' => $zeroId]);
+check('POST /api/admin/link-code for a real user succeeds', $r['status'] === 200);
+$adminIssuedCode = $r['json']['code'] ?? '';
+check(
+    'the admin-issued code matches the same XXXX-XXXX format',
+    is_string($adminIssuedCode) && preg_match('/^[A-Z2-9]{4}-[A-Z2-9]{4}$/', $adminIssuedCode) === 1
+);
+
+// /api/link/options is public: no session needed, and garbage codes are rejected.
+$client->clearCookies();
+$r = $client->post('/api/link/options', ['code' => 'NOTAREAL-CODE']);
+check('POST /api/link/options with a garbage code is 400', $r['status'] === 400);
+check('POST /api/link/options with a garbage code reports invalid_code', ($r['json']['error'] ?? null) === 'invalid_code');
+
+$r = $client->post('/api/link/options', []);
+check('POST /api/link/options without a code field is 400', $r['status'] === 400);
+check('POST /api/link/options without a code field reports invalid_code', ($r['json']['error'] ?? null) === 'invalid_code');
+
+// A valid (admin-issued) code produces real creation options.
+$r = $client->post('/api/link/options', ['code' => $adminIssuedCode]);
+check('POST /api/link/options with a valid code is 200', $r['status'] === 200);
+$linkOptions = $r['json'];
+check('link/options returns a challenge', is_string($linkOptions['challenge'] ?? null) && $linkOptions['challenge'] !== '');
+check('link/options returns rp information', is_array($linkOptions['rp'] ?? null));
+check(
+    'link/options user.name uses the same opaque kaffee- label scheme as registration',
+    str_starts_with((string) ($linkOptions['user']['name'] ?? ''), 'kaffee-')
+);
+check('link/options carries no plaintext name anywhere in user.name', !str_contains((string) ($linkOptions['user']['name'] ?? ''), ' '));
+
+// peek() semantics: calling options twice with the same code must both succeed
+// (the code is not consumed just by building options for it).
+$r = $client->post('/api/link/options', ['code' => $adminIssuedCode]);
+check('a second call to link/options with the same still-unused code also succeeds', $r['status'] === 200);
+$secondLinkOptions = $r['json'];
+check(
+    'the second call gets the same user handle as the first (same account, same handle)',
+    ($secondLinkOptions['user']['id'] ?? null) === ($linkOptions['user']['id'] ?? null)
+);
+check(
+    'the second call gets a fresh challenge (a new WebAuthn ceremony each time)',
+    ($secondLinkOptions['challenge'] ?? null) !== ($linkOptions['challenge'] ?? null)
+);
+
+// /api/link/verify with a garbage credential must be rejected before ever
+// touching the link code, and must not burn it.
+$r = $client->post('/api/link/verify', ['code' => $adminIssuedCode, 'credential' => ['not' => 'a credential']]);
+check('POST /api/link/verify with a garbage credential is 400', $r['status'] === 400);
+check(
+    'link/verify with a garbage credential reports invalid_credential',
+    ($r['json']['error'] ?? null) === 'invalid_credential'
+);
+
+$r = $client->post('/api/link/options', ['code' => $adminIssuedCode]);
+check('the link code still works for link/options after a failed verify attempt (not burned)', $r['status'] === 200);
+
+// A well-formed but bogus credential (passes the shape check, fails
+// attestation) must also leave the code usable afterwards. It cannot carry a
+// real challenge match without a genuine ceremony, so this exercises the
+// invalid_credential/challenge_invalid path rather than full attestation
+// (which needs a real authenticator and is out of scope here).
+$r = $client->post('/api/link/verify', [
+    'code' => $adminIssuedCode,
+    'credential' => [
+        'id' => 'bogus-id',
+        'rawId' => 'bogus-id',
+        'type' => 'public-key',
+        'response' => [
+            'clientDataJSON' => base64_encode(json_encode(['type' => 'webauthn.create', 'challenge' => 'not-a-real-challenge'])),
+            'attestationObject' => 'bogus',
+        ],
+    ],
+]);
+check('link/verify with a well-formed but bogus credential is rejected as 400', $r['status'] === 400);
+check(
+    'a bogus (non-matching) challenge reports challenge_invalid',
+    ($r['json']['error'] ?? null) === 'challenge_invalid'
+);
+
+$r = $client->post('/api/link/options', ['code' => $adminIssuedCode]);
+check('the link code still works for link/options after a bogus-credential verify attempt (not burned)', $r['status'] === 200);
+
 // -------------------------------------------------------------- non-admin ---
 
 $r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);

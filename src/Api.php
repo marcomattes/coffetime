@@ -19,6 +19,8 @@ final class Api
         '/api/login/verify',
         '/api/setup/status',
         '/api/setup/init',
+        '/api/link/options',
+        '/api/link/verify',
     ];
 
     public static function dispatch(): void
@@ -58,6 +60,10 @@ final class Api
             '/api/history' => ['GET', 'history'],
             '/api/admin/users' => ['GET', 'adminUsers'],
             '/api/admin/payment' => ['POST', 'adminPayment'],
+            '/api/admin/link-code' => ['POST', 'adminLinkCode'],
+            '/api/link/code' => ['POST', 'linkCode'],
+            '/api/link/options' => ['POST', 'linkOptions'],
+            '/api/link/verify' => ['POST', 'linkVerify'],
             // Ein Pfad kann in dieser Routing-Tabelle nur eine Methode
             // tragen – GET und POST für die Einstellungen leben deshalb auf
             // zwei Pfaden statt auf einem gemeinsamen.
@@ -308,6 +314,150 @@ final class Api
         Http::json(['ok' => true]);
     }
 
+    // --------------------------------------------------- Geräteverknüpfung ---
+
+    /**
+     * Erzeugt einen Einmalcode, mit dem der aktuell angemeldete Benutzer ein
+     * zweites Gerät an sein eigenes Konto anhängen kann. Der Code wird der
+     * Oberfläche genau einmal gezeigt – er ist danach nirgendwo im Klartext
+     * gespeichert.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function linkCode(array $user): never
+    {
+        $result = LinkCodes::create((string) $user['id'], 'self', LinkCodes::SELF_TTL);
+        Http::json(['code' => $result['code'], 'expiresAt' => $result['expiresAt']]);
+    }
+
+    /**
+     * Erzeugt Registrierungsoptionen für ein neues Gerät auf einem
+     * BESTEHENDEN Konto. Anders als registerOptions() entsteht hier kein
+     * neuer Benutzer: das existierende user_handle wird wiederverwendet,
+     * damit der neue Passkey als weiterer Faktor desselben Kontos zählt.
+     * Öffentlich erreichbar, da das neue Gerät noch keine Sitzung hat – der
+     * Einmalcode selbst ist der Nachweis der Berechtigung.
+     */
+    private static function linkOptions(): never
+    {
+        $body = Http::body();
+        $code = Http::stringField($body, 'code');
+        if ($code === null) {
+            Http::error('invalid_code', 400);
+        }
+
+        // Nur ein Blick, kein Verbrauch: derselbe Code muss auch nach einem
+        // abgebrochenen Versuch auf dem neuen Gerät noch einmal funktionieren.
+        $row = LinkCodes::peek($code);
+        if ($row === null) {
+            Http::error('invalid_code', 400);
+        }
+
+        $userId = (string) ($row['user_id'] ?? '');
+        $user = Users::find($userId);
+        $handle = $user !== null ? (string) ($user['user_handle'] ?? '') : '';
+        $handleRaw = $handle !== '' ? Encoding::base64UrlDecode($handle) : null;
+        if ($user === null || $handleRaw === null || $handleRaw === '') {
+            Http::error('invalid_code', 400);
+        }
+
+        $options = WebAuthnService::creationOptions($handleRaw, self::userLabel($handle));
+        $payload = [
+            'userId' => $userId,
+            'code' => LinkCodes::normalize($code),
+        ];
+
+        Ceremonies::create(
+            Ceremonies::KIND_LINK,
+            Encoding::base64UrlEncode($options->challenge),
+            WebAuthnService::optionsToJson($options),
+            $payload
+        );
+
+        Http::json(WebAuthnService::optionsToArray($options));
+    }
+
+    /**
+     * Schliesst die Geräteverknüpfung ab: prüft die WebAuthn-Attestation wie
+     * registerVerify(), verbraucht aber danach den Einmalcode statt einen
+     * neuen Benutzer anzulegen. Der Code wird bewusst erst NACH erfolgreicher
+     * Attestation verbraucht – ein gescheiterter Versuch (falsches
+     * Credential, doppelte Credential-ID) darf den Code nicht verbrennen.
+     */
+    private static function linkVerify(): never
+    {
+        $body = Http::body();
+
+        $raw = self::credentialFromBody($body);
+        if ($raw === null) {
+            Http::error('invalid_credential', 400);
+        }
+        $challenge = WebAuthnService::challengeFromCredential($raw);
+        if ($challenge === null) {
+            Http::error('invalid_credential', 400);
+        }
+
+        $ceremony = Ceremonies::consume(Ceremonies::KIND_LINK, $challenge);
+        if ($ceremony === null) {
+            Http::error('challenge_invalid', 400);
+        }
+        $options = WebAuthnService::creationOptionsFromJson((string) ($ceremony['options'] ?? ''));
+        if ($options === null) {
+            Http::error('challenge_invalid', 400);
+        }
+        $payload = json_decode((string) ($ceremony['payload'] ?? '[]'), true);
+        if (!is_array($payload)) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        $userId = (string) ($payload['userId'] ?? '');
+        $storedCode = (string) ($payload['code'] ?? '');
+        if ($userId === '' || $storedCode === '') {
+            Http::error('challenge_invalid', 400);
+        }
+
+        // Der im Body mitgeschickte Code muss zu genau dem Code gehören, für
+        // den diese Ceremonie erzeugt wurde – sonst liesse sich mit einer
+        // fremden Ceremonie ein anderer Code durchschleusen.
+        $bodyCode = Http::stringField($body, 'code');
+        $normalizedBody = $bodyCode !== null ? LinkCodes::normalize($bodyCode) : '';
+        if ($normalizedBody === '' || !hash_equals($storedCode, $normalizedBody)) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        $credential = WebAuthnService::parseCredential($raw);
+        if ($credential === null) {
+            Http::error('invalid_credential', 400);
+        }
+        $record = WebAuthnService::verifyAttestation($credential, $options);
+        if ($record === null) {
+            Http::error('verification_failed', 400);
+        }
+
+        if (Credentials::exists(Encoding::base64UrlEncode($record->publicKeyCredentialId))) {
+            Http::error('credential_exists', 409);
+        }
+
+        // Der Code wird erst jetzt verbraucht: die Attestation ist geprüft,
+        // die Credential-ID ist frei – ab hier kann die Verknüpfung nicht
+        // mehr scheitern, ausser der Code wurde inzwischen anderweitig
+        // verbraucht (paralleler Versuch).
+        $linkRow = LinkCodes::consume((string) $bodyCode);
+        if ($linkRow === null) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        $user = Users::find($userId);
+        if ($user === null) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        Credentials::store($userId, $record);
+        Sessions::start($userId);
+
+        Http::json(['ok' => true, 'user' => self::meView($user)]);
+    }
+
     // ------------------------------------------------------------- Zähler ---
 
     /** @param array<string, mixed> $user */
@@ -381,6 +531,28 @@ final class Api
 
         $updated = Users::addPayment($userId, $amountRaw);
         Http::json(['ok' => true, 'user' => Users::adminView($updated)]);
+    }
+
+    /**
+     * Erzeugt einen Einmalcode, mit dem ein Admin ein neues Gerät an ein
+     * FREMDES Konto anhängen kann – der Geräteverlust-Fall. Länger gültig
+     * als der selbst erzeugte Code (ADMIN_TTL statt SELF_TTL), da der Code
+     * erst noch an den betroffenen Benutzer übermittelt werden muss.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function adminLinkCode(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
+            Http::error('unknown_user', 404);
+        }
+
+        $result = LinkCodes::create($userId, 'admin', LinkCodes::ADMIN_TTL);
+        Http::json(['code' => $result['code'], 'expiresAt' => $result['expiresAt']]);
     }
 
     /** @param array<string, mixed> $user */
@@ -571,7 +743,7 @@ final class Api
         $mysql = Db::driver() === 'mysql';
 
         Db::transaction(static function (\PDO $pdo) use ($mysql): void {
-            foreach (['sessions', 'credentials', 'ceremonies', 'coffee_events', 'users'] as $table) {
+            foreach (['sessions', 'credentials', 'ceremonies', 'link_codes', 'coffee_events', 'users'] as $table) {
                 if (Db::tableExists($pdo, $table)) {
                     $pdo->exec('DELETE FROM ' . $table);
                 }
@@ -586,7 +758,7 @@ final class Api
             // ALTER TABLE committet implizit – deshalb erst nach Abschluss der
             // Transaktion und ausserhalb davon, sonst risse es sie mitten durch.
             $pdo = Db::pdo();
-            foreach (['users', 'credentials', 'ceremonies', 'coffee_events'] as $table) {
+            foreach (['users', 'credentials', 'ceremonies', 'link_codes', 'coffee_events'] as $table) {
                 if (Db::tableExists($pdo, $table)) {
                     $pdo->exec('ALTER TABLE ' . $table . ' AUTO_INCREMENT = 1');
                 }
@@ -742,6 +914,7 @@ final class Api
             'balanceCents' => Users::balanceCents($user),
             'priceCents' => Config::priceCents(),
             'streakDays' => Users::streakDays($id),
+            'credentials' => Credentials::countForUser($id),
         ];
     }
 

@@ -58,6 +58,14 @@ final class Credentials
         return is_numeric($value) ? (int) $value : 0;
     }
 
+    /** Anzahl der Passkeys eines einzelnen Kontos – für die "N Geräte"-Anzeige. */
+    public static function countForUser(string $userId): int
+    {
+        $value = Db::fetchValue('SELECT COUNT(*) AS total FROM credentials WHERE user_id = ?', [(int) $userId]);
+
+        return is_numeric($value) ? (int) $value : 0;
+    }
+
     /**
      * Baut aus der Zeile den `CredentialRecord`, den die Bibliothek zur Prüfung
      * einer Assertion braucht.
