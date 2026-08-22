@@ -59,9 +59,18 @@ final class Users
         $tabCents = $coffees * Config::priceCents();
 
         $id = Db::transaction(static function (PDO $pdo) use ($nameEncrypted, $nameHash, $userHandle, $coffees, $paidCents, $tabCents): string {
+            // Der allererste Benutzer einer Installation wird automatisch
+            // Admin – ohne diesen Schritt gäbe es nach dem Einrichtungs-
+            // assistenten (keine adminPublicKey/admins mehr in config.php)
+            // niemanden, der Preis oder Einladungscode ändern könnte. Die
+            // Zählung läuft in derselben Transaktion wie das INSERT, damit
+            // kein gleichzeitiger zweiter erster Benutzer entstehen kann.
+            $countBefore = Db::fetchValue('SELECT COUNT(*) AS total FROM users', [], $pdo);
+            $isFirstUser = is_numeric($countBefore) && (int) $countBefore === 0;
+
             $statement = $pdo->prepare(
-                'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, tab_cents, created_at)
-                 VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, tab_cents, created_at, is_admin)
+                 VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
             $statement->execute([
                 $nameEncrypted,
@@ -71,6 +80,7 @@ final class Users
                 max(0, $paidCents),
                 $tabCents,
                 Clock::now(),
+                $isFirstUser ? 1 : 0,
             ]);
 
             return (string) $pdo->lastInsertId();
@@ -346,6 +356,20 @@ final class Users
             'rank' => $rank,
             'distribution' => $distribution,
         ];
+    }
+
+    /**
+     * Prüft das is_admin-Flag auf einer bereits geladenen Nutzerzeile – ohne
+     * zusätzliche Datenbankabfrage. Ergänzt Config::isAdmin() (statische
+     * Liste aus config.php); Aufrufer kombinieren i. d. R. beides.
+     *
+     * @param array<string, mixed> $row
+     */
+    public static function isAdminRow(array $row): bool
+    {
+        $value = $row['is_admin'] ?? 0;
+
+        return is_numeric($value) && (int) $value === 1;
     }
 
     public static function isValidId(string $id): bool

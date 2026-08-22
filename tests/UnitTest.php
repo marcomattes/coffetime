@@ -19,6 +19,7 @@ use Coffee\Db;
 use Coffee\Encoding;
 use Coffee\Http;
 use Coffee\Sessions;
+use Coffee\Settings;
 use Coffee\Users;
 
 Bootstrap::init();
@@ -120,11 +121,11 @@ check(
     'Db::migrate reaches the target schema version',
     Db::userVersion($migratePdo) === Db::SCHEMA_VERSION
 );
-check('Db::migrate reaches schema version 5', Db::userVersion($migratePdo) === 5);
-foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events'] as $table) {
+check('Db::migrate reaches schema version 6', Db::userVersion($migratePdo) === 6);
+foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events', 'settings'] as $table) {
     check("Db::migrate creates the {$table} table", Db::tableExists($migratePdo, $table));
 }
-foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents'] as $column) {
+foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents', 'is_admin'] as $column) {
     check(
         "Db::migrate gives users a {$column} column",
         in_array($column, Db::columns($migratePdo, 'users'), true)
@@ -134,6 +135,12 @@ check(
     'Db::migrate gives coffee_events a price_cents column',
     in_array('price_cents', Db::columns($migratePdo, 'coffee_events'), true)
 );
+foreach (['name', 'value'] as $column) {
+    check(
+        "Db::migrate gives settings a {$column} column",
+        in_array($column, Db::columns($migratePdo, 'settings'), true)
+    );
+}
 $indexNames = $migratePdo
     ->query("SELECT name FROM sqlite_master WHERE type = 'index'")
     ->fetchAll(PDO::FETCH_COLUMN);
@@ -161,6 +168,44 @@ check(
 Db::reset();
 Db::pdo(); // creates the configured dbPath and runs migrations
 
+// -------------------------------------------------------------- Settings ---
+
+// Baseline: config.php (Phase 2 above) sets priceCents to 200, and no
+// settings row exists yet in this freshly migrated database.
+check('Config::priceCents() reflects config.php (200) before any settings row exists', Config::priceCents() === 200);
+check('Settings::get returns null for a key with no row', Settings::get('priceCents') === null);
+
+Settings::set('priceCents', '999');
+check('Settings::get returns the value just set', Settings::get('priceCents') === '999');
+Settings::set('priceCents', '111');
+check('Settings::set overwrites an existing value on a second call (upsert)', Settings::get('priceCents') === '111');
+check(
+    'Config::priceCents() prefers the database value (111) over config.php\'s 200',
+    Config::priceCents() === 111
+);
+
+Settings::setMany(['invite' => 'DB-INVITE', 'adminPublicKey' => 'db-key']);
+check(
+    'Settings::setMany stores every pair in one call',
+    Settings::get('invite') === 'DB-INVITE' && Settings::get('adminPublicKey') === 'db-key'
+);
+check('Config::invite() prefers the database value over config.php', Config::invite() === 'DB-INVITE');
+check('Config::adminPublicKey() prefers the database value over config.php', Config::adminPublicKey() === 'db-key');
+
+// An explicit cache reset (what a fresh request would start from) must still
+// see the same, already-committed database values.
+Settings::reset();
+check('Config::priceCents() still reflects the database value after Settings::reset()', Config::priceCents() === 111);
+
+// Clean up so the phases below (which rely on config.php's own
+// priceCents/invite/adminPublicKey) are not shadowed by leftover rows.
+Db::pdo()->exec('DELETE FROM settings');
+Settings::reset();
+check('Config::priceCents() falls back to config.php once the settings rows are gone', Config::priceCents() === 200);
+check('Config::invite() falls back to config.php\'s own value once settings are gone', Config::invite() === 'TEST-INVITE');
+
+// ------------------------------------------------------- Users arithmetic ---
+
 $alice = Users::create('cipher-alice', 'hash-alice', 'handle-alice', coffees: 3, paidCents: 100);
 check('Users::create stores the requested initial coffees', Users::coffees($alice) === 3);
 check('Users::create stores the requested initial paidCents', Users::paidCents($alice) === 100);
@@ -168,9 +213,13 @@ check(
     'balanceCents = coffees * priceCents - paidCents at creation',
     Users::balanceCents($alice) === 3 * 200 - 100
 );
+check('the first user ever created in a database is flagged is_admin', Users::isAdminRow($alice) === true);
 
 $bob = Users::create('cipher-bob', 'hash-bob', 'handle-bob');
 $carol = Users::create('cipher-carol', 'hash-carol', 'handle-carol');
+check('the second user created is not flagged is_admin', Users::isAdminRow($bob) === false);
+check('the third user created is not flagged is_admin', Users::isAdminRow($carol) === false);
+check('Users::isAdminRow is false for a row without the key at all', Users::isAdminRow([]) === false);
 
 // -------------------------------------------------------- addCoffee/undo ---
 

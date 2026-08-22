@@ -20,7 +20,7 @@ use Throwable;
 final class Db
 {
     /** Zielversion des Schemas. */
-    public const SCHEMA_VERSION = 5;
+    public const SCHEMA_VERSION = 6;
 
     /** Wartezeit auf eine gesperrte Datenbank. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -496,6 +496,22 @@ final class Db
                 self::ensureColumn($pdo, 'coffee_events', 'price_cents', 'INTEGER NOT NULL DEFAULT 0');
                 self::backfillPriceCents($pdo);
             },
+            6 => static function (PDO $pdo): void {
+                // Admin-Flag direkt am Nutzer: erlaubt eine Admin-Prüfung ohne
+                // zusätzlichen Query, sobald die Zeile ohnehin schon geladen ist
+                // (siehe Users::isAdminRow()).
+                self::ensureColumn($pdo, 'users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0');
+                // Laufzeit-Einstellungen mit Vorrang vor config.php (siehe
+                // Config-Klasse): Preis, Einladungscode, öffentlicher
+                // Admin-Schlüssel und Namens-Pepper aus dem
+                // Einrichtungsassistenten bzw. späteren Admin-Änderungen.
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS settings (
+                        name TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )'
+                );
+            },
         ];
     }
 
@@ -585,6 +601,17 @@ final class Db
                 self::ensureColumn($pdo, 'coffee_events', 'price_cents', 'BIGINT NOT NULL DEFAULT 0');
                 self::backfillPriceCents($pdo);
             },
+            6 => static function (PDO $pdo): void {
+                // Siehe Kommentar in sqliteSteps(): gleiche Semantik, `key`
+                // ist in MySQL reserviert – die Spalte heisst daher `name`.
+                self::ensureColumn($pdo, 'users', 'is_admin', 'TINYINT NOT NULL DEFAULT 0');
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS settings (
+                        name VARCHAR(64) PRIMARY KEY,
+                        value TEXT NOT NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+                );
+            },
         ];
     }
 
@@ -614,7 +641,7 @@ final class Db
     private static function schemaLooksComplete(PDO $pdo): bool
     {
         $userColumns = self::columns($pdo, 'users');
-        foreach (['coffees', 'paid_cents', 'name_encrypted', 'name_hash', 'user_handle', 'tab_cents'] as $column) {
+        foreach (['coffees', 'paid_cents', 'name_encrypted', 'name_hash', 'user_handle', 'tab_cents', 'is_admin'] as $column) {
             if (!in_array($column, $userColumns, true)) {
                 return false;
             }
@@ -630,7 +657,11 @@ final class Db
             return false;
         }
 
-        return self::tableExists($pdo, 'coffee_events');
+        if (!self::tableExists($pdo, 'coffee_events')) {
+            return false;
+        }
+
+        return self::tableExists($pdo, 'settings');
     }
 
     /**
@@ -733,6 +764,7 @@ final class Db
                     'name_hash' => 'VARCHAR(64)',
                     'user_handle' => 'VARCHAR(32)',
                     'tab_cents' => 'BIGINT NOT NULL DEFAULT 0',
+                    'is_admin' => 'TINYINT NOT NULL DEFAULT 0',
                 ],
                 'credentials' => [
                     'user_id' => 'BIGINT NOT NULL DEFAULT 0',
@@ -764,6 +796,9 @@ final class Db
                     'created_at' => 'BIGINT NOT NULL DEFAULT 0',
                     'price_cents' => 'BIGINT NOT NULL DEFAULT 0',
                 ],
+                'settings' => [
+                    'value' => 'TEXT',
+                ],
             ];
         }
 
@@ -777,6 +812,7 @@ final class Db
                 'name_hash' => 'TEXT',
                 'user_handle' => 'TEXT',
                 'tab_cents' => 'INTEGER NOT NULL DEFAULT 0',
+                'is_admin' => 'INTEGER NOT NULL DEFAULT 0',
             ],
             'credentials' => [
                 'user_id' => 'INTEGER NOT NULL DEFAULT 0',
@@ -807,6 +843,9 @@ final class Db
                 'user_id' => 'INTEGER NOT NULL DEFAULT 0',
                 'created_at' => 'INTEGER NOT NULL DEFAULT 0',
                 'price_cents' => 'INTEGER NOT NULL DEFAULT 0',
+            ],
+            'settings' => [
+                'value' => 'TEXT',
             ],
         ];
     }

@@ -304,4 +304,138 @@ check('the decrypted payload carries the seeded last name', ($payload['lastName'
 stop_php_server($serverProcess);
 $serverProcess = null;
 
+// -------------------------------------------------- first-run setup wizard ---
+
+// A separate server against a separate, completely fresh database: no
+// config.php adminPublicKey, no admins list, no users at all — exactly what
+// a brand-new deployment looks like before anyone has visited the wizard.
+$setupWorkspace = make_temp_workspace('coffee-setup');
+$setupKeys = generate_rsa_keypair();
+$setupToken = 'setup-token-' . bin2hex(random_bytes(8));
+$setupConfigPath = write_test_config($setupWorkspace, [
+    'adminPublicKey' => '',
+    'admins' => [],
+    'invite' => '',
+    'namePepper' => '',
+    'dbPath' => $setupWorkspace . '/data/coffee.sqlite',
+    'testMode' => true,
+    'testToken' => $setupToken,
+]);
+
+/** @var resource|null $setupServerProcess */
+$setupServerProcess = null;
+register_shutdown_function(static function () use (&$setupServerProcess): void {
+    if ($setupServerProcess !== null) {
+        stop_php_server($setupServerProcess);
+    }
+});
+
+[$setupServerProcess, $setupPort] = start_php_server($projectRoot . '/public', $setupConfigPath);
+$setupClient = new HttpClient('http://127.0.0.1:' . $setupPort);
+$setupHeaders = ['X-Test-Token' => $setupToken];
+
+$r = $setupClient->get('/api/setup/status');
+check('GET /api/setup/status on a fresh deployment is 200', $r['status'] === 200);
+check('setup/status reports needsSetup true before init', ($r['json']['needsSetup'] ?? null) === true);
+check('setup/status reports the default priceCents before init', ($r['json']['priceCents'] ?? null) === 150);
+
+// Bad input is rejected before a successful init is ever attempted.
+$r = $setupClient->post('/api/setup/init', [
+    'adminPublicKey' => 'not-a-valid-pem-key',
+    'priceCents' => 200,
+    'invite' => 'SETUP-INVITE',
+]);
+check('setup/init with a garbage public key is 400', $r['status'] === 400);
+check('setup/init with a garbage public key reports invalid_key', ($r['json']['error'] ?? null) === 'invalid_key');
+
+$r = $setupClient->post('/api/setup/init', [
+    'adminPublicKey' => $setupKeys['public'],
+    'priceCents' => 0,
+    'invite' => 'SETUP-INVITE',
+]);
+check('setup/init with priceCents 0 is 400', $r['status'] === 400);
+check('setup/init with priceCents 0 reports invalid_price', ($r['json']['error'] ?? null) === 'invalid_price');
+
+$r = $setupClient->post('/api/setup/init', [
+    'adminPublicKey' => $setupKeys['public'],
+    'priceCents' => 200,
+    'invite' => 'abc',
+]);
+check('setup/init with a too-short invite is 400', $r['status'] === 400);
+check('setup/init with a too-short invite reports invalid_invite', ($r['json']['error'] ?? null) === 'invalid_invite');
+
+check('setup/status still reports needsSetup true after only rejected attempts', ($setupClient->get('/api/setup/status')['json']['needsSetup'] ?? null) === true);
+
+$r = $setupClient->post('/api/setup/init', [
+    'adminPublicKey' => $setupKeys['public'],
+    'priceCents' => 200,
+    'invite' => 'SETUP-INVITE',
+]);
+check('setup/init with valid data succeeds', $r['status'] === 200 && ($r['json']['ok'] ?? false) === true);
+
+$r = $setupClient->get('/api/setup/status');
+check('setup/status reports needsSetup false after a successful init', ($r['json']['needsSetup'] ?? null) === false);
+check('setup/status reports the price chosen during init', ($r['json']['priceCents'] ?? null) === 200);
+
+$r = $setupClient->post('/api/setup/init', [
+    'adminPublicKey' => $setupKeys['public'],
+    'priceCents' => 200,
+    'invite' => 'SETUP-INVITE',
+]);
+check('a second setup/init is 409', $r['status'] === 409);
+check('a second setup/init reports already_initialized', ($r['json']['error'] ?? null) === 'already_initialized');
+
+// Crypto is now configured entirely via settings (no config.php edit): the
+// standard test-seed path, which encrypts names through Crypto::fromConfig(),
+// must work exactly as it does with a config.php-configured key.
+$r = $setupClient->post('/api/test/seed', [
+    'users' => [
+        ['firstName' => 'First', 'lastName' => 'User', 'coffees' => 0, 'paidCents' => 0],
+        ['firstName' => 'Second', 'lastName' => 'User', 'coffees' => 0, 'paidCents' => 0],
+    ],
+], $setupHeaders);
+check('seeding users after setup succeeds', $r['status'] === 200);
+$setupAdminId = $r['json']['users'][0]['id'] ?? null;
+$setupOtherId = $r['json']['users'][1]['id'] ?? null;
+
+// The very first user ever created in this database becomes admin via the
+// is_admin flag alone — config.php's admins list is empty here.
+$r = $setupClient->post('/api/test/login', ['userId' => $setupOtherId], $setupHeaders);
+check('test/login as the second (non-first) setup user succeeds', $r['status'] === 200);
+$r = $setupClient->get('/api/me');
+check('GET /api/me works for the second setup user', $r['status'] === 200);
+check('the second user created after setup is not admin', ($r['json']['admin'] ?? null) === false);
+$r = $setupClient->get('/api/admin/settings');
+check('a non-admin session gets 403 from /api/admin/settings', $r['status'] === 403);
+
+$r = $setupClient->post('/api/test/login', ['userId' => $setupAdminId], $setupHeaders);
+check('test/login as the first (admin) setup user succeeds', $r['status'] === 200);
+$r = $setupClient->get('/api/me');
+check('GET /api/me works for the first setup user', $r['status'] === 200);
+check(
+    'the first user created after setup is admin via the DB flag alone (empty config admins list)',
+    ($r['json']['admin'] ?? null) === true
+);
+check('me.priceCents reflects the price chosen during setup', ($r['json']['priceCents'] ?? null) === 200);
+
+$r = $setupClient->get('/api/admin/settings');
+check('GET /api/admin/settings as the setup admin is 200', $r['status'] === 200);
+check('admin/settings reports the price chosen during setup', ($r['json']['priceCents'] ?? null) === 200);
+check('admin/settings reports the invite chosen during setup', ($r['json']['invite'] ?? null) === 'SETUP-INVITE');
+
+$r = $setupClient->post('/api/admin/settings/update', []);
+check('admin/settings/update with no fields is 400', $r['status'] === 400);
+check('admin/settings/update with no fields reports invalid_settings', ($r['json']['error'] ?? null) === 'invalid_settings');
+
+$r = $setupClient->post('/api/admin/settings/update', ['priceCents' => 250]);
+check('POST /api/admin/settings/update accepts a new price', $r['status'] === 200 && ($r['json']['ok'] ?? false) === true);
+check('admin/settings/update echoes the new price', ($r['json']['priceCents'] ?? null) === 250);
+check('admin/settings/update leaves the invite unchanged', ($r['json']['invite'] ?? null) === 'SETUP-INVITE');
+
+$r = $setupClient->post('/api/coffee');
+check('a coffee booked after the settings update is billed at the new price', ($r['json']['balanceCents'] ?? null) === 250);
+
+stop_php_server($setupServerProcess);
+$setupServerProcess = null;
+
 summarize_and_exit();

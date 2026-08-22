@@ -81,6 +81,14 @@ final class Config
 
     public static function priceCents(): int
     {
+        // Eine Datenbankeinstellung (vom Assistenten oder einem Admin
+        // gesetzt) hat Vorrang vor config.php; fehlt sie, bleibt das
+        // bisherige Verhalten unverändert.
+        $fromDb = Settings::get('priceCents');
+        if ($fromDb !== null && is_numeric($fromDb)) {
+            return (int) $fromDb;
+        }
+
         $value = self::get('priceCents', 0);
 
         return is_numeric($value) ? (int) $value : 0;
@@ -88,6 +96,11 @@ final class Config
 
     public static function invite(): string
     {
+        $fromDb = Settings::get('invite');
+        if ($fromDb !== null) {
+            return $fromDb;
+        }
+
         $value = self::get('invite', '');
 
         return is_string($value) ? $value : '';
@@ -96,15 +109,53 @@ final class Config
     public static function rpId(): string
     {
         $value = self::get('rpId', '');
+        if (is_string($value) && $value !== '') {
+            return $value;
+        }
 
-        return is_string($value) && $value !== '' ? $value : 'localhost';
+        $derived = self::requestHost(withPort: false);
+
+        return $derived !== '' ? $derived : 'localhost';
     }
 
     public static function origin(): string
     {
         $value = self::get('origin', '');
+        $origin = is_string($value) ? $value : '';
+        if ($origin !== '') {
+            return $origin;
+        }
 
-        return is_string($value) ? $value : '';
+        $host = self::requestHost(withPort: true);
+        if ($host === '') {
+            return '';
+        }
+
+        // Rückfallebene ohne explizite Konfiguration: Schema aus HTTPS-Server-
+        // variable, Host aus dem Host-Header. Achtung – hinter einem
+        // Reverse-Proxy muss der Host-Header vertrauenswürdig sein (z. B.
+        // weil der Proxy ihn setzt statt ihn vom Client durchzureichen);
+        // produktive Deployments sollten origin/rpId weiterhin explizit in
+        // config.php setzen.
+        $https = $_SERVER['HTTPS'] ?? '';
+        $scheme = is_string($https) && $https !== '' && strtolower($https) !== 'off' ? 'https' : 'http';
+
+        return $scheme . '://' . $host;
+    }
+
+    /**
+     * Liest und validiert $_SERVER['HTTP_HOST'] für die origin-/rpId-
+     * Rückfallableitung. Liefert '' bei einem fehlenden oder verdächtigen
+     * Header (nie ungeprüft in eine Antwort oder einen Vergleich übernehmen).
+     */
+    private static function requestHost(bool $withPort): string
+    {
+        $host = $_SERVER['HTTP_HOST'] ?? '';
+        if (!is_string($host) || preg_match('/^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/', $host) !== 1) {
+            return '';
+        }
+
+        return $withPort ? $host : explode(':', $host, 2)[0];
     }
 
     public static function dbPath(): string
@@ -186,6 +237,14 @@ final class Config
         return $out;
     }
 
+    /**
+     * Prüft NUR die statische Admin-Liste aus config.php. Das serverseitige
+     * is_admin-Flag (vom ersten registrierten Nutzer, siehe Users::create())
+     * kommt bewusst nicht hier hinein, um pro Aufruf keine zusätzliche
+     * Datenbankabfrage zu erzwingen: Aufrufer, die bereits eine geladene
+     * Nutzerzeile besitzen, kombinieren stattdessen
+     * `Config::isAdmin($id) || Users::isAdminRow($row)`.
+     */
     public static function isAdmin(string $userId): bool
     {
         return in_array($userId, self::admins(), true);
@@ -205,6 +264,11 @@ final class Config
 
     public static function adminPublicKey(): string
     {
+        $fromDb = Settings::get('adminPublicKey');
+        if ($fromDb !== null) {
+            return $fromDb;
+        }
+
         $value = self::get('adminPublicKey', '');
 
         return is_string($value) ? $value : '';
@@ -212,6 +276,11 @@ final class Config
 
     public static function namePepper(): string
     {
+        $fromDb = Settings::get('namePepper');
+        if ($fromDb !== null) {
+            return $fromDb;
+        }
+
         $value = self::get('namePepper', '');
 
         return is_string($value) ? $value : '';

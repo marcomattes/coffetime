@@ -17,6 +17,8 @@ final class Api
         '/api/register/verify',
         '/api/login/options',
         '/api/login/verify',
+        '/api/setup/status',
+        '/api/setup/init',
     ];
 
     public static function dispatch(): void
@@ -56,6 +58,13 @@ final class Api
             '/api/history' => ['GET', 'history'],
             '/api/admin/users' => ['GET', 'adminUsers'],
             '/api/admin/payment' => ['POST', 'adminPayment'],
+            // Ein Pfad kann in dieser Routing-Tabelle nur eine Methode
+            // tragen – GET und POST für die Einstellungen leben deshalb auf
+            // zwei Pfaden statt auf einem gemeinsamen.
+            '/api/admin/settings' => ['GET', 'adminSettingsGet'],
+            '/api/admin/settings/update' => ['POST', 'adminSettingsUpdate'],
+            '/api/setup/status' => ['GET', 'setupStatus'],
+            '/api/setup/init' => ['POST', 'setupInit'],
         ];
 
         if (!isset($routes[$path])) {
@@ -377,9 +386,152 @@ final class Api
     /** @param array<string, mixed> $user */
     private static function requireAdmin(array $user): void
     {
-        if (!Config::isAdmin((string) ($user['id'] ?? ''))) {
+        // Admin ist, wer in config.php gelistet ist ODER dessen Zeile das
+        // is_admin-Flag trägt (der erste registrierte Nutzer, siehe
+        // Users::create()).
+        if (!Config::isAdmin((string) ($user['id'] ?? '')) && !Users::isAdminRow($user)) {
             Http::error('forbidden', 403);
         }
+    }
+
+    /** @param array<string, mixed> $user */
+    private static function adminSettingsGet(array $user): never
+    {
+        self::requireAdmin($user);
+        Http::json([
+            'priceCents' => Config::priceCents(),
+            'invite' => Config::invite(),
+        ]);
+    }
+
+    /**
+     * Ändert Preis und/oder Einladungscode zur Laufzeit. Bewusst OHNE
+     * Möglichkeit, adminPublicKey oder namePepper zu ändern: beides würde
+     * bereits verschlüsselte Namen unlesbar machen bzw. bestehende
+     * Namens-HMACs entwerten und so Duplikatsprüfung/Entschlüsselung für
+     * Altbestand brechen.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function adminSettingsUpdate(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $hasPrice = array_key_exists('priceCents', $body);
+        $hasInvite = array_key_exists('invite', $body);
+        if (!$hasPrice && !$hasInvite) {
+            Http::error('invalid_settings', 400);
+        }
+
+        $pairs = [];
+        if ($hasPrice) {
+            $priceRaw = $body['priceCents'];
+            if (!is_int($priceRaw) || $priceRaw < 1 || $priceRaw > 100000) {
+                Http::error('invalid_settings', 400);
+            }
+            $pairs['priceCents'] = (string) $priceRaw;
+        }
+        if ($hasInvite) {
+            $inviteRaw = $body['invite'];
+            $invite = is_string($inviteRaw) ? trim($inviteRaw) : '';
+            if (mb_strlen($invite) < 4 || mb_strlen($invite) > 64) {
+                Http::error('invalid_settings', 400);
+            }
+            $pairs['invite'] = $invite;
+        }
+
+        Settings::setMany($pairs);
+
+        Http::json([
+            'ok' => true,
+            'priceCents' => Config::priceCents(),
+            'invite' => Config::invite(),
+        ]);
+    }
+
+    // ------------------------------------------------------- Einrichtung ---
+
+    /**
+     * Ein frisches Deployment braucht keine handbearbeitete config.php mehr:
+     * ohne konfigurierten adminPublicKey und ohne Benutzer verlangt die
+     * Oberfläche den Einrichtungsassistenten statt Registrierung/Login.
+     */
+    private static function needsSetup(): bool
+    {
+        return Config::adminPublicKey() === '' && Users::count() === 0;
+    }
+
+    private static function setupStatus(): never
+    {
+        Http::json([
+            'needsSetup' => self::needsSetup(),
+            'priceCents' => Config::priceCents(),
+        ]);
+    }
+
+    /**
+     * Einmaliger Abschluss der Einrichtung: der öffentliche Admin-Schlüssel
+     * wird lokal im Browser erzeugt (der private Teil verlässt den Browser
+     * nie) und hier zusammen mit Preis und Einladungscode hinterlegt. Der
+     * erste danach registrierte Benutzer wird automatisch Admin (siehe
+     * Users::create()).
+     */
+    private static function setupInit(): never
+    {
+        if (!self::needsSetup()) {
+            Http::error('already_initialized', 409);
+        }
+
+        $body = Http::body();
+
+        $publicKey = Http::stringField($body, 'adminPublicKey');
+        if ($publicKey === null || $publicKey === '') {
+            Http::error('invalid_key', 400);
+        }
+        try {
+            // Nur zur Validierung instanziiert – der Pepper ist hier
+            // irrelevant, es geht ausschliesslich um den öffentlichen
+            // Schlüssel.
+            new Crypto($publicKey, 'probe');
+        } catch (Throwable) {
+            Http::error('invalid_key', 400);
+        }
+
+        $priceRaw = $body['priceCents'] ?? null;
+        if (!is_int($priceRaw) || $priceRaw < 1 || $priceRaw > 100000) {
+            Http::error('invalid_price', 400);
+        }
+
+        $inviteRaw = Http::stringField($body, 'invite');
+        $invite = $inviteRaw !== null ? trim($inviteRaw) : '';
+        if (mb_strlen($invite) < 4 || mb_strlen($invite) > 64) {
+            Http::error('invalid_invite', 400);
+        }
+
+        // Kleines, bewusst in Kauf genommenes Race-Fenster: zwei parallele
+        // erste Requests könnten beide bis hierher kommen, bevor einer von
+        // ihnen seine Einstellungen geschrieben hat. Der Assistent läuft
+        // genau einmal beim allerersten Deployment, nicht unter Last –
+        // ein echtes Lock lohnt den Aufwand hier nicht.
+        if (!self::needsSetup()) {
+            Http::error('already_initialized', 409);
+        }
+
+        $pairs = [
+            'adminPublicKey' => $publicKey,
+            'priceCents' => (string) $priceRaw,
+            'invite' => $invite,
+        ];
+        if (Config::namePepper() === '') {
+            // Niemals einen bereits vorhandenen Pepper überschreiben – das
+            // würde alle bestehenden Namens-HMACs entwerten.
+            $pairs['namePepper'] = bin2hex(random_bytes(32));
+        }
+
+        Settings::setMany($pairs);
+
+        Http::json(['ok' => true]);
     }
 
     // --------------------------------------------------------- Teststeuerung ---
@@ -493,7 +645,7 @@ final class Api
                 'coffees' => Users::coffees($row),
                 'paidCents' => Users::paidCents($row),
                 'balanceCents' => Users::balanceCents($row),
-                'admin' => Config::isAdmin((string) ($row['id'] ?? '')),
+                'admin' => Config::isAdmin((string) ($row['id'] ?? '')) || Users::isAdminRow($row),
             ];
         }
 
@@ -585,7 +737,7 @@ final class Api
 
         return [
             'id' => $id,
-            'admin' => Config::isAdmin($id),
+            'admin' => Config::isAdmin($id) || Users::isAdminRow($user),
             'coffees' => Users::coffees($user),
             'balanceCents' => Users::balanceCents($user),
             'priceCents' => Config::priceCents(),
