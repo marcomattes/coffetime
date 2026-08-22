@@ -8,6 +8,12 @@
 
 Built to run anywhere PHP runs: no framework, no Node runtime in production, SQLite by default. `composer install`, point a web root at `public/`, done.
 
+<p align="center">
+  <img src="docs/screenshots/home.png" width="270" alt="Home view: personal coffee counter at 36, a nine-day streak, the &quot;Take a coffee&quot; button, and tiles for outstanding balance, price, rank and today's count.">
+  <img src="docs/screenshots/stats.png" width="270" alt="Statistics view: bar chart of the last 14 days of personal coffees above the anonymous leaderboard, where only ranks and totals are shown and the signed-in user's row is marked &quot;(me)&quot;.">
+  <img src="docs/screenshots/admin.png" width="270" alt="Admin view: settings for coffee price and invite code, plus the administration card where selecting the RSA private-key file decrypts account names locally in the browser.">
+</p>
+
 ## Highlights
 
 **Authentication & accounts**
@@ -45,6 +51,14 @@ PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8123 -t public
 ```
 
 Open <http://localhost:8123> and follow the setup wizard: it generates the admin RSA keypair in your browser, has you download the private key, and asks for a price and invite code. The first account you register afterwards becomes administrator. No manual `config.php` editing is required to get started.
+
+### Docker
+
+```bash
+docker compose up --build
+```
+
+Open <http://localhost:8123> and follow the setup wizard as above. The SQLite database persists in the `coffee-data` named volume. The image bakes in a one-line `config.php` that only pins `origin` to `http://localhost:8123` (so WebAuthn matches the published port); everything else, including `adminPublicKey`, is left unset so the wizard still runs on first use. To use a fixed configuration instead, bind-mount your own `config.php` over `/var/www/html/config.php` (see the commented-out example in `compose.yaml`).
 
 Once you deploy beyond localhost, set `rpId` to the host without a port and `origin` to the complete origin. Production WebAuthn deployments require HTTPS.
 
