@@ -214,8 +214,8 @@ $linkOptions = $r['json'];
 check('link/options returns a challenge', is_string($linkOptions['challenge'] ?? null) && $linkOptions['challenge'] !== '');
 check('link/options returns rp information', is_array($linkOptions['rp'] ?? null));
 check(
-    'link/options user.name uses the same opaque kaffee- label scheme as registration',
-    str_starts_with((string) ($linkOptions['user']['name'] ?? ''), 'kaffee-')
+    'link/options user.name uses the same opaque coffee- label scheme as registration',
+    str_starts_with((string) ($linkOptions['user']['name'] ?? ''), 'coffee-')
 );
 check('link/options carries no plaintext name anywhere in user.name', !str_contains((string) ($linkOptions['user']['name'] ?? ''), ' '));
 

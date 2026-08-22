@@ -7,10 +7,10 @@ namespace Coffee;
 use PDO;
 
 /**
- * Zugriff auf die Benutzer und die daran hängende Arithmetik.
+ * Access to the users and the arithmetic attached to them.
  *
- * Der Zähler ist serverautoritativ: er wird ausschliesslich über atomare
- * `UPDATE ... SET coffees = coffees ± 1` verändert.
+ * The counter is server-authoritative: it is only ever changed through atomic
+ * `UPDATE ... SET coffees = coffees ± 1`.
  */
 final class Users
 {
@@ -40,10 +40,10 @@ final class Users
     }
 
     /**
-     * Legt einen Benutzer an. Der Klartextname wird nie gespeichert – nur das
-     * versiegelte Chiffrat und der HMAC.
+     * Creates a user. The cleartext name is never stored – only the sealed
+     * ciphertext and the HMAC.
      *
-     * @return array<string, mixed> die neue Zeile
+     * @return array<string, mixed> the new row
      */
     public static function create(
         string $nameEncrypted,
@@ -52,19 +52,19 @@ final class Users
         int $coffees = 0,
         int $paidCents = 0
     ): array {
-        // Seed-/Altbestandssemantik: geerbte Kaffees werden zum aktuell
-        // konfigurierten Preis bewertet, da es für sie keine Einzelereignisse
-        // (und damit keine Einzelpreise) gibt.
+        // Seed/legacy semantics: inherited coffees are valued at the currently
+        // configured price, because there are no individual events (and hence
+        // no individual prices) for them.
         $coffees = max(0, $coffees);
         $tabCents = $coffees * Config::priceCents();
 
         $id = Db::transaction(static function (PDO $pdo) use ($nameEncrypted, $nameHash, $userHandle, $coffees, $paidCents, $tabCents): string {
-            // Der allererste Benutzer einer Installation wird automatisch
-            // Admin – ohne diesen Schritt gäbe es nach dem Einrichtungs-
-            // assistenten (keine adminPublicKey/admins mehr in config.php)
-            // niemanden, der Preis oder Einladungscode ändern könnte. Die
-            // Zählung läuft in derselben Transaktion wie das INSERT, damit
-            // kein gleichzeitiger zweiter erster Benutzer entstehen kann.
+            // The very first user of an installation automatically becomes
+            // admin – without this step, after the setup wizard (no
+            // adminPublicKey/admins in config.php any more) nobody would be
+            // able to change price or invite code. The count runs in the same
+            // transaction as the INSERT so that no concurrent second "first"
+            // user can come into existence.
             $countBefore = Db::fetchValue('SELECT COUNT(*) AS total FROM users', [], $pdo);
             $isFirstUser = is_numeric($countBefore) && (int) $countBefore === 0;
 
@@ -92,16 +92,15 @@ final class Users
     }
 
     /**
-     * Bucht einen Kaffee zum aktuell konfigurierten Preis. Der Preis wird
-     * einmal zu Beginn gelesen und sowohl in tab_cents als auch am
-     * Ereignis selbst festgeschrieben – spätere Preisänderungen wirken sich
-     * damit nie rückwirkend auf schon gebuchte Kaffees aus.
+     * Books a coffee at the currently configured price. The price is read once
+     * at the start and frozen both in tab_cents and on the event itself – later
+     * price changes therefore never apply retroactively to coffees that have
+     * already been booked.
      *
-     * $clientEventId trägt die Offline-Warteschlange ab: der Client vergibt
-     * die ID vor dem Absenden und kann dieselbe Buchung beliebig oft
-     * wiederholen (schlechtes WLAN, doppelte Zustellung), ohne doppelt zu
-     * buchen. Eine bereits bekannte ID liefert unverändert den aktuellen
-     * Stand zurück – kein Zähler-Inkrement, kein neues Ereignis.
+     * $clientEventId drains the offline queue: the client assigns the ID before
+     * sending and may repeat the same booking arbitrarily often (poor Wi-Fi,
+     * duplicate delivery) without booking twice. An already known ID returns
+     * the current state unchanged – no counter increment, no new event.
      *
      * @return array<string, mixed>
      */
@@ -117,8 +116,8 @@ final class Users
                     $pdo
                 );
                 if ($existing !== null) {
-                    // Wiederholte Zustellung derselben Buchung: unverändert
-                    // den aktuellen Stand zurückgeben, nichts erneut buchen.
+                    // Repeated delivery of the same booking: return the current
+                    // state unchanged, book nothing again.
                     return self::rowInTransaction($pdo, $id);
                 }
             }
@@ -127,8 +126,8 @@ final class Users
                 'UPDATE users SET coffees = coffees + 1, tab_cents = tab_cents + ? WHERE id = ?'
             );
             $statement->execute([$price, (int) $id]);
-            // Ereignis für die Serienanzeige und den Preis dieser Buchung –
-            // ein Datensatz je gebuchtem Kaffee.
+            // Event for the streak display and for the price of this booking –
+            // one record per booked coffee.
             $event = $pdo->prepare(
                 'INSERT INTO coffee_events (user_id, created_at, price_cents, client_event_id) VALUES (?, ?, ?, ?)'
             );
@@ -139,16 +138,16 @@ final class Users
     }
 
     /**
-     * Bucht eine Zahlung. Additiv und atomar, niemals negativ – zu grosse
-     * negative Beträge werden bei Null gekappt statt den Zähler zu unterlaufen.
+     * Books a payment. Additive and atomic, never negative – overly large
+     * negative amounts are clamped at zero instead of underflowing the counter.
      *
      * @return array<string, mixed>
      */
     public static function addPayment(string $id, int $amountCents): array
     {
         return Db::transaction(static function (PDO $pdo) use ($id, $amountCents): array {
-            // Portabel statt MAX(0, ...): MySQL/MariaDB kennt MAX() nur als
-            // Aggregatfunktion, nicht als Zwei-Argumente-Skalarfunktion.
+            // Portable instead of MAX(0, ...): MySQL/MariaDB knows MAX() only
+            // as an aggregate, not as a two-argument scalar function.
             $statement = $pdo->prepare(
                 'UPDATE users SET paid_cents = CASE WHEN paid_cents + ? < 0 THEN 0 ELSE paid_cents + ? END WHERE id = ?'
             );
@@ -159,12 +158,11 @@ final class Users
     }
 
     /**
-     * Macht die letzte Buchung rückgängig – sowohl den Zähler als auch den
-     * dafür verbuchten Preis. Der Preis kommt aus dem zuletzt gebuchten
-     * Ereignis, nicht aus der aktuellen Konfiguration: nur so bleibt eine
-     * zwischenzeitliche Preisänderung ohne rückwirkenden Effekt. Fehlt ein
-     * Ereignis (Altbestand vor Schema v5), wird ersatzweise der aktuell
-     * konfigurierte Preis abgezogen.
+     * Undoes the last booking – both the counter and the price booked for it.
+     * The price comes from the most recently booked event, not from the current
+     * configuration: only that keeps an intervening price change free of
+     * retroactive effect. If the event is missing (legacy data from before
+     * schema v5), the currently configured price is deducted instead.
      *
      * @return array<string, mixed>
      */
@@ -173,12 +171,12 @@ final class Users
         $fallbackPrice = Config::priceCents();
 
         return Db::transaction(static function (PDO $pdo) use ($id, $fallbackPrice): array {
-            // Stoppt bei null, wird niemals negativ.
+            // Stops at zero, never goes negative.
             $statement = $pdo->prepare('UPDATE users SET coffees = coffees - 1 WHERE id = ? AND coffees > 0');
             $statement->execute([(int) $id]);
             if ($statement->rowCount() > 0) {
-                // Nur das zuletzt gebuchte Ereignis zurücknehmen, nicht irgendeins –
-                // und dessen Preis vor dem Löschen auslesen.
+                // Take back the most recently booked event, not an arbitrary
+                // one – and read its price before deleting it.
                 $event = Db::fetchRow(
                     'SELECT id, price_cents FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1',
                     [(int) $id],
@@ -192,7 +190,7 @@ final class Users
                     $pdo->prepare('DELETE FROM coffee_events WHERE id = ?')->execute([$event['id']]);
                 }
 
-                // Portabel statt MAX(0, ...), analog zu addPayment: nie negativ.
+                // Portable instead of MAX(0, ...), as in addPayment: never negative.
                 $pdo->prepare(
                     'UPDATE users SET tab_cents = CASE WHEN tab_cents - ? < 0 THEN 0 ELSE tab_cents - ? END WHERE id = ?'
                 )->execute([$refund, $refund, (int) $id]);
@@ -203,9 +201,9 @@ final class Users
     }
 
     /**
-     * Aktuelle Serie in Tagen: Anzahl aufeinanderfolgender Tage bis heute (oder
-     * bis gestern, falls heute noch nichts gebucht wurde) mit mindestens einem
-     * Kaffee. Rein kosmetisch, ohne Einfluss auf coffees/balanceCents.
+     * Current streak in days: number of consecutive days up to today (or up to
+     * yesterday, if nothing has been booked today) with at least one coffee.
+     * Purely cosmetic, without influence on coffees/balanceCents.
      */
     public static function streakDays(string $id): int
     {
@@ -238,8 +236,8 @@ final class Users
     }
 
     /**
-     * Kaffeeverlauf der letzten $days Kalendertage (inklusive heute), tagweise
-     * gezählt. Fehlende Tage werden mit 0 aufgefüllt, aufsteigend sortiert.
+     * Coffee history for the last $days calendar days (today included), counted
+     * per day. Missing days are filled with 0, sorted ascending.
      *
      * @return array{today: int, days: list<array{date: string, coffees: int}>}
      */
@@ -304,7 +302,7 @@ final class Users
         return isset($row['paid_cents']) && is_numeric($row['paid_cents']) ? (int) $row['paid_cents'] : 0;
     }
 
-    /** Summe der Preise aller gebuchten Kaffees, zum jeweiligen Buchungspreis. */
+    /** Sum over all booked coffees, each at the price it was booked at. */
     public static function tabCents(array $row): int
     {
         return isset($row['tab_cents']) && is_numeric($row['tab_cents']) ? (int) $row['tab_cents'] : 0;
@@ -312,9 +310,9 @@ final class Users
 
     /**
      * balanceCents = tabCents − paidCents.
-     * tabCents summiert die Preise der einzelnen Buchungen zum jeweiligen
-     * Buchungszeitpunkt – eine spätere Preisänderung bewertet keine bereits
-     * gebuchten Kaffees neu.
+     * tabCents sums the prices of the individual bookings as of the moment each
+     * was booked – a later price change does not revalue coffees that have
+     * already been booked.
      */
     public static function balanceCents(array $row): int
     {
@@ -336,8 +334,8 @@ final class Users
     }
 
     /**
-     * Anonyme Statistik: Gesamtzahl, Anzahl Benutzer, eigener Rang und die
-     * Verteilung der Zählerstände. Keine Namen, keine fremden IDs.
+     * Anonymous statistics: grand total, number of users, own rank and the
+     * distribution of counter values. No names, no foreign IDs.
      *
      * @return array<string, mixed>
      */
@@ -356,7 +354,7 @@ final class Users
         $previousRank = 0;
         foreach ($rows as $index => $row) {
             $coffees = self::coffees($row);
-            // Gleichstand teilt den Rang (Wettkampfwertung).
+            // Ties share a rank (competition ranking).
             $currentRank = $previousCoffees !== null && $coffees === $previousCoffees
                 ? $previousRank
                 : $index + 1;
@@ -377,19 +375,20 @@ final class Users
         ];
     }
 
-    // ------------------------------------------------------- Erinnerungen ---
+    // ---------------------------------------------------------- Reminders ---
 
     /**
-     * Wie viele Tage in den Folgemonat hinein ein noch nicht gezeigter
-     * Monatsende-Hinweis nachgeholt wird (Gerät war aus, App blieb zu).
+     * How many days into the following month a month-end notice that has not
+     * been shown yet is still caught up (device was off, app stayed closed).
      */
     private const REMINDER_CATCHUP_DAYS = 7;
 
     /**
-     * Der Monat ('YYYY-MM'), für den JETZT ein Monatsende-Hinweis fällig
-     * wäre: am letzten Tag eines Monats dieser Monat selbst, in den ersten
-     * REMINDER_CATCHUP_DAYS Tagen des Folgemonats noch der Vormonat, sonst
-     * keiner. Rein von $now abhängig (UTC, wie alle Tagesgrenzen der App).
+     * The month ('YYYY-MM') for which a month-end notice would be due NOW: on
+     * the last day of a month that month itself, during the first
+     * REMINDER_CATCHUP_DAYS days of the following month still the previous
+     * month, otherwise none. Depends on $now alone (UTC, like every day
+     * boundary in this app).
      */
     public static function reminderMonthTag(int $now): ?string
     {
@@ -398,14 +397,15 @@ final class Users
             return gmdate('Y-m', $now);
         }
         if ($day <= self::REMINDER_CATCHUP_DAYS) {
-            // $day Tage zurück landet immer im Vormonat, egal zu welcher Uhrzeit.
+            // Going back $day days always lands in the previous month, whatever
+            // the time of day.
             return gmdate('Y-m', $now - $day * 86400);
         }
 
         return null;
     }
 
-    /** Zeitpunkt der offenen Admin-Erinnerung, 0 = keine offen. */
+    /** Timestamp of the outstanding admin reminder, 0 = none outstanding. */
     public static function remindRequestedAt(array $row): int
     {
         $value = $row['remind_requested_at'] ?? 0;
@@ -413,7 +413,7 @@ final class Users
         return is_numeric($value) ? (int) $value : 0;
     }
 
-    /** Zuletzt bestätigter Monatsende-Hinweis ('YYYY-MM'), '' = noch keiner. */
+    /** Most recently acknowledged month-end notice ('YYYY-MM'), '' = none yet. */
     public static function remindedMonth(array $row): string
     {
         $value = $row['reminded_month'] ?? '';
@@ -421,7 +421,7 @@ final class Users
         return is_string($value) ? $value : '';
     }
 
-    /** Merkt eine Admin-Erinnerung vor; eine zweite ersetzt die erste. */
+    /** Queues an admin reminder; a second one replaces the first. */
     public static function requestReminder(string $id): void
     {
         Db::transaction(static function (PDO $pdo) use ($id): void {
@@ -431,10 +431,10 @@ final class Users
     }
 
     /**
-     * Bestätigt gezeigte Erinnerungen. Die Admin-Erinnerung wird nur
-     * gelöscht, wenn der bestätigte Zeitstempel noch der offene ist – eine
-     * zwischen Abruf und Bestätigung neu vorgemerkte Erinnerung bleibt so
-     * erhalten statt ungesehen mitgelöscht zu werden.
+     * Acknowledges reminders that were shown. The admin reminder is cleared
+     * only if the acknowledged timestamp is still the outstanding one – a
+     * reminder queued between fetch and acknowledgement is thus kept instead of
+     * being cleared unseen.
      */
     public static function ackReminders(string $id, ?string $month, ?int $adminRequestedAt): void
     {
@@ -451,9 +451,9 @@ final class Users
     }
 
     /**
-     * Prüft das is_admin-Flag auf einer bereits geladenen Nutzerzeile – ohne
-     * zusätzliche Datenbankabfrage. Ergänzt Config::isAdmin() (statische
-     * Liste aus config.php); Aufrufer kombinieren i. d. R. beides.
+     * Checks the is_admin flag on an already loaded user row – without an extra
+     * database query. Complements Config::isAdmin() (the static list from
+     * config.php); callers usually combine both.
      *
      * @param array<string, mixed> $row
      */
