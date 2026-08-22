@@ -10,27 +10,26 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Datenbankzugriff und Migrationen.
+ * Database access and migrations.
  *
- * Unterstützt zwei Treiber: SQLite (Standard, dateibasiert) und MySQL/MariaDB
- * (über die Option 'db' in der Konfiguration). Alle Aufrufer benutzen
- * ausschliesslich Standard-SQL oder die Helfer dieser Klasse – Dialektfragen
- * bleiben hier gekapselt.
+ * Supports two drivers: SQLite (default, file-based) and MySQL/MariaDB (via the
+ * 'db' option in the configuration). All callers use plain standard SQL or the
+ * helpers of this class – questions of dialect stay encapsulated here.
  */
 final class Db
 {
-    /** Zielversion des Schemas. */
+    /** Target version of the schema. */
     public const SCHEMA_VERSION = 9;
 
-    /** Wartezeit auf eine gesperrte Datenbank. */
+    /** Time to wait for a locked database. */
     private const BUSY_TIMEOUT_SECONDS = 15;
 
-    /** Wartezeit auf eine InnoDB-Zeilensperre (MySQL/MariaDB), in Sekunden. */
+    /** Time to wait for an InnoDB row lock (MySQL/MariaDB), in seconds. */
     private const MYSQL_LOCK_WAIT_SECONDS = 15;
 
     private static ?PDO $pdo = null;
 
-    /** Verbindungsschlüssel (Treiber + Ziel) der zuletzt geöffneten Verbindung. */
+    /** Connection key (driver + target) of the most recently opened connection. */
     private static ?string $openedPath = null;
 
     public static function pdo(): PDO
@@ -53,15 +52,15 @@ final class Db
         return $pdo;
     }
 
-    /** Aktiver Treiber laut Konfiguration ('sqlite' oder 'mysql'). */
+    /** Active driver according to the configuration ('sqlite' or 'mysql'). */
     public static function driver(): string
     {
         return Config::dbDriver();
     }
 
     /**
-     * Baut den Cache-Schlüssel für die geöffnete Verbindung. Ändert sich die
-     * Konfiguration (auch der Treiber selbst), muss neu verbunden werden.
+     * Builds the cache key for the open connection. If the configuration
+     * changes (the driver itself included), a new connection is required.
      *
      * @param array<string, mixed> $config
      */
@@ -88,8 +87,8 @@ final class Db
             if (!@mkdir($dir, 0775, true) && !is_dir($dir)) {
                 throw new RuntimeException('Cannot create database directory');
             }
-            // Sicherheitsnetz für Hosting, bei dem das Verzeichnis im
-            // Dokumentenbaum landet. Ohne Apache schadet die Datei nicht.
+            // Safety net for hosting where the directory ends up inside the
+            // document tree. Without Apache the file does no harm.
             @file_put_contents(
                 $dir . '/.htaccess',
                 "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n"
@@ -103,10 +102,10 @@ final class Db
             PDO::ATTR_EMULATE_PREPARES => false,
             PDO::ATTR_TIMEOUT => self::BUSY_TIMEOUT_SECONDS,
         ]);
-        // Das Busy-Timeout lässt konkurrierende Schreiber warten statt zu
-        // scheitern. WAL erlaubt Leser neben einem Schreiber; der Modus steckt
-        // in der Datei, deshalb wird er nur umgestellt, wenn er noch fehlt –
-        // ein Umschalten braucht eine exklusive Sperre.
+        // The busy timeout makes competing writers wait instead of fail. WAL
+        // allows readers alongside a writer; the mode is stored in the file, so
+        // it is only switched when still missing – switching requires an
+        // exclusive lock.
         $pdo->exec('PRAGMA busy_timeout = ' . (self::BUSY_TIMEOUT_SECONDS * 1000));
         try {
             $mode = $pdo->query('PRAGMA journal_mode')->fetchAll();
@@ -139,29 +138,29 @@ final class Db
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
-        // Die Anwendung berechnet Tagesgrenzen über gmdate() in UTC;
-        // FROM_UNIXTIME() muss dieselbe Zeitzone verwenden, sonst verschieben
-        // sich Serien- und Verlaufsanzeige um die lokale Differenz.
+        // The application computes day boundaries with gmdate() in UTC;
+        // FROM_UNIXTIME() has to use the same time zone, otherwise streak and
+        // history display shift by the local offset.
         $pdo->exec("SET time_zone = '+00:00'");
-        // Analog zum SQLite-Busy-Timeout: konkurrierende Schreiber warten auf
-        // eine InnoDB-Zeilensperre, statt sofort zu scheitern.
+        // Analogous to the SQLite busy timeout: competing writers wait for an
+        // InnoDB row lock instead of failing immediately.
         $pdo->exec('SET SESSION innodb_lock_wait_timeout = ' . self::MYSQL_LOCK_WAIT_SECONDS);
 
         return $pdo;
     }
 
-    /** Treiber der konkret übergebenen Verbindung – unabhängig von Config. */
+    /** Driver of the connection actually passed in – independent of Config. */
     private static function driverOf(PDO $pdo): string
     {
         return $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? 'mysql' : 'sqlite';
     }
 
     /**
-     * Liest genau eine Zeile und gibt den Cursor sofort frei.
+     * Reads exactly one row and releases the cursor immediately.
      *
-     * Ein offener Cursor hält in WAL-Modus eine Lesetransaktion. Ein
-     * anschliessendes BEGIN IMMEDIATE würde dann mit SQLITE_BUSY_SNAPSHOT
-     * scheitern, ohne dass das Busy-Timeout greift.
+     * In WAL mode an open cursor holds a read transaction. A subsequent
+     * BEGIN IMMEDIATE would then fail with SQLITE_BUSY_SNAPSHOT, without the
+     * busy timeout taking effect.
      *
      * @param list<mixed> $params
      * @return array<string, mixed>|null
@@ -210,8 +209,8 @@ final class Db
     }
 
     /**
-     * Portabler Tagesausdruck für einen Unixzeitstempel-Spaltennamen, z. B.
-     * für die Serien- und Verlaufsanzeige. Liefert 'YYYY-MM-DD' in UTC.
+     * Portable day expression for a column holding a Unix timestamp, e.g. for
+     * the streak and history display. Returns 'YYYY-MM-DD' in UTC.
      */
     public static function dayExpr(string $column): string
     {
@@ -223,9 +222,9 @@ final class Db
     }
 
     /**
-     * Führt eine Schreiboperation in einer sofort exklusiven Transaktion aus und
-     * wiederholt sie, falls die Datenbank kurzzeitig gesperrt meldet (SQLite:
-     * "locked"/"busy"; MySQL/MariaDB: Deadlock oder Lock-Wait-Timeout).
+     * Runs a write operation in an immediately exclusive transaction and
+     * repeats it if the database reports a transient lock (SQLite:
+     * "locked"/"busy"; MySQL/MariaDB: deadlock or lock wait timeout).
      *
      * @template T
      * @param callable(PDO):T $work
@@ -272,7 +271,7 @@ final class Db
                         $pdo->exec('ROLLBACK');
                     }
                 } catch (Throwable) {
-                    // Transaktion war bereits beendet.
+                    // Transaction had already ended.
                 }
                 if ($attempts < 12 && $e instanceof PDOException && self::isRetryable($pdo, $e)) {
                     usleep(random_int(2000, 25000));
@@ -283,7 +282,7 @@ final class Db
         }
     }
 
-    /** Treiberabhängig: ist der Fehler ein Grund für einen Wiederholungsversuch? */
+    /** Driver-dependent: is the error a reason to retry? */
     private static function isRetryable(PDO $pdo, PDOException $e): bool
     {
         if (self::driverOf($pdo) === 'mysql') {
@@ -291,8 +290,8 @@ final class Db
             $sqlState = is_array($errorInfo) ? ($errorInfo[0] ?? null) : null;
             $driverCode = is_array($errorInfo) ? ($errorInfo[1] ?? null) : null;
 
-            // 1213 = Deadlock, 1205 = Lock-Wait-Timeout, 40001 = SQLSTATE für
-            // beides, falls errorInfo[1] einmal fehlt.
+            // 1213 = deadlock, 1205 = lock wait timeout, 40001 = SQLSTATE for
+            // both, should errorInfo[1] ever be missing.
             return $driverCode === 1213 || $driverCode === 1205 || $sqlState === '40001';
         }
 
@@ -315,8 +314,8 @@ final class Db
     }
 
     /**
-     * Liest die angewendete Schemaversion, treiberunabhängig: SQLite über
-     * PRAGMA user_version, MySQL/MariaDB über die Tabelle schema_meta.
+     * Reads the applied schema version, driver-independently: SQLite via
+     * PRAGMA user_version, MySQL/MariaDB via the schema_meta table.
      */
     private static function readSchemaVersion(PDO $pdo): int
     {
@@ -331,7 +330,7 @@ final class Db
         return is_numeric($value) ? (int) $value : 0;
     }
 
-    /** Schreibt die angewendete Schemaversion (Gegenstück zu readSchemaVersion). */
+    /** Writes the applied schema version (counterpart to readSchemaVersion). */
     private static function writeSchemaVersion(PDO $pdo, int $version): void
     {
         if (self::driverOf($pdo) !== 'mysql') {
@@ -354,17 +353,17 @@ final class Db
     }
 
     /**
-     * Migrationsschritte in Reihenfolge. Jeder Schritt ist für sich idempotent,
-     * damit ein zweiter Start – oder eine fremde, teilweise vorhandene Datenbank
-     * – nichts zerstört und nichts verliert.
+     * Migration steps in order. Each step is idempotent on its own, so that a
+     * second start – or a foreign, partially present database – destroys
+     * nothing and loses nothing.
      */
     public static function migrate(PDO $pdo): void
     {
         $mysql = self::driverOf($pdo) === 'mysql';
         $steps = $mysql ? self::mysqlSteps() : self::sqliteSteps();
 
-        // Schnellweg: nur lesende Prüfungen. Alles Schreibende darf nicht bei
-        // jedem Request laufen.
+        // Fast path: read-only checks. Nothing that writes may run on every
+        // request.
         $current = self::readSchemaVersion($pdo);
         $complete = self::schemaLooksComplete($pdo);
         if ($current >= self::SCHEMA_VERSION && $complete) {
@@ -372,11 +371,11 @@ final class Db
         }
 
         if ($mysql) {
-            // MySQL/MariaDB-DDL committet implizit – eine umschliessende
-            // Transaktion ist damit wirkungslos und entfällt bewusst. Jeder
-            // Schritt ist additiv und idempotent (CREATE TABLE IF NOT EXISTS,
-            // ensureColumn), ein Absturz mittendrin ist daher unschädlich:
-            // der nächste Start holt die restlichen Schritte nach.
+            // MySQL/MariaDB DDL commits implicitly – an enclosing transaction
+            // would have no effect and is deliberately omitted. Every step is
+            // additive and idempotent (CREATE TABLE IF NOT EXISTS,
+            // ensureColumn), so a crash midway is harmless: the next start
+            // catches up on the remaining steps.
             $from = $complete ? self::readSchemaVersion($pdo) : 0;
             foreach ($steps as $version => $step) {
                 if ($version > $from) {
@@ -385,12 +384,12 @@ final class Db
             }
             self::writeSchemaVersion($pdo, self::SCHEMA_VERSION);
         } else {
-            // Exklusive Transaktion, damit parallele erste Requests nicht kollidieren.
+            // Exclusive transaction so that concurrent first requests do not collide.
             $pdo->exec('BEGIN IMMEDIATE');
             try {
-                // Behauptet die Datei eine aktuelle Version, das Schema ist aber
-                // unvollständig, werden alle Schritte wiederholt. Sie sind
-                // idempotent und rein additiv, das kostet nur Zeit, nie Daten.
+                // If the file claims a current version but the schema is
+                // incomplete, all steps are repeated. They are idempotent and
+                // purely additive, which costs time only, never data.
                 $from = $complete ? self::readSchemaVersion($pdo) : 0;
                 foreach ($steps as $version => $step) {
                     if ($version > $from) {
@@ -403,7 +402,7 @@ final class Db
                 try {
                     $pdo->exec('ROLLBACK');
                 } catch (Throwable) {
-                    // bereits beendet
+                    // already ended
                 }
                 throw $e;
             }
@@ -446,7 +445,7 @@ final class Db
                 );
             },
             2 => static function (PDO $pdo): void {
-                // Verschlüsselter Name, Eindeutigkeits-HMAC und WebAuthn-Handle.
+                // Encrypted name, uniqueness HMAC and WebAuthn handle.
                 self::ensureColumn($pdo, 'users', 'name_encrypted', 'TEXT');
                 self::ensureColumn($pdo, 'users', 'name_hash', 'TEXT');
                 self::ensureColumn($pdo, 'users', 'user_handle', 'TEXT');
@@ -468,9 +467,10 @@ final class Db
                 );
             },
             3 => static function (PDO $pdo): void {
-                // Ein Ereignis je gebuchtem Kaffee, nur für die Serienanzeige
-                // (Tage in Folge). Der coffees-Zähler bleibt die Wahrheit für den
-                // Stand; hier steht rein additiv nur, wann gebucht wurde.
+                // One event per booked coffee, only for the streak display
+                // (consecutive days). The coffees counter remains the truth for
+                // the balance; this table records, purely additively, only when
+                // a booking happened.
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS coffee_events (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -480,31 +480,31 @@ final class Db
                 );
             },
             4 => static function (PDO $pdo): void {
-                // Nur ein zusammengesetzter Index für den Verlauf (user_id,
-                // created_at) – die Tabelle selbst ist bereits vollständig.
+                // Only a composite index for the history (user_id, created_at)
+                // – the table itself is already complete.
                 $pdo->exec(
                     'CREATE INDEX IF NOT EXISTS idx_coffee_events_user_created
                      ON coffee_events (user_id, created_at)'
                 );
             },
             5 => static function (PDO $pdo): void {
-                // Preis je Buchung: ab jetzt trägt jedes Ereignis seinen
-                // eigenen Preis, und der Stand je Nutzer wird additiv über
-                // tab_cents geführt statt retroaktiv aus coffees × aktuellem
-                // Preis berechnet.
+                // Price per booking: from here on every event carries its own
+                // price, and the per-user balance is kept additively in
+                // tab_cents instead of being computed retroactively from
+                // coffees × current price.
                 self::ensureColumn($pdo, 'users', 'tab_cents', 'INTEGER NOT NULL DEFAULT 0');
                 self::ensureColumn($pdo, 'coffee_events', 'price_cents', 'INTEGER NOT NULL DEFAULT 0');
                 self::backfillPriceCents($pdo);
             },
             6 => static function (PDO $pdo): void {
-                // Admin-Flag direkt am Nutzer: erlaubt eine Admin-Prüfung ohne
-                // zusätzlichen Query, sobald die Zeile ohnehin schon geladen ist
-                // (siehe Users::isAdminRow()).
+                // Admin flag directly on the user: allows an admin check
+                // without an extra query once the row is loaded anyway (see
+                // Users::isAdminRow()).
                 self::ensureColumn($pdo, 'users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0');
-                // Laufzeit-Einstellungen mit Vorrang vor config.php (siehe
-                // Config-Klasse): Preis, Einladungscode, öffentlicher
-                // Admin-Schlüssel und Namens-Pepper aus dem
-                // Einrichtungsassistenten bzw. späteren Admin-Änderungen.
+                // Runtime settings that take precedence over config.php (see
+                // the Config class): price, invite code, public admin key and
+                // name pepper, coming from the setup wizard or from later admin
+                // changes.
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS settings (
                         name TEXT PRIMARY KEY,
@@ -513,10 +513,10 @@ final class Db
                 );
             },
             7 => static function (PDO $pdo): void {
-                // Einmalcodes zum Verknüpfen eines zweiten Geräts mit einem
-                // bestehenden Konto: selbst erzeugt ("self") oder von einem
-                // Admin bei Geräteverlust ("admin"). Wie bei ceremonies wird
-                // nur der SHA-256-Hash gespeichert, nie der Klartextcode.
+                // Single-use codes for linking a second device to an existing
+                // account: self-issued ("self") or issued by an admin on device
+                // loss ("admin"). As with ceremonies, only the SHA-256 hash is
+                // stored, never the cleartext code.
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS link_codes (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -530,12 +530,11 @@ final class Db
                 );
             },
             8 => static function (PDO $pdo): void {
-                // Idempotenzschlüssel für die Offline-Buchungswarteschlange:
-                // ein Client vergibt eine eigene Ereignis-ID vor dem Absenden
-                // und kann eine Buchung beliebig oft wiederholen (schlechtes
-                // WLAN in der Kaffeeküche), ohne doppelt zu buchen. NULL bei
-                // alten Clients ohne Ereignis-ID; der partielle Unique-Index
-                // lässt beliebig viele solcher NULLs zu.
+                // Idempotency key for the offline booking queue: a client
+                // assigns its own event ID before sending and may repeat a
+                // booking arbitrarily often (poor Wi-Fi in the kitchen) without
+                // booking twice. NULL for older clients without an event ID;
+                // the partial unique index permits any number of such NULLs.
                 self::ensureColumn($pdo, 'coffee_events', 'client_event_id', 'TEXT');
                 $pdo->exec(
                     'CREATE UNIQUE INDEX IF NOT EXISTS idx_coffee_events_client
@@ -543,12 +542,12 @@ final class Db
                 );
             },
             9 => static function (PDO $pdo): void {
-                // Lokale Zahlungserinnerungen ohne Push-Server: der Client
-                // fragt /api/reminders ab und zeigt lokale Notifications.
-                // remind_requested_at trägt eine offene Admin-Erinnerung
-                // (0 = keine), reminded_month den zuletzt bestätigten
-                // Monatsende-Hinweis ('YYYY-MM'), damit jede Erinnerung über
-                // alle Geräte eines Nutzers hinweg höchstens einmal erscheint.
+                // Local payment reminders without a push server: the client
+                // polls /api/reminders and shows local notifications.
+                // remind_requested_at carries an outstanding admin reminder
+                // (0 = none), reminded_month the most recently acknowledged
+                // month-end notice ('YYYY-MM'), so that every reminder appears
+                // at most once across all of a user's devices.
                 self::ensureColumn($pdo, 'users', 'remind_requested_at', 'INTEGER NOT NULL DEFAULT 0');
                 self::ensureColumn($pdo, 'users', 'reminded_month', 'TEXT');
             },
@@ -556,10 +555,9 @@ final class Db
     }
 
     /**
-     * MySQL/MariaDB-Gegenstück zu sqliteSteps(): gleiche Versionsnummern und
-     * gleiche Reihenfolge, aber mit den in der Analyse festgelegten Typen
-     * (BIGINT statt INTEGER, VARCHAR für indizierte Zeichenketten, TEXT für
-     * grosse Felder).
+     * MySQL/MariaDB counterpart to sqliteSteps(): same version numbers and same
+     * order, but with the types this driver requires (BIGINT instead of
+     * INTEGER, VARCHAR for indexed strings, TEXT for large fields).
      *
      * @return array<int, callable(PDO):void>
      */
@@ -626,8 +624,8 @@ final class Db
                 );
             },
             4 => static function (PDO $pdo): void {
-                // MySQL kennt kein CREATE INDEX IF NOT EXISTS – die Prüfung
-                // läuft daher vorab über information_schema.
+                // MySQL has no CREATE INDEX IF NOT EXISTS – the check therefore
+                // runs up front via information_schema.
                 if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_user_created')) {
                     $pdo->exec(
                         'CREATE INDEX idx_coffee_events_user_created
@@ -636,14 +634,14 @@ final class Db
                 }
             },
             5 => static function (PDO $pdo): void {
-                // Preis je Buchung: siehe Kommentar in sqliteSteps().
+                // Price per booking: see the comment in sqliteSteps().
                 self::ensureColumn($pdo, 'users', 'tab_cents', 'BIGINT NOT NULL DEFAULT 0');
                 self::ensureColumn($pdo, 'coffee_events', 'price_cents', 'BIGINT NOT NULL DEFAULT 0');
                 self::backfillPriceCents($pdo);
             },
             6 => static function (PDO $pdo): void {
-                // Siehe Kommentar in sqliteSteps(): gleiche Semantik, `key`
-                // ist in MySQL reserviert – die Spalte heisst daher `name`.
+                // See the comment in sqliteSteps(): same semantics; `key` is
+                // reserved in MySQL, so the column is named `name`.
                 self::ensureColumn($pdo, 'users', 'is_admin', 'TINYINT NOT NULL DEFAULT 0');
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS settings (
@@ -653,7 +651,7 @@ final class Db
                 );
             },
             7 => static function (PDO $pdo): void {
-                // Siehe Kommentar in sqliteSteps().
+                // See the comment in sqliteSteps().
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS link_codes (
                         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -667,9 +665,9 @@ final class Db
                 );
             },
             8 => static function (PDO $pdo): void {
-                // Siehe Kommentar in sqliteSteps(). MySQL/MariaDB lässt in
-                // einem gewöhnlichen UNIQUE-Index beliebig viele NULLs zu –
-                // ein partieller Index (WHERE ...) ist hier nicht nötig.
+                // See the comment in sqliteSteps(). MySQL/MariaDB permits any
+                // number of NULLs in an ordinary UNIQUE index – a partial index
+                // (WHERE ...) is not needed here.
                 self::ensureColumn($pdo, 'coffee_events', 'client_event_id', 'VARCHAR(64)');
                 if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_client')) {
                     $pdo->exec(
@@ -679,7 +677,7 @@ final class Db
                 }
             },
             9 => static function (PDO $pdo): void {
-                // Siehe Kommentar in sqliteSteps().
+                // See the comment in sqliteSteps().
                 self::ensureColumn($pdo, 'users', 'remind_requested_at', 'BIGINT NOT NULL DEFAULT 0');
                 self::ensureColumn($pdo, 'users', 'reminded_month', 'VARCHAR(7)');
             },
@@ -687,11 +685,11 @@ final class Db
     }
 
     /**
-     * Backfill für Schema v5: setzt tab_cents und price_cents anhand des zur
-     * Migrationszeit konfigurierten Preises. Die Bedingung "= 0" macht den
-     * Schritt idempotent – ein zweiter Lauf ändert nichts mehr, sobald einmal
-     * befüllt wurde (und trifft auch echte Nutzer ohne Kaffee/Ereignisse nicht,
-     * da die WHERE-Klausel zusätzlich coffees > 0 verlangt).
+     * Backfill for schema v5: sets tab_cents and price_cents from the price
+     * configured at migration time. The "= 0" condition makes the step
+     * idempotent – a second run changes nothing once the values have been
+     * filled in (and it does not affect real users without coffees/events
+     * either, since the WHERE clause additionally requires coffees > 0).
      */
     private static function backfillPriceCents(PDO $pdo): void
     {
@@ -707,7 +705,7 @@ final class Db
     }
 
     /**
-     * Günstige, rein lesende Prüfung, ob das Schema zur Zielversion passt.
+     * Cheap, read-only check whether the schema matches the target version.
      */
     private static function schemaLooksComplete(PDO $pdo): bool
     {
@@ -740,9 +738,9 @@ final class Db
     }
 
     /**
-     * Sichert Spalten und Indizes ab, die eine ältere oder fremde Datenbank
-     * eventuell nicht mitbringt. Rein additiv – nie DROP, nie CREATE ohne IF NOT
-     * EXISTS (bzw. deren mysql-taugliches Äquivalent).
+     * Ensures columns and indexes that an older or foreign database may not
+     * bring along. Purely additive – never DROP, never CREATE without IF NOT
+     * EXISTS (or its MySQL-capable equivalent).
      */
     private static function ensureSchema(PDO $pdo): void
     {
@@ -764,8 +762,8 @@ final class Db
             return;
         }
 
-        // Eindeutigkeit; die partiellen Indizes lassen Altbestand ohne HMAC zu.
-        // Sollte ein Index an Altdaten scheitern, bleibt die Anwendung lauffähig.
+        // Uniqueness; the partial indexes tolerate legacy rows without an HMAC.
+        // Should an index fail on legacy data, the application stays usable.
         $indexes = [
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_name_hash ON users (name_hash) WHERE name_hash IS NOT NULL',
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users (user_handle) WHERE user_handle IS NOT NULL',
@@ -789,9 +787,9 @@ final class Db
     }
 
     /**
-     * Dieselben Indizes wie unter SQLite, aber ohne partiellen WHERE-Zusatz:
-     * MySQL/MariaDB lässt in einem UNIQUE-Index ohnehin beliebig viele NULLs
-     * zu, das deckt denselben Fall ab (Altbestand ohne HMAC/Handle).
+     * The same indexes as under SQLite, but without the partial WHERE clause:
+     * MySQL/MariaDB permits any number of NULLs in a UNIQUE index anyway, which
+     * covers the same case (legacy rows without HMAC/handle).
      */
     private static function ensureMysqlIndexes(PDO $pdo): void
     {
@@ -827,8 +825,8 @@ final class Db
     }
 
     /**
-     * Erwartete Spalten je Tabelle, treiberabhängig nur im Typ. Wird sowohl
-     * von ensureSchema() als Sicherheitsnetz benutzt.
+     * Expected columns per table, driver-dependent only in the type. Used by
+     * ensureSchema() as a safety net.
      *
      * @return array<string, array<string, string>>
      */
@@ -971,7 +969,7 @@ final class Db
         ) !== null;
     }
 
-    /** Existiert ein Index dieses Namens auf dieser Tabelle (nur MySQL/MariaDB)? */
+    /** Does an index of this name exist on this table (MySQL/MariaDB only)? */
     private static function indexExists(PDO $pdo, string $table, string $indexName): bool
     {
         return self::fetchRow(
@@ -1035,14 +1033,14 @@ final class Db
                 $definition
             ));
         } catch (Throwable $e) {
-            // Parallel gestartete Instanz war schneller – die Spalte existiert.
+            // A concurrently started instance was faster – the column exists.
             if (!in_array($column, self::columns($pdo, $table), true)) {
                 throw $e;
             }
         }
     }
 
-    /** Bezeichner-Quoting ist treiberabhängig: SQLite "..", MySQL `..`. */
+    /** Identifier quoting is driver-dependent: SQLite "..", MySQL `..`. */
     private static function quoteIdentifier(PDO $pdo, string $identifier): string
     {
         if (self::driverOf($pdo) === 'mysql') {
