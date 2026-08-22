@@ -86,6 +86,9 @@ npm run test:e2e
 - Open an issue before starting large or behavior-changing work.
 - Keep pull requests focused on a single change; avoid bundling unrelated
   refactors.
+- Write commit messages in English, imperative mood (e.g. "Add", not
+  "Added" or "Adds"), and explain *why* for any change that isn't
+  self-evident from the diff.
 - Describe the behavior change and any security or privacy implications in
   the pull request description (this project handles WebAuthn credentials
   and encrypted personal data, so this matters even for small changes).
