@@ -120,15 +120,20 @@ check(
     'Db::migrate reaches the target schema version',
     Db::userVersion($migratePdo) === Db::SCHEMA_VERSION
 );
+check('Db::migrate reaches schema version 5', Db::userVersion($migratePdo) === 5);
 foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events'] as $table) {
     check("Db::migrate creates the {$table} table", Db::tableExists($migratePdo, $table));
 }
-foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents'] as $column) {
+foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents'] as $column) {
     check(
         "Db::migrate gives users a {$column} column",
         in_array($column, Db::columns($migratePdo, 'users'), true)
     );
 }
+check(
+    'Db::migrate gives coffee_events a price_cents column',
+    in_array('price_cents', Db::columns($migratePdo, 'coffee_events'), true)
+);
 $indexNames = $migratePdo
     ->query("SELECT name FROM sqlite_master WHERE type = 'index'")
     ->fetchAll(PDO::FETCH_COLUMN);
@@ -205,6 +210,74 @@ $updated = Users::addPayment((string) $bob['id'], 500);
 check('addPayment adds to paidCents', Users::paidCents($updated) === 500);
 $updated = Users::addPayment((string) $bob['id'], -100000);
 check('addPayment clamps paidCents at zero for a large negative amount', Users::paidCents($updated) === 0);
+
+// -------------------------------------------------------- price changes ---
+
+// A price change must never re-price coffees that were already booked: each
+// booking keeps the price that was in effect when it happened.
+Db::reset();
+Config::forget();
+$priceConfigPath = write_test_config($workspace, [
+    'priceCents' => 150,
+    'dbPath' => $workspace . '/data/price-change.sqlite',
+]);
+putenv('COFFEE_CONFIG_PATH=' . $priceConfigPath);
+Config::forget();
+Db::reset();
+
+$dave = Users::create('cipher-dave', 'hash-dave', 'handle-dave');
+Users::addCoffee((string) $dave['id']);
+$updated = Users::addCoffee((string) $dave['id']);
+check('two coffees booked at 150 give a tab of 300', Users::tabCents($updated) === 300);
+
+// Rewrite the config file with a higher price and forget the process-local
+// cache, exactly as a real deployment would after the admin edits config.php.
+// This writes the file directly (not via write_test_config()) because that
+// helper drops and recreates the database on a MySQL/MariaDB test run — fine
+// for a fresh phase, but it would wipe the data booked above.
+$priceConfig = require $priceConfigPath;
+$priceConfig['priceCents'] = 200;
+file_put_contents($priceConfigPath, "<?php\nreturn " . var_export($priceConfig, true) . ";\n");
+Config::forget();
+check('Config::priceCents reflects the rewritten price', Config::priceCents() === 200);
+
+$updated = Users::addCoffee((string) $dave['id']);
+check(
+    'a coffee booked after the price change adds the new price, not the old one',
+    Users::tabCents($updated) === 500
+);
+check(
+    'balanceCents after the price change is tabCents minus paidCents',
+    Users::balanceCents($updated) === 500 - Users::paidCents($updated)
+);
+
+// Undo must remove exactly the price of the last booking (200), not the
+// price of an earlier one (150) and not the now-current price.
+$updated = Users::undoCoffee((string) $dave['id']);
+check('undo after a price change refunds the last booking\'s own price', Users::tabCents($updated) === 300);
+check('undo after a price change leaves the coffee count at 2', Users::coffees($updated) === 2);
+
+// Legacy user: coffees and a tab, but no coffee_events rows at all (as a
+// pre-v5 database would have). Undo must fall back to the current
+// configured price and still floor at zero.
+$legacyId = Db::transaction(static function (PDO $pdo): string {
+    $statement = $pdo->prepare(
+        'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, tab_cents, created_at)
+         VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    $statement->execute(['cipher-legacy', 'hash-legacy', 'handle-legacy', 1, 0, 150, Clock::now()]);
+
+    return (string) $pdo->lastInsertId();
+});
+check(
+    'the manually inserted legacy user has no coffee_events rows',
+    (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $legacyId]) === 0
+);
+$updated = Users::undoCoffee($legacyId);
+check(
+    'undo on a legacy user without events falls back to the current price and floors at zero',
+    Users::tabCents($updated) === 0 && Users::coffees($updated) === 0
+);
 
 // ----------------------------------------------------------------- stats ---
 

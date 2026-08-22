@@ -216,6 +216,54 @@ $r = $client->post('/api/admin/payment', ['userId' => '999999', 'amountCents' =>
 check('admin/payment for an unknown user is 404', $r['status'] === 404);
 check('admin/payment for an unknown user reports unknown_user', ($r['json']['error'] ?? null) === 'unknown_user');
 
+// -------------------------------------------------------- price changes ---
+
+// Regression coverage for retroactive re-pricing: booking a coffee, raising
+// the configured price, then booking another must charge each booking its
+// own price rather than re-pricing the first one at the new rate.
+$r = $client->post('/api/test/login', ['userId' => $zeroId], $testHeaders);
+check('test/login as the zero-coffee user for the price-change test succeeds', $r['status'] === 200);
+
+$r = $client->post('/api/coffee');
+check('first coffee at the original price 150 books fine', ($r['json']['coffees'] ?? null) === 1);
+check('balance after the first coffee is 150', ($r['json']['balanceCents'] ?? null) === 150);
+
+// The server re-reads config.php on every request, so rewriting the file
+// directly is enough to simulate the admin changing the price mid-session.
+// This must NOT go through write_test_config() again: that helper drops and
+// recreates the database on a MySQL/MariaDB test run (via test_db_config()),
+// which would wipe everything seeded above. Reading back the file that is
+// already in place and only touching priceCents keeps the rest — including
+// any 'db' override — untouched.
+$priceTestConfig = require $configPath;
+$priceTestConfig['priceCents'] = 300;
+file_put_contents($configPath, "<?php\nreturn " . var_export($priceTestConfig, true) . ";\n");
+
+$r = $client->post('/api/coffee');
+check('second coffee after the price change books fine', ($r['json']['coffees'] ?? null) === 2);
+check(
+    'balance after the price change is the sum of each booking\'s own price (150 + 300), not 2 * 300',
+    ($r['json']['balanceCents'] ?? null) === 150 + 300
+);
+
+$r = $client->get('/api/me');
+check('me.priceCents reflects the newly configured price', ($r['json']['priceCents'] ?? null) === 300);
+check(
+    'me.balanceCents still reflects per-booking prices, not the new price retroactively applied',
+    ($r['json']['balanceCents'] ?? null) === 150 + 300
+);
+
+// Undo must refund the last booking's own price (300), not the new
+// configured price applied twice or the older price of the first booking.
+$r = $client->post('/api/coffee/undo');
+check('undo after the price change removes the last booking\'s own price', ($r['json']['balanceCents'] ?? null) === 150);
+
+// Restore the original price so nothing lingers for whatever runs next
+// (same direct-rewrite approach, for the same reason as above).
+$priceTestConfig['priceCents'] = 150;
+file_put_contents($configPath, "<?php\nreturn " . var_export($priceTestConfig, true) . ";\n");
+$client->post('/api/coffee/undo'); // back to 0 coffees, zeroId is otherwise untouched below
+
 // ------------------------------------------------------------ clock shift ---
 
 $r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);

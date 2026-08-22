@@ -20,7 +20,7 @@ use Throwable;
 final class Db
 {
     /** Zielversion des Schemas. */
-    public const SCHEMA_VERSION = 4;
+    public const SCHEMA_VERSION = 5;
 
     /** Wartezeit auf eine gesperrte Datenbank. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -487,6 +487,15 @@ final class Db
                      ON coffee_events (user_id, created_at)'
                 );
             },
+            5 => static function (PDO $pdo): void {
+                // Preis je Buchung: ab jetzt trägt jedes Ereignis seinen
+                // eigenen Preis, und der Stand je Nutzer wird additiv über
+                // tab_cents geführt statt retroaktiv aus coffees × aktuellem
+                // Preis berechnet.
+                self::ensureColumn($pdo, 'users', 'tab_cents', 'INTEGER NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'coffee_events', 'price_cents', 'INTEGER NOT NULL DEFAULT 0');
+                self::backfillPriceCents($pdo);
+            },
         ];
     }
 
@@ -570,7 +579,33 @@ final class Db
                     );
                 }
             },
+            5 => static function (PDO $pdo): void {
+                // Preis je Buchung: siehe Kommentar in sqliteSteps().
+                self::ensureColumn($pdo, 'users', 'tab_cents', 'BIGINT NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'coffee_events', 'price_cents', 'BIGINT NOT NULL DEFAULT 0');
+                self::backfillPriceCents($pdo);
+            },
         ];
+    }
+
+    /**
+     * Backfill für Schema v5: setzt tab_cents und price_cents anhand des zur
+     * Migrationszeit konfigurierten Preises. Die Bedingung "= 0" macht den
+     * Schritt idempotent – ein zweiter Lauf ändert nichts mehr, sobald einmal
+     * befüllt wurde (und trifft auch echte Nutzer ohne Kaffee/Ereignisse nicht,
+     * da die WHERE-Klausel zusätzlich coffees > 0 verlangt).
+     */
+    private static function backfillPriceCents(PDO $pdo): void
+    {
+        $price = Config::priceCents();
+
+        $users = $pdo->prepare(
+            'UPDATE users SET tab_cents = coffees * ? WHERE tab_cents = 0 AND coffees > 0'
+        );
+        $users->execute([$price]);
+
+        $events = $pdo->prepare('UPDATE coffee_events SET price_cents = ? WHERE price_cents = 0');
+        $events->execute([$price]);
     }
 
     /**
@@ -579,7 +614,7 @@ final class Db
     private static function schemaLooksComplete(PDO $pdo): bool
     {
         $userColumns = self::columns($pdo, 'users');
-        foreach (['coffees', 'paid_cents', 'name_encrypted', 'name_hash', 'user_handle'] as $column) {
+        foreach (['coffees', 'paid_cents', 'name_encrypted', 'name_hash', 'user_handle', 'tab_cents'] as $column) {
             if (!in_array($column, $userColumns, true)) {
                 return false;
             }
@@ -697,6 +732,7 @@ final class Db
                     'name_encrypted' => 'TEXT',
                     'name_hash' => 'VARCHAR(64)',
                     'user_handle' => 'VARCHAR(32)',
+                    'tab_cents' => 'BIGINT NOT NULL DEFAULT 0',
                 ],
                 'credentials' => [
                     'user_id' => 'BIGINT NOT NULL DEFAULT 0',
@@ -726,6 +762,7 @@ final class Db
                 'coffee_events' => [
                     'user_id' => 'BIGINT NOT NULL DEFAULT 0',
                     'created_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'price_cents' => 'BIGINT NOT NULL DEFAULT 0',
                 ],
             ];
         }
@@ -739,6 +776,7 @@ final class Db
                 'name_encrypted' => 'TEXT',
                 'name_hash' => 'TEXT',
                 'user_handle' => 'TEXT',
+                'tab_cents' => 'INTEGER NOT NULL DEFAULT 0',
             ],
             'credentials' => [
                 'user_id' => 'INTEGER NOT NULL DEFAULT 0',
@@ -768,6 +806,7 @@ final class Db
             'coffee_events' => [
                 'user_id' => 'INTEGER NOT NULL DEFAULT 0',
                 'created_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'price_cents' => 'INTEGER NOT NULL DEFAULT 0',
             ],
         ];
     }

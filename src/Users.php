@@ -52,17 +52,24 @@ final class Users
         int $coffees = 0,
         int $paidCents = 0
     ): array {
-        $id = Db::transaction(static function (PDO $pdo) use ($nameEncrypted, $nameHash, $userHandle, $coffees, $paidCents): string {
+        // Seed-/Altbestandssemantik: geerbte Kaffees werden zum aktuell
+        // konfigurierten Preis bewertet, da es für sie keine Einzelereignisse
+        // (und damit keine Einzelpreise) gibt.
+        $coffees = max(0, $coffees);
+        $tabCents = $coffees * Config::priceCents();
+
+        $id = Db::transaction(static function (PDO $pdo) use ($nameEncrypted, $nameHash, $userHandle, $coffees, $paidCents, $tabCents): string {
             $statement = $pdo->prepare(
-                'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, created_at)
-                 VALUES (NULL, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, tab_cents, created_at)
+                 VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)'
             );
             $statement->execute([
                 $nameEncrypted,
                 $nameHash,
                 $userHandle,
-                max(0, $coffees),
+                $coffees,
                 max(0, $paidCents),
+                $tabCents,
                 Clock::now(),
             ]);
 
@@ -71,18 +78,32 @@ final class Users
 
         $row = self::find($id);
 
-        return $row ?? ['id' => $id, 'coffees' => $coffees, 'paid_cents' => $paidCents];
+        return $row ?? ['id' => $id, 'coffees' => $coffees, 'paid_cents' => $paidCents, 'tab_cents' => $tabCents];
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Bucht einen Kaffee zum aktuell konfigurierten Preis. Der Preis wird
+     * einmal zu Beginn gelesen und sowohl in tab_cents als auch am
+     * Ereignis selbst festgeschrieben – spätere Preisänderungen wirken sich
+     * damit nie rückwirkend auf schon gebuchte Kaffees aus.
+     *
+     * @return array<string, mixed>
+     */
     public static function addCoffee(string $id): array
     {
-        return Db::transaction(static function (PDO $pdo) use ($id): array {
-            $statement = $pdo->prepare('UPDATE users SET coffees = coffees + 1 WHERE id = ?');
-            $statement->execute([(int) $id]);
-            // Ereignis für die Serienanzeige – ein Datensatz je gebuchtem Kaffee.
-            $event = $pdo->prepare('INSERT INTO coffee_events (user_id, created_at) VALUES (?, ?)');
-            $event->execute([(int) $id, Clock::now()]);
+        $price = Config::priceCents();
+
+        return Db::transaction(static function (PDO $pdo) use ($id, $price): array {
+            $statement = $pdo->prepare(
+                'UPDATE users SET coffees = coffees + 1, tab_cents = tab_cents + ? WHERE id = ?'
+            );
+            $statement->execute([$price, (int) $id]);
+            // Ereignis für die Serienanzeige und den Preis dieser Buchung –
+            // ein Datensatz je gebuchtem Kaffee.
+            $event = $pdo->prepare(
+                'INSERT INTO coffee_events (user_id, created_at, price_cents) VALUES (?, ?, ?)'
+            );
+            $event->execute([(int) $id, Clock::now(), $price]);
 
             return self::rowInTransaction($pdo, $id);
         });
@@ -108,20 +129,44 @@ final class Users
         });
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Macht die letzte Buchung rückgängig – sowohl den Zähler als auch den
+     * dafür verbuchten Preis. Der Preis kommt aus dem zuletzt gebuchten
+     * Ereignis, nicht aus der aktuellen Konfiguration: nur so bleibt eine
+     * zwischenzeitliche Preisänderung ohne rückwirkenden Effekt. Fehlt ein
+     * Ereignis (Altbestand vor Schema v5), wird ersatzweise der aktuell
+     * konfigurierte Preis abgezogen.
+     *
+     * @return array<string, mixed>
+     */
     public static function undoCoffee(string $id): array
     {
-        return Db::transaction(static function (PDO $pdo) use ($id): array {
+        $fallbackPrice = Config::priceCents();
+
+        return Db::transaction(static function (PDO $pdo) use ($id, $fallbackPrice): array {
             // Stoppt bei null, wird niemals negativ.
             $statement = $pdo->prepare('UPDATE users SET coffees = coffees - 1 WHERE id = ? AND coffees > 0');
             $statement->execute([(int) $id]);
             if ($statement->rowCount() > 0) {
-                // Nur das zuletzt gebuchte Ereignis zurücknehmen, nicht irgendeins.
+                // Nur das zuletzt gebuchte Ereignis zurücknehmen, nicht irgendeins –
+                // und dessen Preis vor dem Löschen auslesen.
+                $event = Db::fetchRow(
+                    'SELECT id, price_cents FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+                    [(int) $id],
+                    $pdo
+                );
+                $refund = $event !== null && isset($event['price_cents']) && is_numeric($event['price_cents'])
+                    ? (int) $event['price_cents']
+                    : $fallbackPrice;
+
+                if ($event !== null) {
+                    $pdo->prepare('DELETE FROM coffee_events WHERE id = ?')->execute([$event['id']]);
+                }
+
+                // Portabel statt MAX(0, ...), analog zu addPayment: nie negativ.
                 $pdo->prepare(
-                    'DELETE FROM coffee_events WHERE id = (
-                        SELECT id FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1
-                    )'
-                )->execute([(int) $id]);
+                    'UPDATE users SET tab_cents = CASE WHEN tab_cents - ? < 0 THEN 0 ELSE tab_cents - ? END WHERE id = ?'
+                )->execute([$refund, $refund, (int) $id]);
             }
 
             return self::rowInTransaction($pdo, $id);
@@ -230,13 +275,21 @@ final class Users
         return isset($row['paid_cents']) && is_numeric($row['paid_cents']) ? (int) $row['paid_cents'] : 0;
     }
 
+    /** Summe der Preise aller gebuchten Kaffees, zum jeweiligen Buchungspreis. */
+    public static function tabCents(array $row): int
+    {
+        return isset($row['tab_cents']) && is_numeric($row['tab_cents']) ? (int) $row['tab_cents'] : 0;
+    }
+
     /**
-     * balanceCents = coffees × priceCents − paidCents.
-     * Der Preis kommt immer aus der Konfiguration.
+     * balanceCents = tabCents − paidCents.
+     * tabCents summiert die Preise der einzelnen Buchungen zum jeweiligen
+     * Buchungszeitpunkt – eine spätere Preisänderung bewertet keine bereits
+     * gebuchten Kaffees neu.
      */
     public static function balanceCents(array $row): int
     {
-        return self::coffees($row) * Config::priceCents() - self::paidCents($row);
+        return self::tabCents($row) - self::paidCents($row);
     }
 
     /** @return array<string, mixed> */
