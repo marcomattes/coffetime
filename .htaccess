@@ -1,20 +1,20 @@
-# Diese Datei greift nur, wenn die Dokumentenwurzel auf das Projektverzeichnis
-# zeigt statt auf public/ – das ist bei einfachem Webhosting oft nicht änderbar.
-# Sie leitet dann alle Anfragen nach public/ um; config.php, src/, tools/,
-# tests/, vendor/ und data/ sind dadurch über HTTP nicht erreichbar, weil jede
-# Anfrage dorthin im Front-Controller endet (JSON-404).
+# This file only takes effect when the document root points at the project
+# directory instead of public/ — often unavoidable on simple shared hosting.
+# It then routes every request into public/; config.php, src/, tools/,
+# tests/, vendor/, and data/ become unreachable over HTTP because any request
+# for them ends in the front controller (JSON 404).
 #
-# Zeigt die Dokumentenwurzel korrekt auf public/, liest Apache diese Datei nicht
-# – sie liegt dann oberhalb der Wurzel und ist wirkungslos.
+# When the document root correctly points at public/, Apache never reads this
+# file — it sits above the root and has no effect.
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
 
-    # Statische Dateien aus public/ ausliefern.
+    # Serve static files from public/.
     RewriteCond %{DOCUMENT_ROOT}/public/$1 -f
     RewriteRule ^(.+)$ public/$1 [L]
 
-    # Alles andere an den Front-Controller.
+    # Everything else goes to the front controller.
     RewriteRule ^ public/index.php [L]
 </IfModule>
 
@@ -22,7 +22,7 @@
     Options -Indexes
 </IfModule>
 
-# Punktdateien niemals ausliefern (.htaccess, .env, .git …).
+# Never serve dotfiles (.htaccess, .env, .git …).
 <FilesMatch "^\.">
     <IfModule mod_authz_core.c>
         Require all denied
