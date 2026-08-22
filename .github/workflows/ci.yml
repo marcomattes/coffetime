@@ -27,8 +27,8 @@ jobs:
       - name: Validate dependency metadata
         run: composer validate --strict --no-check-publish
 
-      - name: Test encryption
-        run: php tests/CryptoTest.php
+      - name: Run test suite
+        run: php tests/run.php
 
       - name: Check PHP syntax
         run: find public src tests tools -name '*.php' -print0 | xargs -0 -n1 php -l

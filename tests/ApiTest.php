@@ -1,0 +1,259 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * HTTP integration coverage: boots the real PHP built-in server against a
+ * temp config/database and drives it exactly like a browser would, over
+ * curl. The server process is always terminated on exit, success or not.
+ */
+
+require __DIR__ . '/helpers.php';
+
+$projectRoot = dirname(__DIR__);
+$workspace = make_temp_workspace('coffee-api');
+
+$keys = generate_rsa_keypair();
+$testToken = 'test-token-' . bin2hex(random_bytes(8));
+
+$configPath = write_test_config($workspace, [
+    'priceCents' => 150,
+    'invite' => 'TEST-INVITE',
+    'admins' => ['1'],
+    'dbPath' => $workspace . '/data/coffee.sqlite',
+    'testMode' => true,
+    'testToken' => $testToken,
+    'adminPublicKey' => $keys['public'],
+    'namePepper' => 'test-pepper',
+]);
+
+/** @var resource|null $serverProcess */
+$serverProcess = null;
+register_shutdown_function(static function () use (&$serverProcess): void {
+    if ($serverProcess !== null) {
+        stop_php_server($serverProcess);
+    }
+});
+
+[$serverProcess, $port] = start_php_server($projectRoot . '/public', $configPath);
+$client = new HttpClient('http://127.0.0.1:' . $port);
+$testHeaders = ['X-Test-Token' => $testToken];
+
+// ------------------------------------------------------- unauthenticated ---
+
+$r = $client->get('/api/me');
+check('GET /api/me without a session is 401', $r['status'] === 401);
+check('GET /api/me without a session reports "unauthorized"', ($r['json']['error'] ?? null) === 'unauthorized');
+
+$r = $client->get('/nonsense');
+check('an unknown path is 404', $r['status'] === 404);
+
+$r = $client->post('/api/me');
+check(
+    'POST /api/me without a session is still 401 (session check precedes method check)',
+    $r['status'] === 401
+);
+
+$r = $client->get('/api/logout');
+check('GET /api/logout without a session is 401', $r['status'] === 401);
+
+// ---------------------------------------------------- registration guards ---
+
+$r = $client->post('/api/register/options', ['invite' => 'WRONG-INVITE', 'firstName' => 'A', 'lastName' => 'B']);
+check('register/options with the wrong invite is 403', $r['status'] === 403);
+check('register/options with the wrong invite reports invalid_invite', ($r['json']['error'] ?? null) === 'invalid_invite');
+
+$r = $client->post('/api/register/options', ['invite' => 'TEST-INVITE', 'firstName' => '', 'lastName' => '']);
+check('register/options with a valid invite but empty names is 400', $r['status'] === 400);
+check('register/options with empty names reports invalid_name', ($r['json']['error'] ?? null) === 'invalid_name');
+
+// ----------------------------------------------------------- test control ---
+
+$r = $client->post('/api/test/reset');
+check('test endpoints are hidden (404) without the test token', $r['status'] === 404);
+
+$r = $client->post('/api/test/reset', null, $testHeaders);
+check('test/reset with the correct token succeeds', $r['status'] === 200 && ($r['json']['ok'] ?? false) === true);
+
+$seedBody = [
+    'users' => [
+        ['firstName' => 'Admin', 'lastName' => 'Boss', 'coffees' => 5, 'paidCents' => 200],
+        ['firstName' => 'Normal', 'lastName' => 'Person', 'coffees' => 2, 'paidCents' => 0],
+        ['firstName' => 'Zero', 'lastName' => 'Case', 'coffees' => 0, 'paidCents' => 0],
+    ],
+];
+$r = $client->post('/api/test/seed', $seedBody, $testHeaders);
+check('test/seed succeeds', $r['status'] === 200);
+$seeded = $r['json']['users'] ?? [];
+check('test/seed returns one id per seeded user', is_array($seeded) && count($seeded) === 3);
+$adminId = $seeded[0]['id'] ?? null;
+$normalId = $seeded[1]['id'] ?? null;
+$zeroId = $seeded[2]['id'] ?? null;
+check('the first seeded user becomes id "1" (configured as admin)', $adminId === '1');
+
+$r = $client->get('/api/test/state', $testHeaders);
+check('test/state succeeds', $r['status'] === 200);
+check('test/state reflects the configured priceCents', ($r['json']['config']['priceCents'] ?? null) === 150);
+$stateUsers = $r['json']['users'] ?? [];
+$adminStateRow = null;
+foreach ($stateUsers as $row) {
+    if (($row['id'] ?? null) === $adminId) {
+        $adminStateRow = $row;
+    }
+}
+check('test/state marks the configured admin id as admin', ($adminStateRow['admin'] ?? null) === true);
+
+// ------------------------------------------------------------- test login ---
+
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('test/login as the seeded non-admin user succeeds', $r['status'] === 200);
+check('test/login sets a session cookie', $client->cookie('coffee_session') !== null);
+
+// ------------------------------------------------------------------ /me ---
+
+$r = $client->get('/api/me');
+check('GET /api/me with a session is 200', $r['status'] === 200);
+$me = $r['json'];
+check('me.coffees matches the seeded value', ($me['coffees'] ?? null) === 2);
+check('me.balanceCents = coffees * priceCents - paidCents', ($me['balanceCents'] ?? null) === 2 * 150);
+check('me.priceCents matches the configured price', ($me['priceCents'] ?? null) === 150);
+check('me.admin is false for the non-admin user', ($me['admin'] ?? null) === false);
+
+// --------------------------------------------------------------- coffee ---
+
+$r = $client->post('/api/coffee');
+check('POST /api/coffee increments the counter', ($r['json']['coffees'] ?? null) === 3);
+check('POST /api/coffee updates balanceCents accordingly', ($r['json']['balanceCents'] ?? null) === 3 * 150);
+
+$r = $client->post('/api/coffee/undo');
+check('POST /api/coffee/undo decrements the counter back', ($r['json']['coffees'] ?? null) === 2);
+
+// Book one coffee for the history check below.
+$r = $client->post('/api/coffee');
+check('booking again before the history check increments to 3', ($r['json']['coffees'] ?? null) === 3);
+
+// --------------------------------------------------------------- stats ---
+
+$r = $client->get('/api/stats');
+check('GET /api/stats is 200', $r['status'] === 200);
+$stats = $r['json'];
+check('stats.total sums every seeded user\'s coffees', ($stats['total'] ?? null) === 5 + 3 + 0);
+check('stats.users counts all three seeded users', ($stats['users'] ?? null) === 3);
+check('stats.rank places the caller between the leader and the trailing user', ($stats['rank'] ?? null) === 2);
+
+// --------------------------------------------------------------- history ---
+
+$r = $client->get('/api/history');
+check('GET /api/history is 200', $r['status'] === 200);
+$history = $r['json'];
+check('history has 28 days', is_array($history['days'] ?? null) && count($history['days']) === 28);
+check('history.today reflects the coffee booked just now', ($history['today'] ?? null) === 1);
+
+// ------------------------------------------------------- undo floors at 0 ---
+
+$r = $client->post('/api/test/login', ['userId' => $zeroId], $testHeaders);
+check('test/login as the zero-coffee user succeeds', $r['status'] === 200);
+$r = $client->post('/api/coffee/undo');
+check('undo below zero stays at zero', ($r['json']['coffees'] ?? null) === 0);
+$r = $client->post('/api/coffee/undo');
+check('a second undo at zero still stays at zero', ($r['json']['coffees'] ?? null) === 0);
+
+// -------------------------------------------------------------- non-admin ---
+
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('re-login as the non-admin user succeeds', $r['status'] === 200);
+$r = $client->get('/api/admin/users');
+check('a non-admin session gets 403 from /api/admin/users', $r['status'] === 403);
+check('the 403 reports "forbidden"', ($r['json']['error'] ?? null) === 'forbidden');
+
+// ----------------------------------------------------------------- admin ---
+
+$r = $client->post('/api/test/login', ['userId' => $adminId], $testHeaders);
+check('test/login as the admin user succeeds', $r['status'] === 200);
+
+$r = $client->get('/api/admin/users');
+check('GET /api/admin/users as an admin is 200', $r['status'] === 200);
+$adminUsers = $r['json']['users'] ?? [];
+check('admin/users lists all three seeded users', is_array($adminUsers) && count($adminUsers) === 3);
+$allPrefixed = true;
+$allHavePaidCents = true;
+foreach ($adminUsers as $row) {
+    if (!str_starts_with((string) ($row['nameEncrypted'] ?? ''), 'rsa-oaep-sha1:')) {
+        $allPrefixed = false;
+    }
+    if (!array_key_exists('paidCents', $row)) {
+        $allHavePaidCents = false;
+    }
+}
+check('every admin/users row carries an rsa-oaep-sha1: ciphertext', $allPrefixed);
+check('every admin/users row carries paidCents', $allHavePaidCents);
+
+$adminEncryptedName = null;
+foreach ($adminUsers as $row) {
+    if (($row['id'] ?? null) === $adminId) {
+        $adminEncryptedName = $row['nameEncrypted'] ?? null;
+    }
+}
+
+$r = $client->post('/api/admin/payment', ['userId' => $normalId, 'amountCents' => 500]);
+check('admin/payment with a valid amount succeeds', $r['status'] === 200 && ($r['json']['ok'] ?? false) === true);
+$paidUser = $r['json']['user'] ?? [];
+check('admin/payment adds to paidCents', ($paidUser['paidCents'] ?? null) === 500);
+check(
+    'admin/payment reduces the balance by exactly the paid amount',
+    ($paidUser['balanceCents'] ?? null) === (3 * 150 - 500)
+);
+
+$r = $client->post('/api/admin/payment', ['userId' => $normalId, 'amountCents' => 0]);
+check('admin/payment with amountCents 0 is 400', $r['status'] === 400);
+check('admin/payment with amountCents 0 reports invalid_amount', ($r['json']['error'] ?? null) === 'invalid_amount');
+
+$r = $client->post('/api/admin/payment', ['userId' => $normalId, 'amountCents' => 1.5]);
+check('admin/payment with a non-integer amountCents is 400', $r['status'] === 400);
+check('admin/payment with a float amountCents reports invalid_amount', ($r['json']['error'] ?? null) === 'invalid_amount');
+
+$r = $client->post('/api/admin/payment', ['userId' => '999999', 'amountCents' => 500]);
+check('admin/payment for an unknown user is 404', $r['status'] === 404);
+check('admin/payment for an unknown user reports unknown_user', ($r['json']['error'] ?? null) === 'unknown_user');
+
+// ------------------------------------------------------------ clock shift ---
+
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('re-login as the non-admin user for the clock test succeeds', $r['status'] === 200);
+
+$r = $client->post('/api/test/clock', ['offsetSeconds' => 86400], $testHeaders);
+check('test/clock accepts a one-day offset', $r['status'] === 200 && ($r['json']['offsetSeconds'] ?? null) === 86400);
+
+$client->post('/api/coffee');
+$r = $client->get('/api/history');
+$shiftedHistory = $r['json'];
+check(
+    'after shifting the clock a day forward, history\'s last day is tomorrow',
+    ($shiftedHistory['days'][27]['date'] ?? null) === gmdate('Y-m-d', time() + 86400)
+);
+check('booking on the shifted day shows up as today\'s count', ($shiftedHistory['today'] ?? null) >= 1);
+
+$r = $client->get('/api/me');
+check('streakDays is at least 1 right after booking on the shifted day', ($r['json']['streakDays'] ?? 0) >= 1);
+
+// Restore the clock so nothing lingers for whatever runs next on this host.
+$client->post('/api/test/clock', ['offsetSeconds' => 0], $testHeaders);
+
+// ------------------------------------------------------ decryption roundtrip ---
+
+check('the admin user\'s encrypted name was captured earlier', $adminEncryptedName !== null);
+$cipherB64 = substr((string) $adminEncryptedName, strlen('rsa-oaep-sha1:'));
+$cipher = base64_decode($cipherB64, true);
+check('the ciphertext decodes as valid Base64', $cipher !== false);
+$opened = '';
+$decrypted = $cipher !== false
+    && openssl_private_decrypt($cipher, $opened, $keys['private'], OPENSSL_PKCS1_OAEP_PADDING);
+check('the matching private key decrypts the sealed name', $decrypted === true);
+$payload = json_decode($opened, true);
+check('the decrypted payload carries the seeded first name', ($payload['firstName'] ?? null) === 'Admin');
+check('the decrypted payload carries the seeded last name', ($payload['lastName'] ?? null) === 'Boss');
+
+stop_php_server($serverProcess);
+$serverProcess = null;
+
+summarize_and_exit();

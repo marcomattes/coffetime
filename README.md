@@ -60,9 +60,14 @@ and `data/` directory.
 ## Tests
 
 ```bash
-php tests/CryptoTest.php
+php tests/run.php
 find public src tests tools -name '*.php' -print0 | xargs -0 -n1 php -l
 ```
+
+`tests/run.php` runs every standalone `tests/*Test.php` script (unit coverage
+with no web server, an HTTP integration run against the PHP built-in server,
+and the encryption tests) and aggregates the results. Each script is also
+runnable on its own, e.g. `php tests/UnitTest.php`.
 
 ## Security and privacy
 
