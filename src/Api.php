@@ -770,6 +770,7 @@ final class Api
         // requests could both reach this point before either has written its
         // settings. The wizard runs exactly once on the very first deployment,
         // not under load – a real lock is not worth the effort here.
+        // @phpstan-ignore booleanNot.alwaysFalse (deliberate re-check: state can change between the guard at the top and here)
         if (!self::needsSetup()) {
             Http::error('already_initialized', 409);
         }

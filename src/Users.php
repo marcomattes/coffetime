@@ -292,17 +292,23 @@ final class Users
         return is_numeric($value) ? (int) $value : 0;
     }
 
+    /** @param array<string, mixed> $row */
     public static function coffees(array $row): int
     {
         return isset($row['coffees']) && is_numeric($row['coffees']) ? (int) $row['coffees'] : 0;
     }
 
+    /** @param array<string, mixed> $row */
     public static function paidCents(array $row): int
     {
         return isset($row['paid_cents']) && is_numeric($row['paid_cents']) ? (int) $row['paid_cents'] : 0;
     }
 
-    /** Sum over all booked coffees, each at the price it was booked at. */
+    /**
+     * Sum over all booked coffees, each at the price it was booked at.
+     *
+     * @param array<string, mixed> $row
+     */
     public static function tabCents(array $row): int
     {
         return isset($row['tab_cents']) && is_numeric($row['tab_cents']) ? (int) $row['tab_cents'] : 0;
@@ -313,13 +319,18 @@ final class Users
      * tabCents sums the prices of the individual bookings as of the moment each
      * was booked – a later price change does not revalue coffees that have
      * already been booked.
+     *
+     * @param array<string, mixed> $row
      */
     public static function balanceCents(array $row): int
     {
         return self::tabCents($row) - self::paidCents($row);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
     public static function adminView(array $row): array
     {
         $encrypted = $row['name_encrypted'] ?? null;
@@ -405,7 +416,11 @@ final class Users
         return null;
     }
 
-    /** Timestamp of the outstanding admin reminder, 0 = none outstanding. */
+    /**
+     * Timestamp of the outstanding admin reminder, 0 = none outstanding.
+     *
+     * @param array<string, mixed> $row
+     */
     public static function remindRequestedAt(array $row): int
     {
         $value = $row['remind_requested_at'] ?? 0;
@@ -413,7 +428,11 @@ final class Users
         return is_numeric($value) ? (int) $value : 0;
     }
 
-    /** Most recently acknowledged month-end notice ('YYYY-MM'), '' = none yet. */
+    /**
+     * Most recently acknowledged month-end notice ('YYYY-MM'), '' = none yet.
+     *
+     * @param array<string, mixed> $row
+     */
     public static function remindedMonth(array $row): string
     {
         $value = $row['reminded_month'] ?? '';

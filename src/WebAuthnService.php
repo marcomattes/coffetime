@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace Coffee;
 
-use Symfony\Component\Serializer\SerializerInterface;
+use RuntimeException;
+use Symfony\Component\Serializer\Serializer;
 use Throwable;
 use Webauthn\AttestationStatement\AttestationStatementSupportManager;
 use Webauthn\AttestationStatement\NoneAttestationStatementSupport;
@@ -38,13 +39,21 @@ final class WebAuthnService
     /** Challenge length in bytes. */
     private const CHALLENGE_BYTES = 32;
 
-    private static ?SerializerInterface $serializer = null;
+    private static ?Serializer $serializer = null;
 
-    public static function serializer(): SerializerInterface
+    /**
+     * The factory declares SerializerInterface, but callers also need the
+     * (de)normalization side, so pin the concrete Symfony Serializer.
+     */
+    public static function serializer(): Serializer
     {
         if (self::$serializer === null) {
             $support = new AttestationStatementSupportManager([new NoneAttestationStatementSupport()]);
-            self::$serializer = (new WebauthnSerializerFactory($support))->create();
+            $created = (new WebauthnSerializerFactory($support))->create();
+            if (!$created instanceof Serializer) {
+                throw new RuntimeException('Unexpected serializer implementation from webauthn-lib');
+            }
+            self::$serializer = $created;
         }
 
         return self::$serializer;

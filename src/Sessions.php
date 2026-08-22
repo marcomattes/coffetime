@@ -23,8 +23,6 @@ final class Sessions
     /** Server-side idle lifetime of a session: 30 days. */
     public const IDLE_LIFETIME = 2592000;
 
-    private static ?string $currentId = null;
-
     public static function start(string $userId): string
     {
         $token = Encoding::base64UrlEncode(random_bytes(32));
@@ -40,7 +38,6 @@ final class Sessions
             $statement->execute([$id, (int) $userId, $now, $now + self::IDLE_LIFETIME]);
         });
 
-        self::$currentId = $id;
         self::sendCookie($token, self::COOKIE_MAX_AGE);
 
         return $token;
@@ -82,7 +79,6 @@ final class Sessions
             return null;
         }
 
-        self::$currentId = $id;
         self::touch($id, $now);
         self::sendCookie($token, self::COOKIE_MAX_AGE);
 

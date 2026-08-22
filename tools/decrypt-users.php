@@ -105,6 +105,7 @@ function loadSecretKey(string $path): string
     return $raw;
 }
 
+/** @param array<string, mixed> $options */
 function resolvePriceCents(array $options): int
 {
     if (isset($options['price'])) {
@@ -176,7 +177,11 @@ function openSealedName(string $ciphertextBase64, string $privateKey, int|string
     return [(string) $data['firstName'], (string) $data['lastName']];
 }
 
-/** Splits a legacy plaintext name into first and last name. */
+/**
+ * Splits a legacy plaintext name into first and last name.
+ *
+ * @return array{string, string}
+ */
 function splitLegacyName(string $name): array
 {
     $name = trim($name);
