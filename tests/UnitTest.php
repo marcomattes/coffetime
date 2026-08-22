@@ -122,11 +122,11 @@ check(
     'Db::migrate reaches the target schema version',
     Db::userVersion($migratePdo) === Db::SCHEMA_VERSION
 );
-check('Db::migrate reaches schema version 8', Db::userVersion($migratePdo) === 8);
+check('Db::migrate reaches schema version 9', Db::userVersion($migratePdo) === 9);
 foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events', 'settings', 'link_codes'] as $table) {
     check("Db::migrate creates the {$table} table", Db::tableExists($migratePdo, $table));
 }
-foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents', 'is_admin'] as $column) {
+foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents', 'is_admin', 'remind_requested_at', 'reminded_month'] as $column) {
     check(
         "Db::migrate gives users a {$column} column",
         in_array($column, Db::columns($migratePdo, 'users'), true)
@@ -500,6 +500,45 @@ foreach ($byDate as $date => $count) {
     }
 }
 check('history zero-fills every other day', $zeroFilled);
+
+// ------------------------------------------------------------- reminders ---
+
+// reminderMonthTag is a pure function of the timestamp: due on the last day
+// of a month, still due (as the previous month) during the catch-up window,
+// otherwise not due at all.
+$midMonth = gmmktime(12, 0, 0, 6, 15, 2031);
+check('reminderMonthTag is null in the middle of a month', Users::reminderMonthTag($midMonth) === null);
+check('reminderMonthTag fires on the last day of a month', Users::reminderMonthTag(gmmktime(12, 0, 0, 6, 30, 2031)) === '2031-06');
+check('reminderMonthTag fires on the last day of a 31-day month', Users::reminderMonthTag(gmmktime(23, 59, 0, 7, 31, 2031)) === '2031-07');
+check('reminderMonthTag fires on Feb 29 of a leap year', Users::reminderMonthTag(gmmktime(0, 0, 0, 2, 29, 2028)) === '2028-02');
+check('reminderMonthTag does NOT fire on Feb 28 of a leap year', Users::reminderMonthTag(gmmktime(12, 0, 0, 2, 28, 2028)) === null);
+check('reminderMonthTag catches up to the previous month early in the next one', Users::reminderMonthTag(gmmktime(12, 0, 0, 7, 3, 2031)) === '2031-06');
+check('the catch-up window ends after day 7', Users::reminderMonthTag(gmmktime(12, 0, 0, 7, 8, 2031)) === null);
+check('the catch-up window crosses a year boundary', Users::reminderMonthTag(gmmktime(12, 0, 0, 1, 2, 2031)) === '2030-12');
+check('reminderMonthTag fires on Dec 31', Users::reminderMonthTag(gmmktime(12, 0, 0, 12, 31, 2030)) === '2030-12');
+
+// Persistence: an admin reminder is stored, survives a stale ack, and is
+// cleared only by acknowledging the exact open request.
+$remindUser = Users::create('cipher-remind', 'hash-remind', 'handle-remind');
+$remindId = (string) $remindUser['id'];
+check('a fresh user has no open admin reminder', Users::remindRequestedAt($remindUser) === 0);
+check('a fresh user has no acknowledged month', Users::remindedMonth($remindUser) === '');
+
+Users::requestReminder($remindId);
+$row = Users::find($remindId);
+$requestedAt = Users::remindRequestedAt($row);
+check('requestReminder stores a positive timestamp', $requestedAt > 0);
+
+Users::ackReminders($remindId, null, $requestedAt - 1);
+check(
+    'acknowledging a stale timestamp leaves the open reminder untouched',
+    Users::remindRequestedAt(Users::find($remindId)) === $requestedAt
+);
+
+Users::ackReminders($remindId, '2031-06', $requestedAt);
+$row = Users::find($remindId);
+check('acknowledging the open timestamp clears the admin reminder', Users::remindRequestedAt($row) === 0);
+check('acknowledging a month stores it as remindedMonth', Users::remindedMonth($row) === '2031-06');
 
 // -------------------------------------------------------------- Sessions ---
 

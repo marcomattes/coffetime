@@ -172,6 +172,24 @@ authenticator (CDP) — nothing in the app is mocked.
 4. `/?book=1` while signed out shows the NFC hint; after signing in, the
    pending coffee is booked automatically (counter 1).
 
+### 11. `reminders.spec.ts` (main instance)
+
+1. Without the notification permission, the reminders card offers the enable
+   button with its explanatory hint.
+2. With the permission granted, the card reports reminders as on (headless
+   Chromium has no periodic background sync, so the on-open wording applies).
+3. The admin "Remind" button queues a reminder; the user's session then sees
+   it on `/api/reminders` (with `requestedAt` and the open balance), and
+   reading does not consume it.
+4. Mid-month (fixed server clock), no month-end reminder is due.
+5. On the last day of a month (fixed server clock), opening the app as a user
+   with an open balance and a queued admin reminder shows both local
+   notifications via the service worker (asserted through
+   `registration.getNotifications()` tags) and acknowledges them, after which
+   `/api/reminders` reports nothing due. Date-dependent tests pin the server
+   clock via `TestApi.clock()` and create sessions only after the jump
+   (sessions idle out after 30 days).
+
 ## Conventions for implementers
 
 - Each test (or `beforeEach`) starts from `TestApi.reset()` on the main

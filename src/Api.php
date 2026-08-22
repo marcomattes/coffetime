@@ -58,8 +58,11 @@ final class Api
             '/api/coffee/undo' => ['POST', 'coffeeUndo'],
             '/api/stats' => ['GET', 'stats'],
             '/api/history' => ['GET', 'history'],
+            '/api/reminders' => ['GET', 'reminders'],
+            '/api/reminders/ack' => ['POST', 'remindersAck'],
             '/api/admin/users' => ['GET', 'adminUsers'],
             '/api/admin/payment' => ['POST', 'adminPayment'],
+            '/api/admin/remind' => ['POST', 'adminRemind'],
             '/api/admin/link-code' => ['POST', 'adminLinkCode'],
             '/api/link/code' => ['POST', 'linkCode'],
             '/api/link/options' => ['POST', 'linkOptions'],
@@ -507,6 +510,64 @@ final class Api
         Http::json(Users::history((string) $user['id']));
     }
 
+    // ------------------------------------------------------- Erinnerungen ---
+
+    /**
+     * Fällige Erinnerungen für den angemeldeten Benutzer. Rein lesend – der
+     * Client (Service Worker oder Seite) zeigt die lokale Notification und
+     * bestätigt danach über /api/reminders/ack genau das, was er gezeigt
+     * hat. So erscheint jede Erinnerung über alle Geräte hinweg höchstens
+     * einmal, und ein Abruf ohne erfolgreiche Anzeige verbraucht nichts.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function reminders(array $user): never
+    {
+        $balance = Users::balanceCents($user);
+
+        // Monatsende-Hinweis nur bei tatsächlich offenem Betrag und nur,
+        // solange er für diesen Monat noch nicht bestätigt wurde.
+        $monthEnd = null;
+        $tag = Users::reminderMonthTag(Clock::now());
+        if ($tag !== null && $balance > 0 && Users::remindedMonth($user) !== $tag) {
+            $monthEnd = ['month' => $tag, 'balanceCents' => $balance];
+        }
+
+        $requestedAt = Users::remindRequestedAt($user);
+        $admin = $requestedAt > 0
+            ? ['requestedAt' => $requestedAt, 'balanceCents' => $balance]
+            : null;
+
+        Http::json(['monthEnd' => $monthEnd, 'admin' => $admin]);
+    }
+
+    /** @param array<string, mixed> $user */
+    private static function remindersAck(array $user): never
+    {
+        $body = Http::body();
+
+        $month = Http::stringField($body, 'month');
+        if ($month !== null && preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $month) !== 1) {
+            Http::error('invalid_ack', 400);
+        }
+
+        $requestedAtRaw = $body['adminRequestedAt'] ?? null;
+        $requestedAt = null;
+        if ($requestedAtRaw !== null) {
+            if (!is_int($requestedAtRaw) || $requestedAtRaw <= 0) {
+                Http::error('invalid_ack', 400);
+            }
+            $requestedAt = $requestedAtRaw;
+        }
+
+        if ($month === null && $requestedAt === null) {
+            Http::error('invalid_ack', 400);
+        }
+
+        Users::ackReminders((string) $user['id'], $month, $requestedAt);
+        Http::json(['ok' => true]);
+    }
+
     // -------------------------------------------------------------- Admin ---
 
     /** @param array<string, mixed> $user */
@@ -539,6 +600,27 @@ final class Api
 
         $updated = Users::addPayment($userId, $amountRaw);
         Http::json(['ok' => true, 'user' => Users::adminView($updated)]);
+    }
+
+    /**
+     * Merkt eine Zahlungserinnerung für einen Benutzer vor. Sie erscheint
+     * als lokale Notification auf dessen Gerät, sobald es das nächste Mal
+     * /api/reminders abfragt (App-Start oder Periodic Background Sync).
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function adminRemind(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
+            Http::error('unknown_user', 404);
+        }
+
+        Users::requestReminder($userId);
+        Http::json(['ok' => true]);
     }
 
     /**

@@ -154,6 +154,12 @@ final class Frontend
     </div>
 
     <div class="card">
+      <h2>Reminders</h2>
+      <p id="notify-status" data-testid="notify-status" class="hint" role="status"></p>
+      <button type="button" id="btn-notify-enable" data-testid="btn-notify-enable" class="btn btn-quiet" hidden>Enable reminders</button>
+    </div>
+
+    <div class="card">
       <h2>Devices</h2>
       <p id="device-count" data-testid="device-count" class="hint"></p>
       <button type="button" id="btn-link-code" data-testid="btn-link-code" class="btn btn-quiet">Link another device</button>

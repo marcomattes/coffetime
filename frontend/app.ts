@@ -328,6 +328,112 @@
     }
   }
 
+  /* ------------------------------------------------------- Erinnerungen -- */
+
+  /*
+   * Local month-end and admin payment reminders. The actual check-and-show
+   * logic lives in the service worker (see sw.ts); the page only manages
+   * the notification permission and pokes the worker. Where the browser
+   * supports periodic background sync (installed PWA on Chromium),
+   * reminders also fire while the app is closed; everywhere else they
+   * appear on the next app start.
+   */
+
+  function notificationsSupported(): boolean {
+    return 'Notification' in window && 'serviceWorker' in navigator;
+  }
+
+  /* Resolves to true when background checks are registered on this device. */
+  async function registerReminderSync(): Promise<boolean> {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const periodicSync = (registration as any).periodicSync;
+      if (!periodicSync || typeof periodicSync.register !== 'function') {
+        return false;
+      }
+      await periodicSync.register('reminders', { minInterval: 6 * 60 * 60 * 1000 });
+      return true;
+    } catch (e) {
+      // Not installed as an app, permission missing, or unsupported – the
+      // on-open check below still covers these devices.
+      return false;
+    }
+  }
+
+  function requestReminderCheck(): void {
+    if (!notificationsSupported() || Notification.permission !== 'granted') {
+      return;
+    }
+    navigator.serviceWorker.ready
+      .then((registration) => {
+        if (registration.active) {
+          registration.active.postMessage({ type: 'check-reminders' });
+        }
+      })
+      .catch(() => { /* no service worker – reminders simply stay off */ });
+  }
+
+  function updateReminderUi(backgroundChecks?: boolean): void {
+    const status = el('notify-status');
+    const button = el<HTMLButtonElement>('btn-notify-enable');
+    if (!status || !button) {
+      return;
+    }
+    if (!notificationsSupported()) {
+      button.hidden = true;
+      text(status, 'This browser does not support notifications.');
+      return;
+    }
+    const permission = Notification.permission;
+    if (permission === 'granted') {
+      button.hidden = true;
+      text(
+        status,
+        backgroundChecks === true
+          ? 'Reminders are on — this device also checks in the background.'
+          : 'Reminders are on — they appear at the latest when the app is opened.'
+      );
+    } else if (permission === 'denied') {
+      button.hidden = true;
+      text(status, 'Notifications are blocked for this site in the browser settings.');
+    } else {
+      button.hidden = false;
+      text(status, 'Get a notification at the end of the month while your tab is still open.');
+    }
+  }
+
+  async function enableReminders(): Promise<void> {
+    const button = el<HTMLButtonElement>('btn-notify-enable');
+    if (!notificationsSupported()) {
+      updateReminderUi();
+      return;
+    }
+    busy(button, true);
+    try {
+      const permission = await Notification.requestPermission();
+      let backgroundChecks = false;
+      if (permission === 'granted') {
+        backgroundChecks = await registerReminderSync();
+        requestReminderCheck();
+      }
+      updateReminderUi(backgroundChecks);
+    } catch (e) {
+      updateReminderUi();
+    }
+    busy(button, false);
+  }
+
+  function initReminders(): void {
+    updateReminderUi();
+    if (notificationsSupported() && Notification.permission === 'granted') {
+      // Re-register on every start: the registration is idempotent and a
+      // reinstalled app or cleared site data would otherwise lose it.
+      registerReminderSync()
+        .then(updateReminderUi)
+        .catch(() => {});
+    }
+  }
+
   /* --------------------------------------------------------- Ansichten -- */
 
   function show(view: 'setup' | 'auth' | 'app'): void {
@@ -572,14 +678,31 @@
         requestRecoveryCode(user, recoveryButton, recoveryCode);
       });
 
+      const remindButton = document.createElement('button');
+      remindButton.type = 'button';
+      remindButton.className = 'btn btn-quiet row-payment-btn';
+      remindButton.textContent = 'Remind';
+      remindButton.setAttribute('data-testid', 'admin-remind-btn');
+
+      const remindStatus = document.createElement('span');
+      remindStatus.className = 'hint row-recovery';
+      remindStatus.setAttribute('data-testid', 'admin-remind-status');
+      remindStatus.hidden = true;
+
+      remindButton.addEventListener('click', () => {
+        sendReminder(user, remindButton, remindStatus);
+      });
+
       form.appendChild(input);
       form.appendChild(payButton);
       form.appendChild(recoveryButton);
+      form.appendChild(remindButton);
 
       row.appendChild(head);
       row.appendChild(cipher);
       row.appendChild(form);
       row.appendChild(recoveryCode);
+      row.appendChild(remindStatus);
       container.appendChild(row);
     });
   }
@@ -589,6 +712,19 @@
     try {
       const data = await api<LinkCode>('/api/admin/link-code', { userId: user.id });
       text(node, 'Code ' + data.code + ' — valid 60 min');
+      node.hidden = false;
+    } catch (error) {
+      text(node, error instanceof ApiError ? error.code : 'unknown_error');
+      node.hidden = false;
+    }
+    busy(button, false);
+  }
+
+  async function sendReminder(user: AdminUser, button: HTMLButtonElement, node: HTMLElement): Promise<void> {
+    busy(button, true);
+    try {
+      await api('/api/admin/remind', { userId: user.id });
+      text(node, 'Reminder queued — it appears on their device.');
       node.hidden = false;
     } catch (error) {
       text(node, error instanceof ApiError ? error.code : 'unknown_error');
@@ -770,6 +906,7 @@
       renderMe(me);
       show('app');
       consumePendingBook();
+      requestReminderCheck();
       const jobs: Promise<void>[] = [
         api<StatsResponse>('/api/stats').then(renderStats).catch(() => {}),
         api<HistoryResponse>('/api/history').then(renderHistory).catch(() => {})
@@ -1215,11 +1352,13 @@
     el('btn-add')!.addEventListener('click', addCoffee);
     el('btn-undo')!.addEventListener('click', undoCoffee);
     el('btn-logout')!.addEventListener('click', logout);
+    el('btn-notify-enable')!.addEventListener('click', enableReminders);
     el('private-key-input')!.addEventListener('change', selectPrivateKey);
     el('btn-admin-csv')!.addEventListener('click', exportAdminCsv);
     el('btn-admin-settings')!.addEventListener('click', saveAdminSettings);
     checkPendingBook();
     registerServiceWorker();
+    initReminders();
     updateQueueHint();
     window.addEventListener('online', () => {
       flushQueue();
