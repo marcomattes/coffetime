@@ -34,7 +34,7 @@ jobs:
         run: find public src tests tools -name '*.php' -print0 | xargs -0 -n1 php -l
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -108,7 +108,7 @@ jobs:
         run: composer install --no-interaction --prefer-dist
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
