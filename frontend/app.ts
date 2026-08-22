@@ -1099,9 +1099,14 @@
       }
       await flushQueue();
     } catch (e) {
-      /* flushQueue() never rejects; this only guards busy() below. */
+      /* flushQueue() never rejects; this only keeps the handler from throwing. */
+    } finally {
+      // The catch branches above return early (queued offline booking, 401)
+      // -- the button must come back on those paths too, not only after a
+      // completed request, or a second offline tap would be impossible
+      // until the next reload.
+      busy(button, false);
     }
-    busy(button, false);
   }
 
   async function undoCoffee(): Promise<void> {

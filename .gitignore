@@ -3,3 +3,6 @@
 /config.php
 node_modules/
 /deploy/
+/e2e/.runtime/
+/playwright-report/
+/test-results/
