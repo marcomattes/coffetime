@@ -53,8 +53,12 @@ final class Config
             'priceCents' => 150,
             'invite' => '',
             'admins' => [],
-            'rpId' => 'localhost',
-            'origin' => 'http://localhost',
+            // Empty means "derive from the request": rpId() and origin()
+            // fall back to the validated Host header, so an unconfigured
+            // instance works on any host/port (e.g. the quick-start server
+            // on localhost:8123). Production should still pin both.
+            'rpId' => '',
+            'origin' => '',
             'dbPath' => dirname(__DIR__) . '/data/coffee.sqlite',
             'testMode' => false,
             'testToken' => '',
