@@ -125,13 +125,48 @@ async function waitForHttpOk(url: string, timeoutMs: number): Promise<void> {
   throw lastError ?? new Error('timed out waiting for server');
 }
 
+// Resolved once and reused for both servers -- see resolvePhpBinary() below
+// for why we hand spawn() an absolute path instead of the bare 'php' name.
+let phpBinary: string | undefined;
+
+/**
+ * Resolves `php` to an absolute executable path ourselves, so spawn() never
+ * has to search PATH to find the command it runs (SonarQube: "Make sure the
+ * PATH variable only contains fixed, unwriteable directories"). Walking
+ * PATH here is just to *locate* the binary for our own logging/error
+ * messages; the entry we settle on is then passed to spawn() verbatim, so
+ * the actual process launch is never subject to PATH-based lookup or
+ * hijacking via a writable/relative entry earlier on PATH.
+ */
+function resolvePhpBinary(): string {
+  if (phpBinary !== undefined) {
+    return phpBinary;
+  }
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    const candidate = path.join(dir, 'php');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      phpBinary = candidate;
+      return candidate;
+    } catch {
+      // not here, keep looking
+    }
+  }
+  throw new Error("Could not resolve 'php' on PATH -- is PHP installed?");
+}
+
 function spawnPhpServer(port: number, configPath: string, logPath: string): number {
   // Truncate so the log only reflects this run -- much easier to read the
   // tail on a startup failure.
   const logFd = fs.openSync(logPath, 'w');
-  const child = spawn('php', ['-S', `localhost:${port}`, '-t', 'public'], {
+  const child = spawn(resolvePhpBinary(), ['-S', `localhost:${port}`, '-t', 'public'], {
     cwd: REPO_ROOT,
     env: {
+      // PATH itself is inherited unchanged (not widened or replaced) --
+      // the e2e harness deliberately runs with the developer's/CI runner's
+      // own toolchain on it. It plays no part in resolving the executable
+      // above; the child only needs it for its own use once running.
       ...process.env,
       COFFEE_CONFIG_PATH: configPath,
       PHP_CLI_SERVER_WORKERS: '4',

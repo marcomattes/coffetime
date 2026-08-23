@@ -31,6 +31,9 @@ const EXIT_OK = 0;
 const EXIT_ERROR = 1;
 const EXIT_USAGE = 2;
 
+// Every OOXML part in the xlsx we write starts with this exact declaration.
+const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+
 function fail(string $message, int $code = EXIT_ERROR): never
 {
     fwrite(STDERR, 'Error: ' . $message . PHP_EOL);
@@ -54,12 +57,14 @@ function parseArguments(array $argv): array
 {
     $options = [];
     $count = count($argv);
-    for ($i = 1; $i < $count; $i++) {
+    $i = 1;
+    while ($i < $count) {
         $argument = $argv[$i];
         if (!str_starts_with($argument, '--')) {
             usage();
         }
         $name = substr($argument, 2);
+        $i++;
         if (str_contains($name, '=')) {
             [$name, $value] = explode('=', $name, 2);
             $options[$name] = $value;
@@ -69,10 +74,11 @@ function parseArguments(array $argv): array
             $options[$name] = true;
             continue;
         }
-        if ($i + 1 >= $count) {
+        if ($i >= $count) {
             usage();
         }
-        $options[$name] = $argv[++$i];
+        $options[$name] = $argv[$i];
+        $i++;
     }
 
     return $options;
@@ -134,7 +140,7 @@ function resolvePriceCents(array $options): int
 {
     if (isset($options['price'])) {
         $value = (string) $options['price'];
-        if (preg_match('/^-?[0-9]+$/', $value) !== 1) {
+        if (preg_match('/^-?\d+$/', $value) !== 1) {
             fail('--price expects an integer number of cents.');
         }
 
@@ -144,7 +150,7 @@ function resolvePriceCents(array $options): int
     $configPath = dirname(__DIR__) . '/config.php';
     if (is_file($configPath) && is_readable($configPath)) {
         /** @psalm-suppress UnresolvableInclude */
-        $config = require $configPath;
+        $config = require_once $configPath;
         if (is_array($config) && isset($config['priceCents']) && is_numeric($config['priceCents'])) {
             return (int) $config['priceCents'];
         }
@@ -233,50 +239,65 @@ function xmlEscape(string $value): string
     return htmlspecialchars($value, ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
 
+/** Converts a zero-based column index to its spreadsheet letter (0 => A, 25 => Z, 26 => AA, ...). */
+function xlsxColumnLetter(int $index): string
+{
+    $letters = '';
+    $index++;
+    while ($index > 0) {
+        $remainder = ($index - 1) % 26;
+        $letters = chr(65 + $remainder) . $letters;
+        $index = intdiv($index - 1, 26);
+    }
+
+    return $letters;
+}
+
+/** @param int|float|string $value */
+function xlsxCellXml($value, string $ref): string
+{
+    if (is_int($value) || is_float($value)) {
+        $number = is_float($value) ? rtrim(rtrim(sprintf('%.4F', $value), '0'), '.') : (string) $value;
+
+        return '<c r="' . $ref . '" t="n"><v>' . $number . '</v></c>';
+    }
+
+    return '<c r="' . $ref . '" t="inlineStr"><is><t xml:space="preserve">'
+        . xmlEscape((string) $value) . '</t></is></c>';
+}
+
+/** @param list<int|float|string> $cells */
+function xlsxRowXml(int $rowNumber, array $cells): string
+{
+    $xml = '<row r="' . $rowNumber . '">';
+    foreach (array_values($cells) as $colIndex => $value) {
+        $xml .= xlsxCellXml($value, xlsxColumnLetter($colIndex) . $rowNumber);
+    }
+
+    return $xml . '</row>';
+}
+
 /**
- * Writes a minimal but valid .xlsx file with a single worksheet, using
- * only ZipArchive, without a Composer dependency.
- *
  * @param list<string> $headers
  * @param list<list<int|float|string>> $rows
  */
-function writeXlsx(string $path, array $headers, array $rows): void
+function xlsxSheetDataXml(array $headers, array $rows): string
 {
-    if (!extension_loaded('zip')) {
-        fail('The zip extension is required for --xlsx.');
+    $xml = '';
+    foreach ([$headers, ...$rows] as $rowIndex => $cells) {
+        $xml .= xlsxRowXml($rowIndex + 1, $cells);
     }
 
-    $columnLetter = static function (int $index): string {
-        $letters = '';
-        $index++;
-        while ($index > 0) {
-            $remainder = ($index - 1) % 26;
-            $letters = chr(65 + $remainder) . $letters;
-            $index = intdiv($index - 1, 26);
-        }
+    return $xml;
+}
 
-        return $letters;
-    };
-
-    $sheetRows = [$headers, ...$rows];
-    $xmlRows = '';
-    foreach ($sheetRows as $rowIndex => $cells) {
-        $rowNumber = $rowIndex + 1;
-        $xmlRows .= '<row r="' . $rowNumber . '">';
-        foreach (array_values($cells) as $colIndex => $value) {
-            $ref = $columnLetter($colIndex) . $rowNumber;
-            if (is_int($value) || is_float($value)) {
-                $number = is_float($value) ? rtrim(rtrim(sprintf('%.4F', $value), '0'), '.') : (string) $value;
-                $xmlRows .= '<c r="' . $ref . '" t="n"><v>' . $number . '</v></c>';
-            } else {
-                $xmlRows .= '<c r="' . $ref . '" t="inlineStr"><is><t xml:space="preserve">'
-                    . xmlEscape((string) $value) . '</t></is></c>';
-            }
-        }
-        $xmlRows .= '</row>';
-    }
-
-    $contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+/**
+ * Assembles the fixed OOXML package parts around the given sheet data and
+ * writes them into the xlsx zip archive at $path.
+ */
+function writeXlsxPackage(string $path, string $sheetDataXml): void
+{
+    $contentTypes = XML_DECLARATION
         . '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         . '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         . '<Default Extension="xml" ContentType="application/xml"/>'
@@ -284,24 +305,24 @@ function writeXlsx(string $path, array $headers, array $rows): void
         . '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
         . '</Types>';
 
-    $rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    $rootRels = XML_DECLARATION
         . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
         . '</Relationships>';
 
-    $workbook = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    $workbook = XML_DECLARATION
         . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
         . '<sheets><sheet name="Coffee Time" sheetId="1" r:id="rId1"/></sheets>'
         . '</workbook>';
 
-    $workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    $workbookRels = XML_DECLARATION
         . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
         . '</Relationships>';
 
-    $sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    $sheet = XML_DECLARATION
         . '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        . '<sheetData>' . $xmlRows . '</sheetData>'
+        . '<sheetData>' . $sheetDataXml . '</sheetData>'
         . '</worksheet>';
 
     if (is_file($path) && !@unlink($path)) {
@@ -318,6 +339,22 @@ function writeXlsx(string $path, array $headers, array $rows): void
     $zip->addFromString('xl/_rels/workbook.xml.rels', $workbookRels);
     $zip->addFromString('xl/worksheets/sheet1.xml', $sheet);
     $zip->close();
+}
+
+/**
+ * Writes a minimal but valid .xlsx file with a single worksheet, using
+ * only ZipArchive, without a Composer dependency.
+ *
+ * @param list<string> $headers
+ * @param list<list<int|float|string>> $rows
+ */
+function writeXlsx(string $path, array $headers, array $rows): void
+{
+    if (!extension_loaded('zip')) {
+        fail('The zip extension is required for --xlsx.');
+    }
+
+    writeXlsxPackage($path, xlsxSheetDataXml($headers, $rows));
 }
 
 // ---------------------------------------------------------------------- Flow

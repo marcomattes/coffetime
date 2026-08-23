@@ -74,10 +74,10 @@ function distanceToSegment(x, y, ax, ay, bx, by) {
   const vy = by - ay;
   const length = vx * vx + vy * vy;
   let t = length === 0 ? 0 : ((x - ax) * vx + (y - ay) * vy) / length;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  t = Math.min(1, Math.max(0, t));
   const dx = x - (ax + t * vx);
   const dy = y - (ay + t * vy);
-  return Math.sqrt(dx * dx + dy * dy);
+  return Math.hypot(dx, dy);
 }
 
 function inCup(x, y) {
@@ -147,6 +147,47 @@ function inRoundedSquare(x, y, size, radius) {
 const SUPERSAMPLE = 4;
 
 /**
+ * Supersampled colour + coverage for one output pixel, in canvas pixel
+ * coordinates (px, py). Coverage is the count of subsamples that landed
+ * inside the rounded-square canvas; colour is their summed RGB, so the
+ * caller can average only the covered subsamples.
+ */
+function samplePixel(px, py, size, radius, scale, offsetX, offsetY) {
+  const step = 1 / SUPERSAMPLE;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let covered = 0;
+  for (let sy = 0; sy < SUPERSAMPLE; sy++) {
+    const y = py + (sy + 0.5) * step;
+    for (let sx = 0; sx < SUPERSAMPLE; sx++) {
+      const x = px + (sx + 0.5) * step;
+      if (!inRoundedSquare(x, y, size, radius)) {
+        continue;
+      }
+      const color = artColorAt((x - offsetX) / scale, (y - offsetY) / scale) || BROWN;
+      r += color[0];
+      g += color[1];
+      b += color[2];
+      covered += 1;
+    }
+  }
+  return { r, g, b, covered };
+}
+
+/**
+ * Writes one straight (un-premultiplied) alpha RGBA pixel: colour is the
+ * average of the covered samples only, so edges anti-alias without a
+ * colour fringe from the uncovered ones.
+ */
+function writePixel(pixels, offset, { r, g, b, covered }, samples) {
+  pixels[offset] = covered === 0 ? 0 : Math.round(r / covered);
+  pixels[offset + 1] = covered === 0 ? 0 : Math.round(g / covered);
+  pixels[offset + 2] = covered === 0 ? 0 : Math.round(b / covered);
+  pixels[offset + 3] = Math.round((covered * 255) / samples);
+}
+
+/**
  * @param size     edge length in pixels
  * @param artScale fraction of the canvas the drawing may occupy
  * @param radiusPc corner radius as a fraction of the size (0 = full bleed)
@@ -156,37 +197,14 @@ function render(size, artScale, radiusPc) {
   const offsetX = size / 2 - ((ART.left + ART.right) / 2) * scale;
   const offsetY = size / 2 - ((ART.top + ART.bottom) / 2) * scale;
   const radius = radiusPc * size;
-  const step = 1 / SUPERSAMPLE;
   const samples = SUPERSAMPLE * SUPERSAMPLE;
   const pixels = Buffer.alloc(size * size * 4);
 
   for (let py = 0; py < size; py++) {
     for (let px = 0; px < size; px++) {
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      let a = 0;
-      for (let sy = 0; sy < SUPERSAMPLE; sy++) {
-        const y = py + (sy + 0.5) * step;
-        for (let sx = 0; sx < SUPERSAMPLE; sx++) {
-          const x = px + (sx + 0.5) * step;
-          if (!inRoundedSquare(x, y, size, radius)) {
-            continue;
-          }
-          const color = artColorAt((x - offsetX) / scale, (y - offsetY) / scale) || BROWN;
-          r += color[0];
-          g += color[1];
-          b += color[2];
-          a += 255;
-        }
-      }
+      const pixel = samplePixel(px, py, size, radius, scale, offsetX, offsetY);
       const offset = (py * size + px) * 4;
-      // Straight (un-premultiplied) alpha: average the covered samples only.
-      const covered = a / 255;
-      pixels[offset] = covered === 0 ? 0 : Math.round(r / covered);
-      pixels[offset + 1] = covered === 0 ? 0 : Math.round(g / covered);
-      pixels[offset + 2] = covered === 0 ? 0 : Math.round(b / covered);
-      pixels[offset + 3] = Math.round(a / samples);
+      writePixel(pixels, offset, pixel, samples);
     }
   }
   return pixels;

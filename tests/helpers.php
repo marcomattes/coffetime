@@ -8,6 +8,16 @@ declare(strict_types=1);
  * `php tests/X.php`; this file only avoids duplicating plumbing.
  */
 
+/**
+ * Dedicated exception type for failures inside the test harness itself
+ * (as opposed to failures the harness is asserting about). It extends
+ * RuntimeException so any code that still catches RuntimeException keeps
+ * working unchanged.
+ */
+final class TestHarnessException extends RuntimeException
+{
+}
+
 $GLOBALS['__coffee_test_failures'] = 0;
 
 /** Prints a single check result and tracks the running failure count. */
@@ -20,7 +30,7 @@ function check(string $label, bool $condition): void
 }
 
 /** Prints the summary line and exits non-zero if any check() call failed. */
-function summarize_and_exit(): never
+function summarizeAndExit(): never
 {
     $failures = $GLOBALS['__coffee_test_failures'];
     printf("%d failure(s)\n", $failures);
@@ -33,20 +43,20 @@ function summarize_and_exit(): never
  * Creates an empty temp directory and schedules its removal on shutdown,
  * so every test file cleans up after itself even if a check fails.
  */
-function make_temp_workspace(string $prefix): string
+function makeTempWorkspace(string $prefix): string
 {
     $dir = sys_get_temp_dir() . '/' . $prefix . '-' . bin2hex(random_bytes(6));
     if (!mkdir($dir, 0775, true) && !is_dir($dir)) {
-        throw new RuntimeException('Cannot create temp workspace: ' . $dir);
+        throw new TestHarnessException('Cannot create temp workspace: ' . $dir);
     }
     register_shutdown_function(static function () use ($dir): void {
-        remove_directory_recursive($dir);
+        removeDirectoryRecursive($dir);
     });
 
     return $dir;
 }
 
-function remove_directory_recursive(string $dir): void
+function removeDirectoryRecursive(string $dir): void
 {
     if (!is_dir($dir) || is_link($dir)) {
         @unlink($dir);
@@ -63,7 +73,7 @@ function remove_directory_recursive(string $dir): void
         }
         $path = $dir . '/' . $item;
         if (is_dir($path) && !is_link($path)) {
-            remove_directory_recursive($path);
+            removeDirectoryRecursive($path);
         } else {
             @unlink($path);
         }
@@ -79,19 +89,19 @@ function remove_directory_recursive(string $dir): void
  *
  * @return array{public: string, private: string}
  */
-function generate_rsa_keypair(): array
+function generateRsaKeypair(): array
 {
     $key = openssl_pkey_new(['private_key_bits' => 4096, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
     if ($key === false) {
-        throw new RuntimeException('Could not generate RSA keypair: ' . openssl_error_string());
+        throw new TestHarnessException('Could not generate RSA keypair: ' . openssl_error_string());
     }
     if (!openssl_pkey_export($key, $privatePem)) {
-        throw new RuntimeException('Could not export RSA private key');
+        throw new TestHarnessException('Could not export RSA private key');
     }
     $details = openssl_pkey_get_details($key);
     $publicPem = $details['key'] ?? null;
     if (!is_string($publicPem)) {
-        throw new RuntimeException('Could not read RSA public key');
+        throw new TestHarnessException('Could not read RSA public key');
     }
 
     return ['public' => $publicPem, 'private' => $privatePem];
@@ -105,7 +115,7 @@ function generate_rsa_keypair(): array
  *
  * @param array<string, mixed> $overrides
  */
-function write_test_config(string $dir, array $overrides = []): string
+function writeTestConfig(string $dir, array $overrides = []): string
 {
     $defaults = [
         'priceCents' => 150,
@@ -120,7 +130,7 @@ function write_test_config(string $dir, array $overrides = []): string
         'namePepper' => 'test-pepper',
     ];
 
-    $dbConfig = test_db_config();
+    $dbConfig = testDbConfig();
     if ($dbConfig !== null) {
         $defaults['db'] = $dbConfig;
     }
@@ -141,12 +151,12 @@ function write_test_config(string $dir, array $overrides = []): string
  * every test keeps using its own SQLite file, exactly as before.
  *
  * Every call drops and recreates the configured database, so each call to
- * write_test_config() starts from an empty schema — the same isolation a
+ * writeTestConfig() starts from an empty schema — the same isolation a
  * fresh SQLite file path gives each test phase.
  *
  * @return array<string, mixed>|null
  */
-function test_db_config(): ?array
+function testDbConfig(): ?array
 {
     $raw = getenv('COFFEE_TEST_DB');
     if (!is_string($raw) || trim($raw) === '') {
@@ -163,7 +173,15 @@ function test_db_config(): ?array
     $user = is_string($decoded['user'] ?? null) ? $decoded['user'] : '';
     $password = is_string($decoded['password'] ?? null) ? $decoded['password'] : '';
     if ($database === '' || $user === '') {
-        throw new RuntimeException('COFFEE_TEST_DB is missing "database" or "user"');
+        throw new TestHarnessException('COFFEE_TEST_DB is missing "database" or "user"');
+    }
+    // DROP DATABASE / CREATE DATABASE cannot take a bound parameter for the
+    // database name — placeholders are only valid for values, not
+    // identifiers. Since the name must be interpolated, it is checked
+    // against a strict allow-list first so nothing but a plain identifier
+    // can ever reach the SQL string.
+    if (preg_match('/^[A-Za-z0-9_]+$/', $database) !== 1) {
+        throw new TestHarnessException('COFFEE_TEST_DB "database" must match ^[A-Za-z0-9_]+$: ' . $database);
     }
 
     $pdo = new PDO(
@@ -190,7 +208,7 @@ function test_db_config(): ?array
 // ------------------------------------------------------------- HTTP server ---
 
 /** Waits until something accepts TCP connections on host:port, or times out. */
-function wait_for_port(string $host, int $port, float $timeoutSeconds = 10.0): bool
+function waitForPort(string $host, int $port, float $timeoutSeconds = 10.0): bool
 {
     $deadline = microtime(true) + $timeoutSeconds;
     while (microtime(true) < $deadline) {
@@ -212,7 +230,7 @@ function wait_for_port(string $host, int $port, float $timeoutSeconds = 10.0): b
  *
  * @return array{0: resource, 1: int} the process handle and the bound port
  */
-function start_php_server(string $docroot, string $configPath, int $attempts = 5): array
+function startPhpServer(string $docroot, string $configPath, int $attempts = 5): array
 {
     $projectRoot = dirname(__DIR__);
     putenv('COFFEE_CONFIG_PATH=' . $configPath);
@@ -238,20 +256,20 @@ function start_php_server(string $docroot, string $configPath, int $attempts = 5
         stream_set_blocking($pipes[1], false);
         stream_set_blocking($pipes[2], false);
 
-        if (wait_for_port('127.0.0.1', $port, 8.0)) {
+        if (waitForPort('127.0.0.1', $port, 8.0)) {
             $status = proc_get_status($process);
             if ($status['running']) {
                 return [$process, $port];
             }
         }
-        stop_php_server($process);
+        stopPhpServer($process);
     }
 
-    throw new RuntimeException("Could not start the PHP built-in server after {$attempts} attempts");
+    throw new TestHarnessException("Could not start the PHP built-in server after {$attempts} attempts");
 }
 
 /** @param resource $process */
-function stop_php_server($process): void
+function stopPhpServer($process): void
 {
     if (!is_resource($process)) {
         return;
@@ -349,7 +367,7 @@ final class HttpClient
         if (!is_string($response)) {
             $error = curl_error($ch);
             curl_close($ch);
-            throw new RuntimeException("HTTP request to {$method} {$path} failed: {$error}");
+            throw new TestHarnessException("HTTP request to {$method} {$path} failed: {$error}");
         }
         $headerSize = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -358,6 +376,24 @@ final class HttpClient
         $rawHeaders = substr($response, 0, $headerSize);
         $rawBody = substr($response, $headerSize);
 
+        return [
+            'status' => $status,
+            'headers' => $this->consumeResponseHeaders($rawHeaders),
+            'json' => json_decode($rawBody, true),
+            'raw' => $rawBody,
+        ];
+    }
+
+    /**
+     * Parses the raw response header block: Set-Cookie lines are folded into
+     * the client's cookie jar (so subsequent requests replay them), and
+     * everything else is returned as a flat header map. Split out of
+     * request() to keep that method's branching simple.
+     *
+     * @return array<string, string>
+     */
+    private function consumeResponseHeaders(string $rawHeaders): array
+    {
         $respHeaders = [];
         foreach (preg_split('/\r\n/', trim($rawHeaders)) ?: [] as $line) {
             if (stripos($line, 'Set-Cookie:') === 0) {
@@ -376,12 +412,7 @@ final class HttpClient
             }
         }
 
-        return [
-            'status' => $status,
-            'headers' => $respHeaders,
-            'json' => json_decode($rawBody, true),
-            'raw' => $rawBody,
-        ];
+        return $respHeaders;
     }
 
     /** @param array<string, string> $headers */

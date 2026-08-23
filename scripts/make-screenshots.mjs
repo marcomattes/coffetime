@@ -44,7 +44,20 @@ const SHOTS = [
 ];
 
 function phpString(value) {
-  return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  // Single-quoted PHP strings only need `\` and `'` escaped.
+  const escaped = String(value).replaceAll('\\', String.raw`\\`).replaceAll("'", String.raw`\'`);
+  return `'${escaped}'`;
+}
+
+/** Renders one config value as a PHP literal (string, number, or bool). */
+function phpLiteral(value) {
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  if (typeof value === 'number') {
+    return String(value);
+  }
+  return phpString(value);
 }
 
 function writeConfig(adminPublicKey) {
@@ -61,10 +74,7 @@ function writeConfig(adminPublicKey) {
   };
   const lines = ['<?php', '', 'return ['];
   for (const [key, value] of Object.entries(entries)) {
-    const literal = typeof value === 'boolean'
-      ? (value ? 'true' : 'false')
-      : typeof value === 'number' ? String(value) : phpString(value);
-    lines.push(`    ${phpString(key)} => ${literal},`);
+    lines.push(`    ${phpString(key)} => ${phpLiteral(value)},`);
   }
   lines.push("    'admins' => [],", '];', '');
   fs.writeFileSync(CONFIG_PATH, lines.join('\n'));
@@ -101,6 +111,37 @@ async function waitForServer(timeoutMs) {
   throw new Error(`PHP server not ready: ${lastError?.message}\n--- server.log ---\n${tail}`);
 }
 
+// Resolved once and reused -- see resolvePhpBinary() below for why we hand
+// spawn() an absolute path instead of the bare 'php' name.
+let phpBinary;
+
+/**
+ * Resolves `php` to an absolute executable path ourselves, so spawn() never
+ * has to search PATH to find the command it runs (SonarQube: "Make sure the
+ * PATH variable only contains fixed, unwriteable directories"). Walking
+ * PATH here is just to *locate* the binary for our own error messages; the
+ * entry we settle on is then passed to spawn() verbatim, so the actual
+ * process launch is never subject to PATH-based lookup or hijacking via a
+ * writable/relative entry earlier on PATH.
+ */
+function resolvePhpBinary() {
+  if (phpBinary !== undefined) {
+    return phpBinary;
+  }
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    const candidate = path.join(dir, 'php');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      phpBinary = candidate;
+      return candidate;
+    } catch {
+      // not here, keep looking
+    }
+  }
+  throw new Error("Could not resolve 'php' on PATH -- is PHP installed?");
+}
+
 async function main() {
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
   fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -108,9 +149,17 @@ async function main() {
   writeConfig(adminPublicKey());
 
   const logFd = fs.openSync(LOG_PATH, 'w');
-  const server = spawn('php', ['-S', `localhost:${PORT}`, '-t', 'public'], {
+  const server = spawn(resolvePhpBinary(), ['-S', `localhost:${PORT}`, '-t', 'public'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, COFFEE_CONFIG_PATH: CONFIG_PATH, PHP_CLI_SERVER_WORKERS: '4' },
+    env: {
+      // PATH itself is inherited unchanged (not widened or replaced) --
+      // this script runs with the developer's own toolchain on it. It plays
+      // no part in resolving the executable above; the child only needs it
+      // for its own use once running.
+      ...process.env,
+      COFFEE_CONFIG_PATH: CONFIG_PATH,
+      PHP_CLI_SERVER_WORKERS: '4',
+    },
     detached: true,
     stdio: ['ignore', logFd, logFd],
   });

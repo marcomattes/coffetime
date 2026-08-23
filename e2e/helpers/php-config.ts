@@ -11,7 +11,7 @@ type PhpValue = string | number | boolean | PhpValue[];
 function phpString(value: string): string {
   // Single-quoted PHP strings only need `\` and `'` escaped; literal
   // newlines (as in a PEM block) are fine as-is.
-  const escaped = value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const escaped = value.replaceAll('\\', String.raw`\\`).replaceAll("'", String.raw`\'`);
   return `'${escaped}'`;
 }
 
@@ -20,7 +20,9 @@ function phpValue(value: PhpValue): string {
     return phpString(value);
   }
   if (typeof value === 'number') {
-    return Number.isInteger(value) ? String(value) : String(value);
+    // PHP parses both int and float literals from the same text (e.g. `150`
+    // or `1.5`), so no int/float branching is needed here.
+    return String(value);
   }
   if (typeof value === 'boolean') {
     return value ? 'true' : 'false';

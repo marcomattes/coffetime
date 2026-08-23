@@ -58,7 +58,11 @@ foreach ($files as $file) {
                 }
                 continue;
             }
-            echo $stream === $pipes[2] ? $chunk : $chunk;
+            // Keep the child's stderr on our own stderr (and stdout on stdout)
+            // rather than merging both into one stream, so output redirected
+            // separately (e.g. `php tests/run.php 2>errors.log`) still splits
+            // the same way it would running each test file directly.
+            fwrite($stream === $pipes[2] ? STDERR : STDOUT, $chunk);
         }
     }
 
@@ -79,5 +83,5 @@ foreach ($results as $name => $passed) {
     }
 }
 
-printf("%d/%d test file(s) failed%s" . PHP_EOL, $failed, count($results), $failed === 0 ? '' : '');
+printf("%d/%d test file(s) failed" . PHP_EOL, $failed, count($results));
 exit($failed === 0 ? 0 : 1);

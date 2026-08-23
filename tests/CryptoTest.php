@@ -3,14 +3,16 @@
 declare(strict_types=1);
 
 /** Framework-free tests for name encryption and hashing. */
-require __DIR__ . '/../src/Crypto.php';
+require_once __DIR__ . '/../src/Crypto.php';
 use Coffee\Crypto;
 
 $failures = 0;
 function check(string $label, bool $condition): void {
     global $failures;
     echo ($condition ? 'ok   ' : 'FAIL ') . $label . PHP_EOL;
-    if (!$condition) $failures++;
+    if (!$condition) {
+        $failures++;
+    }
 }
 
 $key = openssl_pkey_new(['private_key_bits' => 4096, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
@@ -88,7 +90,7 @@ check(
 );
 check(
     'a maximum-length control-character name no longer breaks encryption',
-    (function () use ($crypto): bool {
+    (function (): bool {
         $raw = str_repeat("\x01", Crypto::NAME_MAX_LENGTH);
         $normalized = Crypto::normalizeNamePart($raw);
         // Everything is stripped, so this is caught as an empty name upstream

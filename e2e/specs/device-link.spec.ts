@@ -73,7 +73,7 @@ test.describe('device link', () => {
 
       // Server truth: exactly one account, two credentials for it.
       const state = await testApi.state();
-      expect(state.users.length).toBe(1);
+      expect(state.users).toHaveLength(1);
       expect(state.credentials).toBe(2);
 
       await page.reload();

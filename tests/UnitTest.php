@@ -9,8 +9,8 @@ declare(strict_types=1);
  * never touches them or the API handlers that call them.
  */
 
-require __DIR__ . '/helpers.php';
-require __DIR__ . '/../src/Bootstrap.php';
+require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/../src/Bootstrap.php';
 
 use Coffee\Bootstrap;
 use Coffee\Clock;
@@ -25,9 +25,25 @@ use Coffee\Settings;
 use Coffee\Users;
 use Coffee\Version;
 
+// Literals reused across many checks below, named for what they mean rather
+// than what they look like.
+const CONFIG_PATH_ENV = 'COFFEE_CONFIG_PATH=';
+const SQL_COUNT_EVENTS_FOR_USER = 'SELECT COUNT(*) FROM coffee_events WHERE user_id = ?';
+const SQL_SELECT_SESSION = 'SELECT * FROM sessions WHERE id = ?';
+const SQL_SESSION_EXISTS = 'SELECT 1 AS found FROM sessions WHERE id = ?';
+// The month tag (YYYY-MM) exercised throughout the reminderMonthTag/ackReminders checks.
+const REMINDER_MONTH_TAG = '2031-06';
+// 198.51.100.0/24 is TEST-NET-2 (RFC 5737): reserved for documentation and
+// examples, never routable, so it is safe to hardcode as a fixture caller IP.
+const CLIENT_IP = '198.51.100.7';
+const OTHER_CLIENT_IP = '198.51.100.8';
+// Forged X-Forwarded-For prefixes used to prove that reading the header from
+// the right (not the left) defeats a spoofing attempt.
+const SPOOFED_XFF_PREFIXES = ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4'];
+
 Bootstrap::init();
 
-$workspace = make_temp_workspace('coffee-unit');
+$workspace = makeTempWorkspace('coffee-unit');
 
 // --------------------------------------------------------------- Encoding ---
 
@@ -83,7 +99,7 @@ check(
 // Phase 1: no config file at all — Config::all() must fall back to defaults.
 // These accessors never touch the filesystem beyond is_file(), so this is
 // safe even though the path does not exist.
-putenv('COFFEE_CONFIG_PATH=' . $workspace . '/no-such-config.php');
+putenv(CONFIG_PATH_ENV . $workspace . '/no-such-config.php');
 Config::forget();
 check('Config::priceCents defaults to 150 without a config file', Config::priceCents() === 150);
 check('Config::invite defaults to empty string', Config::invite() === '');
@@ -111,14 +127,14 @@ if ($originalHost !== null) {
 Config::forget();
 
 // Phase 2: a real config file with overrides.
-$configPath = write_test_config($workspace, [
+$configPath = writeTestConfig($workspace, [
     'priceCents' => 200,
     'admins' => ['42', 7],
     'testMode' => true,
     'testToken' => 'phase-two-token',
     'dbPath' => $workspace . '/data/coffee.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $configPath);
+putenv(CONFIG_PATH_ENV . $configPath);
 Config::forget();
 
 check('Config::priceCents reflects the loaded value', Config::priceCents() === 200);
@@ -258,10 +274,10 @@ $before = Users::coffees(Users::find((string) $alice['id']));
 $updated = Users::addCoffee((string) $alice['id']);
 check('addCoffee increments the counter by one', Users::coffees($updated) === $before + 1);
 
-$eventsBefore = Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $alice['id']]);
+$eventsBefore = Db::fetchValue(SQL_COUNT_EVENTS_FOR_USER, [(int) $alice['id']]);
 $updated = Users::undoCoffee((string) $alice['id']);
 check('undoCoffee decrements the counter by one', Users::coffees($updated) === $before);
-$eventsAfter = Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $alice['id']]);
+$eventsAfter = Db::fetchValue(SQL_COUNT_EVENTS_FOR_USER, [(int) $alice['id']]);
 check('undoCoffee removes exactly one coffee_events row', (int) $eventsAfter === (int) $eventsBefore - 1);
 
 // Floors at zero: bob has never booked a coffee.
@@ -293,7 +309,7 @@ check('undo past the window leaves the counter alone', Users::coffees($updated) 
 check('undo past the window leaves the tab alone', Users::tabCents($updated) === 2 * Config::priceCents());
 check(
     'undo past the window keeps both coffee_events rows',
-    (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $windowId]) === 2
+    (int) Db::fetchValue(SQL_COUNT_EVENTS_FOR_USER, [(int) $windowId]) === 2
 );
 $updated = Users::undoCoffee($windowId);
 check('repeating undo past the window changes nothing either', Users::coffees($updated) === 2);
@@ -343,7 +359,7 @@ check(
     ) === null
 );
 
-$eveEventsBefore = (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $eve['id']]);
+$eveEventsBefore = (int) Db::fetchValue(SQL_COUNT_EVENTS_FOR_USER, [(int) $eve['id']]);
 $eveCoffeesBefore = Users::coffees(Users::find((string) $eve['id']));
 $eveTabBefore = Users::tabCents(Users::find((string) $eve['id']));
 $clientId = 'client-' . bin2hex(random_bytes(6));
@@ -366,7 +382,7 @@ check(
     Users::tabCents($secondBooking) === $eveTabBefore + $price
 );
 
-$eveEventsAfter = (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $eve['id']]);
+$eveEventsAfter = (int) Db::fetchValue(SQL_COUNT_EVENTS_FOR_USER, [(int) $eve['id']]);
 check(
     'exactly one coffee_events row was created by the two identical client-id calls',
     $eveEventsAfter === $eveEventsBefore + 1
@@ -392,11 +408,11 @@ check('addPayment clamps paidCents at zero for a large negative amount', Users::
 // booking keeps the price that was in effect when it happened.
 Db::reset();
 Config::forget();
-$priceConfigPath = write_test_config($workspace, [
+$priceConfigPath = writeTestConfig($workspace, [
     'priceCents' => 150,
     'dbPath' => $workspace . '/data/price-change.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $priceConfigPath);
+putenv(CONFIG_PATH_ENV . $priceConfigPath);
 Config::forget();
 Db::reset();
 
@@ -407,9 +423,13 @@ check('two coffees booked at 150 give a tab of 300', Users::tabCents($updated) =
 
 // Rewrite the config file with a higher price and forget the process-local
 // cache, exactly as a real deployment would after the admin edits config.php.
-// This writes the file directly (not via write_test_config()) because that
+// This writes the file directly (not via writeTestConfig()) because that
 // helper drops and recreates the database on a MySQL/MariaDB test run — fine
 // for a fresh phase, but it would wipe the data booked above.
+// Deliberately require (not require_once): src/Config.php already loads this
+// same path via plain require, which registers it in PHP's include-once
+// table; require_once here would then return the cached `true` sentinel
+// instead of re-reading the array this test just rewrote on disk.
 $priceConfig = require $priceConfigPath;
 $priceConfig['priceCents'] = 200;
 file_put_contents($priceConfigPath, "<?php\nreturn " . var_export($priceConfig, true) . ";\n");
@@ -447,7 +467,7 @@ $legacyId = Db::transaction(static function (PDO $pdo): string {
 });
 check(
     'the manually inserted legacy user has no coffee_events rows',
-    (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $legacyId]) === 0
+    (int) Db::fetchValue(SQL_COUNT_EVENTS_FOR_USER, [(int) $legacyId]) === 0
 );
 check('a legacy user without events reports nothing to undo', Users::undoableSeconds($legacyId) === 0);
 $updated = Users::undoCoffee($legacyId);
@@ -509,6 +529,9 @@ $paypalCases = [
     'paypal.me/coffeekitchen' => 'coffeekitchen',
     'https://paypal.me/coffeekitchen' => 'coffeekitchen',
     'https://www.paypal.me/coffeekitchen/' => 'coffeekitchen',
+    // Deliberately plain http:// (not https://): normalizePaypalHandle must
+    // accept either scheme, so this case is the one that proves http:// input
+    // is not silently rejected. It is a fixture value, never dereferenced.
     'http://PayPal.Me/CoffeeKitchen' => 'CoffeeKitchen',
     'https://www.paypal.com/paypalme/coffeekitchen' => 'coffeekitchen',
     'Coffee Kitchen' => '',
@@ -538,11 +561,11 @@ check('an emptied handle switches the button off again', Config::paypalHandle() 
 
 Db::reset();
 Config::forget();
-$statsConfig = write_test_config($workspace, [
+$statsConfig = writeTestConfig($workspace, [
     'priceCents' => 150,
     'dbPath' => $workspace . '/data/stats.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $statsConfig);
+putenv(CONFIG_PATH_ENV . $statsConfig);
 Config::forget();
 Db::reset();
 
@@ -569,10 +592,10 @@ check('stats reports rank 3 for the trailing user', $statsForThird['rank'] === 3
 // ------------------------------------------------------------- streakDays ---
 
 Db::reset();
-$streakConfig = write_test_config($workspace, [
+$streakConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/streak.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $streakConfig);
+putenv(CONFIG_PATH_ENV . $streakConfig);
 Config::forget();
 Db::reset();
 
@@ -606,10 +629,10 @@ check(
 // -------------------------------------------------------------- history ---
 
 Db::reset();
-$historyConfig = write_test_config($workspace, [
+$historyConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/history.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $historyConfig);
+putenv(CONFIG_PATH_ENV . $historyConfig);
 Config::forget();
 Db::reset();
 
@@ -653,11 +676,11 @@ check('history zero-fills every other day', $zeroFilled);
 // otherwise not due at all.
 $midMonth = gmmktime(12, 0, 0, 6, 15, 2031);
 check('reminderMonthTag is null in the middle of a month', Users::reminderMonthTag($midMonth) === null);
-check('reminderMonthTag fires on the last day of a month', Users::reminderMonthTag(gmmktime(12, 0, 0, 6, 30, 2031)) === '2031-06');
+check('reminderMonthTag fires on the last day of a month', Users::reminderMonthTag(gmmktime(12, 0, 0, 6, 30, 2031)) === REMINDER_MONTH_TAG);
 check('reminderMonthTag fires on the last day of a 31-day month', Users::reminderMonthTag(gmmktime(23, 59, 0, 7, 31, 2031)) === '2031-07');
 check('reminderMonthTag fires on Feb 29 of a leap year', Users::reminderMonthTag(gmmktime(0, 0, 0, 2, 29, 2028)) === '2028-02');
 check('reminderMonthTag does NOT fire on Feb 28 of a leap year', Users::reminderMonthTag(gmmktime(12, 0, 0, 2, 28, 2028)) === null);
-check('reminderMonthTag catches up to the previous month early in the next one', Users::reminderMonthTag(gmmktime(12, 0, 0, 7, 3, 2031)) === '2031-06');
+check('reminderMonthTag catches up to the previous month early in the next one', Users::reminderMonthTag(gmmktime(12, 0, 0, 7, 3, 2031)) === REMINDER_MONTH_TAG);
 check('the catch-up window ends after day 7', Users::reminderMonthTag(gmmktime(12, 0, 0, 7, 8, 2031)) === null);
 check('the catch-up window crosses a year boundary', Users::reminderMonthTag(gmmktime(12, 0, 0, 1, 2, 2031)) === '2030-12');
 check('reminderMonthTag fires on Dec 31', Users::reminderMonthTag(gmmktime(12, 0, 0, 12, 31, 2030)) === '2030-12');
@@ -680,25 +703,25 @@ check(
     Users::remindRequestedAt(Users::find($remindId)) === $requestedAt
 );
 
-Users::ackReminders($remindId, '2031-06', $requestedAt);
+Users::ackReminders($remindId, REMINDER_MONTH_TAG, $requestedAt);
 $row = Users::find($remindId);
 check('acknowledging the open timestamp clears the admin reminder', Users::remindRequestedAt($row) === 0);
-check('acknowledging a month stores it as remindedMonth', Users::remindedMonth($row) === '2031-06');
+check('acknowledging a month stores it as remindedMonth', Users::remindedMonth($row) === REMINDER_MONTH_TAG);
 
 // -------------------------------------------------------------- Sessions ---
 
 Db::reset();
-$sessionsConfig = write_test_config($workspace, [
+$sessionsConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/sessions.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $sessionsConfig);
+putenv(CONFIG_PATH_ENV . $sessionsConfig);
 Config::forget();
 Db::reset();
 
 $sessionUser = Users::create('e', 'h', 'ha');
 $token = Sessions::start((string) $sessionUser['id']);
 $expectedId = hash('sha256', $token);
-$row = Db::fetchRow('SELECT * FROM sessions WHERE id = ?', [$expectedId]);
+$row = Db::fetchRow(SQL_SELECT_SESSION, [$expectedId]);
 check('Sessions::start stores sha256(token) as the row id', $row !== null);
 check('Sessions::start records the correct user_id', $row !== null && (int) $row['user_id'] === (int) $sessionUser['id']);
 
@@ -712,17 +735,17 @@ $now = Clock::now();
 $expiredId = 'expired-' . bin2hex(random_bytes(4));
 Db::pdo()->prepare('INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
     ->execute([$expiredId, (int) $sessionUser['id'], $now - 1000, $now - 500]);
-check('the manually inserted expired session exists before pruning', Db::fetchRow('SELECT * FROM sessions WHERE id = ?', [$expiredId]) !== null);
+check('the manually inserted expired session exists before pruning', Db::fetchRow(SQL_SELECT_SESSION, [$expiredId]) !== null);
 Sessions::start((string) $sessionUser['id']);
-check('Sessions::start prunes expired sessions as a side effect', Db::fetchRow('SELECT * FROM sessions WHERE id = ?', [$expiredId]) === null);
+check('Sessions::start prunes expired sessions as a side effect', Db::fetchRow(SQL_SELECT_SESSION, [$expiredId]) === null);
 
 // -------------------------------------------------------------- LinkCodes ---
 
 Db::reset();
-$linkConfig = write_test_config($workspace, [
+$linkConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/link-codes.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $linkConfig);
+putenv(CONFIG_PATH_ENV . $linkConfig);
 Config::forget();
 Db::reset();
 
@@ -790,17 +813,17 @@ Clock::setOffset(0);
 Db::reset();
 // testMode short-circuits the limiter (the test control surface exists to
 // drive these flows in a loop), so this phase deliberately turns it off.
-$rateConfig = write_test_config($workspace, [
+$rateConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/rate-limit.sqlite',
     'testMode' => false,
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $rateConfig);
+putenv(CONFIG_PATH_ENV . $rateConfig);
 Config::forget();
 Db::reset();
 Settings::reset();
 Db::pdo();
 
-$_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+$_SERVER['REMOTE_ADDR'] = CLIENT_IP;
 $allowed = 0;
 for ($i = 0; $i < 5; $i++) {
     if (RateLimit::allow('unit-probe', 3, 600)) {
@@ -816,11 +839,11 @@ check(
 
 // A different caller gets its own counter -- one user must not lock out the
 // whole office.
-$_SERVER['REMOTE_ADDR'] = '198.51.100.8';
+$_SERVER['REMOTE_ADDR'] = OTHER_CLIENT_IP;
 check('RateLimit counts each caller separately', RateLimit::allow('unit-probe', 3, 600) === true);
 
 // Once the window rolls over the counter starts again.
-$_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+$_SERVER['REMOTE_ADDR'] = CLIENT_IP;
 Clock::setOffset(1200);
 check('RateLimit starts a fresh window after it elapses', RateLimit::allow('unit-probe', 3, 600) === true);
 Clock::setOffset(0);
@@ -833,13 +856,13 @@ Clock::setOffset(0);
 // mint a fresh counter per request by changing one header -- which silently
 // un-throttled the invite code, the login and the admin password.
 Db::reset();
-$proxyConfig = write_test_config($workspace, [
+$proxyConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/rate-limit-proxy.sqlite',
     'testMode' => false,
     'trustProxy' => true,
     'trustedProxyHops' => 1,
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $proxyConfig);
+putenv(CONFIG_PATH_ENV . $proxyConfig);
 Config::forget();
 Db::reset();
 Settings::reset();
@@ -860,7 +883,7 @@ check('a forwarded caller is throttled like any other', $forwardedAllowed === 3)
 // The attack: prepend a different value on every attempt. Reading from the
 // right ignores it, so the counter stays exhausted.
 $exhausted = true;
-foreach (['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4'] as $spoofed) {
+foreach (SPOOFED_XFF_PREFIXES as $spoofed) {
     $_SERVER['HTTP_X_FORWARDED_FOR'] = $spoofed . ', 198.51.100.20';
     if (RateLimit::allow('unit-fwd', 3, 600)) {
         $exhausted = false;
@@ -876,13 +899,13 @@ check('a different client behind the same proxy keeps its own counter', RateLimi
 // configured; fall back to REMOTE_ADDR, the one value nobody can forge,
 // rather than to a caller-supplied entry.
 Db::reset();
-$hopsConfig = write_test_config($workspace, [
+$hopsConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/rate-limit-hops.sqlite',
     'testMode' => false,
     'trustProxy' => true,
     'trustedProxyHops' => 2,
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $hopsConfig);
+putenv(CONFIG_PATH_ENV . $hopsConfig);
 Config::forget();
 Db::reset();
 Settings::reset();
@@ -902,12 +925,12 @@ check('the fallback keys on REMOTE_ADDR, not on the forged entry', RateLimit::al
 
 // trustProxy off: the header is ignored entirely.
 Db::reset();
-$noProxyConfig = write_test_config($workspace, [
+$noProxyConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/rate-limit-noproxy.sqlite',
     'testMode' => false,
     'trustProxy' => false,
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $noProxyConfig);
+putenv(CONFIG_PATH_ENV . $noProxyConfig);
 Config::forget();
 Db::reset();
 Settings::reset();
@@ -922,12 +945,12 @@ check('without trustProxy a changed header cannot reset the counter', RateLimit:
 unset($_SERVER['HTTP_X_FORWARDED_FOR']);
 
 // Restore the plain rate-limit config for anything that follows.
-putenv('COFFEE_CONFIG_PATH=' . $rateConfig);
+putenv(CONFIG_PATH_ENV . $rateConfig);
 Config::forget();
 Db::reset();
 Settings::reset();
 Db::pdo();
-$_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+$_SERVER['REMOTE_ADDR'] = CLIENT_IP;
 
 check(
     'RateLimit never stores a bare client address',
@@ -938,10 +961,10 @@ unset($_SERVER['REMOTE_ADDR']);
 // ------------------------------------------------- Sessions: absolute cap ---
 
 Db::reset();
-$absoluteConfig = write_test_config($workspace, [
+$absoluteConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/sessions-absolute.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $absoluteConfig);
+putenv(CONFIG_PATH_ENV . $absoluteConfig);
 Config::forget();
 Db::reset();
 
@@ -960,7 +983,7 @@ Db::pdo()->prepare('UPDATE sessions SET created_at = ?, expires_at = ? WHERE id 
 check('a session past ABSOLUTE_LIFETIME is refused even while still "fresh"', Sessions::currentUser() === null);
 check(
     'the expired session row is deleted, not just ignored',
-    Db::fetchRow('SELECT 1 AS found FROM sessions WHERE id = ?', [hash('sha256', $capToken)]) === null
+    Db::fetchRow(SQL_SESSION_EXISTS, [hash('sha256', $capToken)]) === null
 );
 unset($_COOKIE[Sessions::COOKIE_NAME]);
 
@@ -974,21 +997,21 @@ check('two sessions exist for the account before revocation', Sessions::count() 
 Sessions::destroyForUser($revokeId, $keptToken);
 check(
     'destroyForUser removes the other session',
-    Db::fetchRow('SELECT 1 AS found FROM sessions WHERE id = ?', [hash('sha256', $oldToken)]) === null
+    Db::fetchRow(SQL_SESSION_EXISTS, [hash('sha256', $oldToken)]) === null
 );
 check(
     'destroyForUser spares the session it was told to keep',
-    Db::fetchRow('SELECT 1 AS found FROM sessions WHERE id = ?', [hash('sha256', $keptToken)]) !== null
+    Db::fetchRow(SQL_SESSION_EXISTS, [hash('sha256', $keptToken)]) !== null
 );
 
 // ------------------------------------------ per-user offline-queue idempotency ---
 
 Db::reset();
-$eventConfig = write_test_config($workspace, [
+$eventConfig = writeTestConfig($workspace, [
     'priceCents' => 150,
     'dbPath' => $workspace . '/data/client-events.sqlite',
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $eventConfig);
+putenv(CONFIG_PATH_ENV . $eventConfig);
 Config::forget();
 Db::reset();
 
@@ -1015,12 +1038,12 @@ check(
 // ------------------------------------------------------------ day offset ---
 
 Db::reset();
-$offsetConfig = write_test_config($workspace, [
+$offsetConfig = writeTestConfig($workspace, [
     'dbPath' => $workspace . '/data/day-offset.sqlite',
     // +14h pushes a late-evening UTC booking into the next local day.
     'dayOffsetMinutes' => 840,
 ]);
-putenv('COFFEE_CONFIG_PATH=' . $offsetConfig);
+putenv(CONFIG_PATH_ENV . $offsetConfig);
 Config::forget();
 Db::reset();
 
@@ -1046,9 +1069,9 @@ check('streakDays agrees with the shifted day boundary', Users::streakDays((stri
 $lastDayUtcEvening = gmmktime(23, 0, 0, 6, 29, 2031); // 29 June 23:00 UTC = 30 June 13:00 at +14h
 check(
     'reminderMonthTag follows the configured day boundary',
-    Users::reminderMonthTag($lastDayUtcEvening) === '2031-06'
+    Users::reminderMonthTag($lastDayUtcEvening) === REMINDER_MONTH_TAG
 );
 
 Db::reset();
 Config::forget();
-summarize_and_exit();
+summarizeAndExit();
