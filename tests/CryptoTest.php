@@ -35,5 +35,82 @@ check('same normalized name has same HMAC', $crypto->nameHash('  Ada ', 'Lovelac
 check('different names have different HMACs', $crypto->nameHash('Ada', 'Lovelace') !== $crypto->nameHash('Grace', 'Hopper'));
 check('invalid public key is rejected', (function (): bool { try { new Crypto('invalid', 'x'); } catch (InvalidArgumentException) { return true; } return false; })());
 
+/** True when constructing Crypto with this pepper is refused. */
+$pepperRejected = static function (string $pepper) use ($publicPem): bool {
+    try {
+        new Crypto($publicPem, $pepper);
+    } catch (InvalidArgumentException) {
+        return true;
+    }
+
+    return false;
+};
+
+// name_hash is a keyed fingerprint: a missing or publicly known pepper makes
+// every registered name recomputable from a copy of the database, so it must
+// fail loudly instead of silently producing weak hashes.
+check('an empty pepper is rejected', $pepperRejected(''));
+check('a too-short pepper is rejected', $pepperRejected('short'));
+check('the config.example.php placeholder pepper is rejected', $pepperRejected('change-me-to-a-long-random-value'));
+check('a real random pepper is accepted', !$pepperRejected(bin2hex(random_bytes(32))));
+
+// The public key can be validated on its own, which is what the setup wizard
+// does before any pepper exists.
+check('assertValidPublicKey accepts a real 4096-bit key', (function () use ($publicPem): bool {
+    try {
+        Crypto::assertValidPublicKey($publicPem);
+    } catch (Throwable) {
+        return false;
+    }
+
+    return true;
+})());
+check('assertValidPublicKey rejects garbage', (function (): bool {
+    try {
+        Crypto::assertValidPublicKey('not-a-key');
+    } catch (InvalidArgumentException) {
+        return true;
+    }
+
+    return false;
+})());
+
+// Control characters JSON-encode to six-byte \uXXXX escapes. Left in, a name
+// of the maximum length could outgrow the RSA-OAEP plaintext capacity and
+// turn a validation problem into a failed encryption.
+check(
+    'normalizeNamePart strips control characters',
+    Crypto::normalizeNamePart("A\x00d\x07a") === 'Ada'
+);
+check(
+    'normalizeNamePart still collapses whitespace to single spaces',
+    Crypto::normalizeNamePart("  Ada \n\t Lovelace  ") === 'Ada Lovelace'
+);
+check(
+    'a maximum-length control-character name no longer breaks encryption',
+    (function () use ($crypto): bool {
+        $raw = str_repeat("\x01", Crypto::NAME_MAX_LENGTH);
+        $normalized = Crypto::normalizeNamePart($raw);
+        // Everything is stripped, so this is caught as an empty name upstream
+        // rather than reaching the cipher at all.
+        return $normalized === '';
+    })()
+);
+check(
+    'a name too long to seal is refused with InvalidArgumentException, not a cipher error',
+    (function () use ($crypto): bool {
+        try {
+            // Far beyond the 470-byte OAEP capacity.
+            $crypto->sealName(str_repeat('ä', 400), str_repeat('ö', 400));
+        } catch (InvalidArgumentException) {
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
+
+        return false;
+    })()
+);
+
 printf("%d failure(s)\n", $failures);
 exit($failures === 0 ? 0 : 1);

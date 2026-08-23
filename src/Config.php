@@ -64,6 +64,17 @@ final class Config
             'testToken' => '',
             'adminPublicKey' => '',
             'namePepper' => '',
+            // Only set this when a reverse proxy in front of the app strips
+            // and re-sets the X-Forwarded-* headers itself. It makes the
+            // scheme of a derived origin follow X-Forwarded-Proto, which is
+            // what a TLS-terminating proxy needs for the session cookie to
+            // get its Secure flag and for WebAuthn origins to match.
+            'trustProxy' => false,
+            // Offset of the "day" used for streaks, history and the month-end
+            // reminder, in minutes east of UTC (Berlin winter = 60). 0 keeps
+            // the historical UTC behavior. A fixed offset deliberately does
+            // not follow DST -- see ARCHITECTURE.md.
+            'dayOffsetMinutes' => 0,
         ];
 
         return self::$values;
@@ -141,10 +152,65 @@ final class Config
         // the proxy sets it rather than passing the client's value
         // through); production deployments should still set origin/rpId
         // explicitly in config.php.
-        $https = $_SERVER['HTTPS'] ?? '';
-        $scheme = is_string($https) && $https !== '' && strtolower($https) !== 'off' ? 'https' : 'http';
+        return self::requestScheme() . '://' . $host;
+    }
 
-        return $scheme . '://' . $host;
+    /**
+     * Scheme for a derived origin. Behind a TLS-terminating proxy the HTTPS
+     * server variable is absent, which would silently downgrade the derived
+     * origin to http:// -- breaking WebAuthn origin checks and dropping the
+     * session cookie's Secure flag. X-Forwarded-Proto fixes that, but it is
+     * a client-settable header unless a proxy overwrites it, so it is only
+     * consulted when the deployment opts in via trustProxy.
+     */
+    private static function requestScheme(): string
+    {
+        $https = $_SERVER['HTTPS'] ?? '';
+        if (is_string($https) && $https !== '' && strtolower($https) !== 'off') {
+            return 'https';
+        }
+
+        if (self::trustProxy()) {
+            $forwarded = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '';
+            if (is_string($forwarded) && $forwarded !== '') {
+                // A proxy chain may append values ("https, http"); the first
+                // one is the scheme the client actually spoke.
+                $first = strtolower(trim(explode(',', $forwarded, 2)[0]));
+                if ($first === 'https') {
+                    return 'https';
+                }
+            }
+        }
+
+        return 'http';
+    }
+
+    public static function trustProxy(): bool
+    {
+        $value = self::get('trustProxy', false);
+
+        return $value === true || $value === 1 || $value === '1';
+    }
+
+    /**
+     * Day-boundary offset in seconds east of UTC, used everywhere a Unix
+     * timestamp is turned into a calendar day (streaks, history, month-end
+     * reminders). Clamped to the real-world range of UTC offsets.
+     */
+    public static function dayOffsetSeconds(): int
+    {
+        // is_numeric() already excludes booleans, so a stray `true` in the
+        // config falls through to the default rather than becoming 1 minute.
+        $value = self::get('dayOffsetMinutes', 0);
+        if (!is_numeric($value)) {
+            return 0;
+        }
+        $minutes = (int) $value;
+        if ($minutes < -840 || $minutes > 840) {
+            return 0;
+        }
+
+        return $minutes * 60;
     }
 
     /**

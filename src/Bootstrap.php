@@ -38,6 +38,17 @@ final class Bootstrap
             }
         });
 
+        // testMode turns /api/test/* into a full authentication bypass and a
+        // one-request data wipe, gated only by a shared token. It is meant for
+        // the test suites; if it is ever left on in production, say so loudly
+        // in the log rather than failing silently open.
+        if (Config::testMode()) {
+            error_log(
+                '[coffee] WARNING: testMode is enabled — /api/test/* can sign in as any user'
+                . ' and delete all data. Disable it outside of test environments.'
+            );
+        }
+
         set_error_handler(static function (int $severity, string $message, string $file = '', int $line = 0): bool {
             // Messages suppressed with @ stay suppressed, even from the log.
             if ((error_reporting() & $severity) === 0) {

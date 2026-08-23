@@ -19,6 +19,7 @@ use Coffee\Db;
 use Coffee\Encoding;
 use Coffee\Http;
 use Coffee\LinkCodes;
+use Coffee\RateLimit;
 use Coffee\Sessions;
 use Coffee\Settings;
 use Coffee\Users;
@@ -140,8 +141,8 @@ check(
     'Db::migrate reaches the target schema version',
     Db::userVersion($migratePdo) === Db::SCHEMA_VERSION
 );
-check('Db::migrate reaches schema version 9', Db::userVersion($migratePdo) === 9);
-foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events', 'settings', 'link_codes'] as $table) {
+check('Db::migrate reaches schema version 10', Db::userVersion($migratePdo) === 10);
+foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events', 'settings', 'link_codes', 'rate_limits'] as $table) {
     check("Db::migrate creates the {$table} table", Db::tableExists($migratePdo, $table));
 }
 foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents', 'is_admin', 'remind_requested_at', 'reminded_month'] as $column) {
@@ -167,9 +168,15 @@ foreach (['name', 'value'] as $column) {
 $indexNames = $migratePdo
     ->query("SELECT name FROM sqlite_master WHERE type = 'index'")
     ->fetchAll(PDO::FETCH_COLUMN);
-foreach (['idx_users_name_hash', 'idx_users_handle', 'idx_credentials_credential_id', 'idx_coffee_events_user_created', 'idx_coffee_events_client', 'idx_link_codes_hash', 'idx_link_codes_user'] as $index) {
+foreach (['idx_users_name_hash', 'idx_users_handle', 'idx_credentials_credential_id', 'idx_coffee_events_user_created', 'idx_coffee_events_user_client', 'idx_link_codes_hash', 'idx_link_codes_user'] as $index) {
     check("Db::migrate creates the {$index} index", in_array($index, $indexNames, true));
 }
+// The offline-queue key is unique per user, not globally: the pre-v10 global
+// index must be gone, or one account's event id could still block another's.
+check(
+    'Db::migrate removes the old global client_event_id index',
+    !in_array('idx_coffee_events_client', $indexNames, true)
+);
 
 // Migrating twice in a row must not raise, even starting from an empty file.
 $freshPath = $workspace . '/migrate-fresh.sqlite';
@@ -657,6 +664,166 @@ Clock::setOffset(LinkCodes::ADMIN_TTL + 60);
 check('an expired code no longer peeks as valid', LinkCodes::peek($expiring['code']) === null);
 check('an expired code cannot be consumed either', LinkCodes::consume($expiring['code']) === null);
 Clock::setOffset(0);
+
+// ------------------------------------------------------------- RateLimit ---
+
+Db::reset();
+// testMode short-circuits the limiter (the test control surface exists to
+// drive these flows in a loop), so this phase deliberately turns it off.
+$rateConfig = write_test_config($workspace, [
+    'dbPath' => $workspace . '/data/rate-limit.sqlite',
+    'testMode' => false,
+]);
+putenv('COFFEE_CONFIG_PATH=' . $rateConfig);
+Config::forget();
+Db::reset();
+Settings::reset();
+Db::pdo();
+
+$_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+$allowed = 0;
+for ($i = 0; $i < 5; $i++) {
+    if (RateLimit::allow('unit-probe', 3, 600)) {
+        $allowed++;
+    }
+}
+check('RateLimit allows exactly the configured number of attempts', $allowed === 3);
+check('RateLimit keeps refusing once the window is exhausted', RateLimit::allow('unit-probe', 3, 600) === false);
+check(
+    'RateLimit counts each endpoint group separately',
+    RateLimit::allow('unit-other', 3, 600) === true
+);
+
+// A different caller gets its own counter -- one user must not lock out the
+// whole office.
+$_SERVER['REMOTE_ADDR'] = '198.51.100.8';
+check('RateLimit counts each caller separately', RateLimit::allow('unit-probe', 3, 600) === true);
+
+// Once the window rolls over the counter starts again.
+$_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+Clock::setOffset(1200);
+check('RateLimit starts a fresh window after it elapses', RateLimit::allow('unit-probe', 3, 600) === true);
+Clock::setOffset(0);
+
+check(
+    'RateLimit never stores a bare client address',
+    Db::fetchRow('SELECT 1 AS found FROM rate_limits WHERE bucket LIKE ?', ['%198.51.100%']) === null
+);
+unset($_SERVER['REMOTE_ADDR']);
+
+// ------------------------------------------------- Sessions: absolute cap ---
+
+Db::reset();
+$absoluteConfig = write_test_config($workspace, [
+    'dbPath' => $workspace . '/data/sessions-absolute.sqlite',
+]);
+putenv('COFFEE_CONFIG_PATH=' . $absoluteConfig);
+Config::forget();
+Db::reset();
+
+$capUser = Users::create('e', 'h', 'ha');
+$capToken = Sessions::start((string) $capUser['id']);
+$_COOKIE[Sessions::COOKIE_NAME] = $capToken;
+check('a fresh session resolves normally', Sessions::currentUser() !== null);
+
+// Sliding renewal alone would keep a stolen token alive forever; past the
+// hard ceiling the session ends regardless of how recently it was used.
+Db::pdo()->prepare('UPDATE sessions SET created_at = ?, expires_at = ? WHERE id = ?')->execute([
+    Clock::now() - Sessions::ABSOLUTE_LIFETIME - 60,
+    Clock::now() + Sessions::IDLE_LIFETIME,
+    hash('sha256', $capToken),
+]);
+check('a session past ABSOLUTE_LIFETIME is refused even while still "fresh"', Sessions::currentUser() === null);
+check(
+    'the expired session row is deleted, not just ignored',
+    Db::fetchRow('SELECT 1 AS found FROM sessions WHERE id = ?', [hash('sha256', $capToken)]) === null
+);
+unset($_COOKIE[Sessions::COOKIE_NAME]);
+
+// Recovery: an admin-issued link must be able to end every other session of
+// that account while sparing the one just created.
+$revokeUser = Users::create('e2', 'h2', 'ha2');
+$revokeId = (string) $revokeUser['id'];
+$oldToken = Sessions::start($revokeId);
+$keptToken = Sessions::start($revokeId);
+check('two sessions exist for the account before revocation', Sessions::count() >= 2);
+Sessions::destroyForUser($revokeId, $keptToken);
+check(
+    'destroyForUser removes the other session',
+    Db::fetchRow('SELECT 1 AS found FROM sessions WHERE id = ?', [hash('sha256', $oldToken)]) === null
+);
+check(
+    'destroyForUser spares the session it was told to keep',
+    Db::fetchRow('SELECT 1 AS found FROM sessions WHERE id = ?', [hash('sha256', $keptToken)]) !== null
+);
+
+// ------------------------------------------ per-user offline-queue idempotency ---
+
+Db::reset();
+$eventConfig = write_test_config($workspace, [
+    'priceCents' => 150,
+    'dbPath' => $workspace . '/data/client-events.sqlite',
+]);
+putenv('COFFEE_CONFIG_PATH=' . $eventConfig);
+Config::forget();
+Db::reset();
+
+$one = Users::create('c1', 'h1', 'hh1');
+$two = Users::create('c2', 'h2', 'hh2');
+$sharedEventId = 'shared-event-id';
+
+Users::addCoffee((string) $one['id'], $sharedEventId);
+check('the first account books its coffee', Users::coffees(Users::find((string) $one['id'])) === 1);
+
+// The id is generated on the client, so two devices can pick the same one.
+// Scoped per user, the second account still gets its coffee; as a global key
+// this booking was silently swallowed.
+$twoUpdated = Users::addCoffee((string) $two['id'], $sharedEventId);
+check(
+    'a second account using the same client event id still books its own coffee',
+    Users::coffees($twoUpdated) === 1
+);
+check(
+    'replaying the id within the same account is still idempotent',
+    Users::coffees(Users::addCoffee((string) $two['id'], $sharedEventId)) === 1
+);
+
+// ------------------------------------------------------------ day offset ---
+
+Db::reset();
+$offsetConfig = write_test_config($workspace, [
+    'dbPath' => $workspace . '/data/day-offset.sqlite',
+    // +14h pushes a late-evening UTC booking into the next local day.
+    'dayOffsetMinutes' => 840,
+]);
+putenv('COFFEE_CONFIG_PATH=' . $offsetConfig);
+Config::forget();
+Db::reset();
+
+check('Config::dayOffsetSeconds reflects the configured minutes', Config::dayOffsetSeconds() === 840 * 60);
+check(
+    'Db::dayExpr shifts the SQL day boundary by the same amount',
+    str_contains(Db::dayExpr('created_at'), '+ ' . (840 * 60))
+);
+
+$offsetUser = Users::create('o', 'ho', 'hho');
+Users::addCoffee((string) $offsetUser['id']);
+$offsetHistory = Users::history((string) $offsetUser['id']);
+// The PHP-side day and the SQL-side day have to agree, or "today" silently
+// reads zero while the booking sits on a neighbouring bar.
+check(
+    'history\'s last day matches the shifted calendar day',
+    $offsetHistory['days'][27]['date'] === gmdate('Y-m-d', Clock::now() + 840 * 60)
+);
+check('the booking lands on the shifted "today"', $offsetHistory['today'] === 1);
+check('streakDays agrees with the shifted day boundary', Users::streakDays((string) $offsetUser['id']) === 1);
+
+// The month-end reminder uses the same boundary.
+$lastDayUtcEvening = gmmktime(23, 0, 0, 6, 29, 2031); // 29 June 23:00 UTC = 30 June 13:00 at +14h
+check(
+    'reminderMonthTag follows the configured day boundary',
+    Users::reminderMonthTag($lastDayUtcEvening) === '2031-06'
+);
 
 Db::reset();
 Config::forget();

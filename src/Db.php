@@ -19,7 +19,7 @@ use Throwable;
 final class Db
 {
     /** Target version of the schema. */
-    public const SCHEMA_VERSION = 9;
+    public const SCHEMA_VERSION = 10;
 
     /** Time to wait for a locked database. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -214,11 +214,16 @@ final class Db
      */
     public static function dayExpr(string $column): string
     {
+        // Cast to int so the offset can never carry anything but a number
+        // into the statement; it comes from configuration, not from a request.
+        $offset = Config::dayOffsetSeconds();
+        $shifted = $offset === 0 ? $column : '(' . $column . ' + ' . $offset . ')';
+
         if (Config::dbDriver() === 'mysql') {
-            return "DATE_FORMAT(FROM_UNIXTIME({$column}), '%Y-%m-%d')";
+            return "DATE_FORMAT(FROM_UNIXTIME({$shifted}), '%Y-%m-%d')";
         }
 
-        return "date({$column}, 'unixepoch')";
+        return "date({$shifted}, 'unixepoch')";
     }
 
     /**
@@ -367,48 +372,147 @@ final class Db
         $current = self::readSchemaVersion($pdo);
         $complete = self::schemaLooksComplete($pdo);
         if ($current >= self::SCHEMA_VERSION && $complete) {
+            // Index creation is allowed to fail (legacy data can violate a
+            // uniqueness constraint) and is only logged. Without this check a
+            // once-failed unique index would never be attempted again, so
+            // name/credential uniqueness could stay silently unenforced.
+            if (!self::criticalIndexesPresent($pdo)) {
+                self::ensureSchema($pdo);
+            }
+
             return;
         }
 
         if ($mysql) {
-            // MySQL/MariaDB DDL commits implicitly – an enclosing transaction
-            // would have no effect and is deliberately omitted. Every step is
-            // additive and idempotent (CREATE TABLE IF NOT EXISTS,
-            // ensureColumn), so a crash midway is harmless: the next start
-            // catches up on the remaining steps.
-            $from = $complete ? self::readSchemaVersion($pdo) : 0;
-            foreach ($steps as $version => $step) {
-                if ($version > $from) {
-                    $step($pdo);
-                }
-            }
-            self::writeSchemaVersion($pdo, self::SCHEMA_VERSION);
-        } else {
-            // Exclusive transaction so that concurrent first requests do not collide.
-            $pdo->exec('BEGIN IMMEDIATE');
+            // MySQL DDL cannot run inside a transaction, so concurrent cold
+            // starts would otherwise race each other through the steps. An
+            // advisory lock serializes them; if it cannot be taken the
+            // migration still proceeds, since every step is idempotent.
+            $locked = self::acquireMysqlLock($pdo);
             try {
-                // If the file claims a current version but the schema is
-                // incomplete, all steps are repeated. They are idempotent and
-                // purely additive, which costs time only, never data.
-                $from = $complete ? self::readSchemaVersion($pdo) : 0;
-                foreach ($steps as $version => $step) {
-                    if ($version > $from) {
-                        $step($pdo);
-                    }
+                self::runSteps($pdo, $steps, $complete);
+            } finally {
+                if ($locked) {
+                    self::releaseMysqlLock($pdo);
                 }
-                self::writeSchemaVersion($pdo, self::SCHEMA_VERSION);
-                $pdo->exec('COMMIT');
-            } catch (Throwable $e) {
-                try {
-                    $pdo->exec('ROLLBACK');
-                } catch (Throwable) {
-                    // already ended
-                }
-                throw $e;
             }
+            self::ensureSchema($pdo);
+
+            return;
+        }
+
+        // Exclusive transaction so that concurrent first requests do not collide.
+        $pdo->exec('BEGIN IMMEDIATE');
+        try {
+            self::runSteps($pdo, $steps, $complete);
+            $pdo->exec('COMMIT');
+        } catch (Throwable $e) {
+            try {
+                $pdo->exec('ROLLBACK');
+            } catch (Throwable) {
+                // already ended
+            }
+            throw $e;
         }
 
         self::ensureSchema($pdo);
+    }
+
+    /**
+     * Applies every step newer than the recorded version and stamps the new
+     * one. If the schema is incomplete the version is ignored and all steps
+     * are repeated: they are idempotent and purely additive, which costs time
+     * only, never data.
+     *
+     * @param array<int, callable(PDO):void> $steps
+     */
+    private static function runSteps(PDO $pdo, array $steps, bool $complete): void
+    {
+        $from = $complete ? self::readSchemaVersion($pdo) : 0;
+        foreach ($steps as $version => $step) {
+            if ($version > $from) {
+                $step($pdo);
+            }
+        }
+        self::writeSchemaVersion($pdo, self::SCHEMA_VERSION);
+    }
+
+    /** Name of the advisory lock that serializes MySQL/MariaDB migrations. */
+    private const MYSQL_MIGRATION_LOCK = 'coffee_migrate';
+
+    private static function acquireMysqlLock(PDO $pdo): bool
+    {
+        try {
+            $value = self::fetchValue(
+                'SELECT GET_LOCK(?, ?) AS got',
+                [self::MYSQL_MIGRATION_LOCK, self::MYSQL_LOCK_WAIT_SECONDS],
+                $pdo
+            );
+
+            return is_numeric($value) && (int) $value === 1;
+        } catch (Throwable $e) {
+            error_log('[coffee] migration lock unavailable: ' . $e->getMessage());
+
+            return false;
+        }
+    }
+
+    private static function releaseMysqlLock(PDO $pdo): void
+    {
+        try {
+            self::fetchValue('SELECT RELEASE_LOCK(?) AS released', [self::MYSQL_MIGRATION_LOCK], $pdo);
+        } catch (Throwable $e) {
+            error_log('[coffee] migration lock release failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Cheap check that the uniqueness-critical indexes really exist. They are
+     * created best-effort (a failure is logged, not fatal), so this is what
+     * makes a failed attempt get retried instead of silently standing.
+     */
+    private static function criticalIndexesPresent(PDO $pdo): bool
+    {
+        $required = [
+            'idx_users_name_hash',
+            'idx_users_handle',
+            'idx_credentials_credential_id',
+            'idx_ceremonies_challenge',
+            'idx_link_codes_hash',
+            'idx_coffee_events_user_client',
+        ];
+
+        if (self::driverOf($pdo) === 'mysql') {
+            foreach ($required as $name) {
+                $table = $name === 'idx_users_name_hash' || $name === 'idx_users_handle'
+                    ? 'users'
+                    : ($name === 'idx_credentials_credential_id'
+                        ? 'credentials'
+                        : ($name === 'idx_ceremonies_challenge'
+                            ? 'ceremonies'
+                            : ($name === 'idx_link_codes_hash' ? 'link_codes' : 'coffee_events')));
+                if (!self::indexExists($pdo, $table, $name)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        $rows = self::fetchRows("SELECT name FROM sqlite_master WHERE type = 'index'", [], $pdo);
+        $present = [];
+        foreach ($rows as $row) {
+            if (isset($row['name'])) {
+                $present[(string) $row['name']] = true;
+            }
+        }
+        foreach ($required as $name) {
+            if (!isset($present[$name])) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** @return array<int, callable(PDO):void> */
@@ -551,6 +655,26 @@ final class Db
                 self::ensureColumn($pdo, 'users', 'remind_requested_at', 'INTEGER NOT NULL DEFAULT 0');
                 self::ensureColumn($pdo, 'users', 'reminded_month', 'TEXT');
             },
+            10 => static function (PDO $pdo): void {
+                // Fixed-window counters for the unauthenticated endpoints
+                // (see the RateLimit class).
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS rate_limits (
+                        bucket TEXT PRIMARY KEY,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        window_start INTEGER NOT NULL DEFAULT 0
+                    )'
+                );
+                // The offline-queue idempotency key is only unique *per user*.
+                // As a global key, one account could take an id another
+                // account later generated, and that second booking would be
+                // swallowed with a success response.
+                self::dropIndex($pdo, 'coffee_events', 'idx_coffee_events_client');
+                $pdo->exec(
+                    'CREATE UNIQUE INDEX IF NOT EXISTS idx_coffee_events_user_client
+                     ON coffee_events (user_id, client_event_id) WHERE client_event_id IS NOT NULL'
+                );
+            },
         ];
     }
 
@@ -627,10 +751,16 @@ final class Db
                 // MySQL has no CREATE INDEX IF NOT EXISTS – the check therefore
                 // runs up front via information_schema.
                 if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_user_created')) {
-                    $pdo->exec(
-                        'CREATE INDEX idx_coffee_events_user_created
-                         ON coffee_events (user_id, created_at)'
-                    );
+                    // indexExists-then-CREATE is not atomic: two cold starts
+                    // can both pass the check, and the loser must not 500.
+                    try {
+                        $pdo->exec(
+                            'CREATE INDEX idx_coffee_events_user_created
+                             ON coffee_events (user_id, created_at)'
+                        );
+                    } catch (Throwable $e) {
+                        error_log('[coffee] index skipped: ' . $e->getMessage());
+                    }
                 }
             },
             5 => static function (PDO $pdo): void {
@@ -670,10 +800,15 @@ final class Db
                 // (WHERE ...) is not needed here.
                 self::ensureColumn($pdo, 'coffee_events', 'client_event_id', 'VARCHAR(64)');
                 if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_client')) {
-                    $pdo->exec(
-                        'CREATE UNIQUE INDEX idx_coffee_events_client
-                         ON coffee_events (client_event_id)'
-                    );
+                    // See step 4: the check and the CREATE are not atomic.
+                    try {
+                        $pdo->exec(
+                            'CREATE UNIQUE INDEX idx_coffee_events_client
+                             ON coffee_events (client_event_id)'
+                        );
+                    } catch (Throwable $e) {
+                        error_log('[coffee] index skipped: ' . $e->getMessage());
+                    }
                 }
             },
             9 => static function (PDO $pdo): void {
@@ -681,7 +816,54 @@ final class Db
                 self::ensureColumn($pdo, 'users', 'remind_requested_at', 'BIGINT NOT NULL DEFAULT 0');
                 self::ensureColumn($pdo, 'users', 'reminded_month', 'VARCHAR(7)');
             },
+            10 => static function (PDO $pdo): void {
+                // See the comment in sqliteSteps().
+                $pdo->exec(
+                    'CREATE TABLE IF NOT EXISTS rate_limits (
+                        bucket VARCHAR(64) PRIMARY KEY,
+                        attempts BIGINT NOT NULL DEFAULT 0,
+                        window_start BIGINT NOT NULL DEFAULT 0
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+                );
+                self::dropIndex($pdo, 'coffee_events', 'idx_coffee_events_client');
+                if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_user_client')) {
+                    // A CREATE INDEX that loses a race with a concurrently
+                    // starting instance must not take the request down with it.
+                    try {
+                        $pdo->exec(
+                            'CREATE UNIQUE INDEX idx_coffee_events_user_client
+                             ON coffee_events (user_id, client_event_id)'
+                        );
+                    } catch (Throwable $e) {
+                        error_log('[coffee] index skipped: ' . $e->getMessage());
+                    }
+                }
+            },
         ];
+    }
+
+    /** Removes an index if it is there; never fails when it is not. */
+    private static function dropIndex(PDO $pdo, string $table, string $indexName): void
+    {
+        if (!self::tableExists($pdo, $table)) {
+            return;
+        }
+        try {
+            if (self::driverOf($pdo) === 'mysql') {
+                if (self::indexExists($pdo, $table, $indexName)) {
+                    $pdo->exec(sprintf(
+                        'DROP INDEX %s ON %s',
+                        self::quoteIdentifier($pdo, $indexName),
+                        self::quoteIdentifier($pdo, $table)
+                    ));
+                }
+
+                return;
+            }
+            $pdo->exec('DROP INDEX IF EXISTS ' . self::quoteIdentifier($pdo, $indexName));
+        } catch (Throwable $e) {
+            error_log('[coffee] index drop skipped: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -734,6 +916,10 @@ final class Db
             return false;
         }
 
+        if (!self::tableExists($pdo, 'rate_limits')) {
+            return false;
+        }
+
         return self::tableExists($pdo, 'link_codes');
     }
 
@@ -773,7 +959,7 @@ final class Db
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_ceremonies_challenge ON ceremonies (challenge)',
             'CREATE INDEX IF NOT EXISTS idx_coffee_events_user ON coffee_events (user_id)',
             'CREATE INDEX IF NOT EXISTS idx_coffee_events_user_created ON coffee_events (user_id, created_at)',
-            'CREATE UNIQUE INDEX IF NOT EXISTS idx_coffee_events_client ON coffee_events (client_event_id) WHERE client_event_id IS NOT NULL',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_coffee_events_user_client ON coffee_events (user_id, client_event_id) WHERE client_event_id IS NOT NULL',
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_link_codes_hash ON link_codes (code_hash)',
             'CREATE INDEX IF NOT EXISTS idx_link_codes_user ON link_codes (user_id)',
         ];
@@ -802,7 +988,7 @@ final class Db
             ['idx_ceremonies_challenge', 'ceremonies', 'UNIQUE', '(challenge)'],
             ['idx_coffee_events_user', 'coffee_events', '', '(user_id)'],
             ['idx_coffee_events_user_created', 'coffee_events', '', '(user_id, created_at)'],
-            ['idx_coffee_events_client', 'coffee_events', 'UNIQUE', '(client_event_id)'],
+            ['idx_coffee_events_user_client', 'coffee_events', 'UNIQUE', '(user_id, client_event_id)'],
             ['idx_link_codes_hash', 'link_codes', 'UNIQUE', '(code_hash)'],
             ['idx_link_codes_user', 'link_codes', '', '(user_id)'],
         ];
@@ -889,6 +1075,10 @@ final class Db
                     'expires_at' => 'BIGINT NOT NULL DEFAULT 0',
                     'created_at' => 'BIGINT NOT NULL DEFAULT 0',
                 ],
+                'rate_limits' => [
+                    'attempts' => 'BIGINT NOT NULL DEFAULT 0',
+                    'window_start' => 'BIGINT NOT NULL DEFAULT 0',
+                ],
             ];
         }
 
@@ -947,6 +1137,10 @@ final class Db
                 'used' => 'INTEGER NOT NULL DEFAULT 0',
                 'expires_at' => 'INTEGER NOT NULL DEFAULT 0',
                 'created_at' => 'INTEGER NOT NULL DEFAULT 0',
+            ],
+            'rate_limits' => [
+                'attempts' => 'INTEGER NOT NULL DEFAULT 0',
+                'window_start' => 'INTEGER NOT NULL DEFAULT 0',
             ],
         ];
     }

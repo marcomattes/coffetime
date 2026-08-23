@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Coffee;
 
 use PDO;
+use PDOException;
+use Webauthn\CredentialRecord;
 
 /**
  * Access to the users and the arithmetic attached to them.
@@ -59,36 +61,89 @@ final class Users
         $tabCents = $coffees * Config::priceCents();
 
         $id = Db::transaction(static function (PDO $pdo) use ($nameEncrypted, $nameHash, $userHandle, $coffees, $paidCents, $tabCents): string {
-            // The very first user of an installation automatically becomes
-            // admin – without this step, after the setup wizard (no
-            // adminPublicKey/admins in config.php any more) nobody would be
-            // able to change price or invite code. The count runs in the same
-            // transaction as the INSERT so that no concurrent second "first"
-            // user can come into existence.
-            $countBefore = Db::fetchValue('SELECT COUNT(*) AS total FROM users', [], $pdo);
-            $isFirstUser = is_numeric($countBefore) && (int) $countBefore === 0;
-
-            $statement = $pdo->prepare(
-                'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, tab_cents, created_at, is_admin)
-                 VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)'
-            );
-            $statement->execute([
-                $nameEncrypted,
-                $nameHash,
-                $userHandle,
-                $coffees,
-                max(0, $paidCents),
-                $tabCents,
-                Clock::now(),
-                $isFirstUser ? 1 : 0,
-            ]);
-
-            return (string) $pdo->lastInsertId();
+            return self::insertRow($pdo, $nameEncrypted, $nameHash, $userHandle, $coffees, $paidCents, $tabCents);
         });
 
         $row = self::find($id);
 
         return $row ?? ['id' => $id, 'coffees' => $coffees, 'paid_cents' => $paidCents, 'tab_cents' => $tabCents];
+    }
+
+    /**
+     * Creates the user and stores the first passkey in ONE transaction.
+     *
+     * Registration must be all-or-nothing: a crash between the two writes
+     * would leave a user row whose name_hash blocks the name forever while no
+     * credential can ever sign in as it — and if it was the first user, the
+     * is_admin flag would be burned onto an unusable account with the setup
+     * wizard already closed.
+     *
+     * @return array<string, mixed> the new row
+     */
+    public static function createWithCredential(
+        string $nameEncrypted,
+        string $nameHash,
+        string $userHandle,
+        CredentialRecord $record
+    ): array {
+        $id = Db::transaction(static function (PDO $pdo) use ($nameEncrypted, $nameHash, $userHandle, $record): string {
+            $newId = self::insertRow($pdo, $nameEncrypted, $nameHash, $userHandle, 0, 0, 0);
+            Credentials::storeIn($pdo, $newId, $record);
+
+            return $newId;
+        });
+
+        $row = self::find($id);
+
+        return $row ?? ['id' => $id, 'coffees' => 0, 'paid_cents' => 0, 'tab_cents' => 0];
+    }
+
+    /** Inserts one user row on a connection already inside a transaction. */
+    private static function insertRow(
+        PDO $pdo,
+        string $nameEncrypted,
+        string $nameHash,
+        string $userHandle,
+        int $coffees,
+        int $paidCents,
+        int $tabCents
+    ): string {
+        // The very first user of an installation automatically becomes
+        // admin – without this step, after the setup wizard (no
+        // adminPublicKey/admins in config.php any more) nobody would be
+        // able to change price or invite code. The count runs in the same
+        // transaction as the INSERT so that no concurrent second "first"
+        // user can come into existence.
+        //
+        // On SQLite the enclosing BEGIN IMMEDIATE already serializes
+        // writers. MySQL/MariaDB runs in REPEATABLE READ, where a plain
+        // COUNT(*) is a non-locking snapshot read: two concurrent first
+        // registrations would both see zero and both claim admin. FOR
+        // UPDATE turns it into a locking read that holds the gap, so the
+        // second transaction waits and then sees the first user.
+        $countSql = 'SELECT COUNT(*) AS total FROM users';
+        if (Db::driver() === 'mysql') {
+            $countSql .= ' FOR UPDATE';
+        }
+        $countBefore = Db::fetchValue($countSql, [], $pdo);
+        $isFirstUser = is_numeric($countBefore) && (int) $countBefore === 0;
+
+        $statement = $pdo->prepare(
+            'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, tab_cents, created_at, is_admin)
+             VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $statement->execute([
+            $nameEncrypted,
+            $nameHash,
+            $userHandle,
+            $coffees,
+            max(0, $paidCents),
+            $tabCents,
+            Clock::now(),
+            $isFirstUser ? 1 : 0,
+        ]);
+
+        return (string) $pdo->lastInsertId();
     }
 
     /**
@@ -108,11 +163,33 @@ final class Users
     {
         $price = Config::priceCents();
 
+        try {
+            return self::addCoffeeOnce($id, $price, $clientEventId);
+        } catch (PDOException $e) {
+            // The existence check and the INSERT are not one atomic step, so
+            // two simultaneous deliveries of the same queued booking can both
+            // pass the check and the loser hits the unique index. That is the
+            // idempotent case, not an error: report the current state.
+            if ($clientEventId !== null && self::isUniqueViolation($e)) {
+                return self::find($id) ?? ['id' => $id, 'coffees' => 0, 'paid_cents' => 0];
+            }
+
+            throw $e;
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private static function addCoffeeOnce(string $id, int $price, ?string $clientEventId): array
+    {
         return Db::transaction(static function (PDO $pdo) use ($id, $price, $clientEventId): array {
             if ($clientEventId !== null) {
+                // Scoped to the user: the id is generated by the client, so a
+                // global lookup would let one account's id swallow another
+                // account's booking (and a browser without crypto.randomUUID
+                // falls back to Math.random).
                 $existing = Db::fetchRow(
-                    'SELECT 1 FROM coffee_events WHERE client_event_id = ?',
-                    [$clientEventId],
+                    'SELECT 1 FROM coffee_events WHERE user_id = ? AND client_event_id = ?',
+                    [(int) $id, $clientEventId],
                     $pdo
                 );
                 if ($existing !== null) {
@@ -224,15 +301,25 @@ final class Users
 
         $streak = 0;
         $cursor = Clock::now();
-        if (!isset($days[gmdate('Y-m-d', $cursor)])) {
+        if (!isset($days[self::dayOf($cursor)])) {
             $cursor -= 86400;
         }
-        while (isset($days[gmdate('Y-m-d', $cursor)])) {
+        while (isset($days[self::dayOf($cursor)])) {
             $streak++;
             $cursor -= 86400;
         }
 
         return $streak;
+    }
+
+    /**
+     * Calendar day of a timestamp, using the configured day boundary. Must
+     * stay in step with Db::dayExpr(), which applies the same shift in SQL —
+     * the two are compared as strings.
+     */
+    private static function dayOf(int $timestamp): string
+    {
+        return gmdate('Y-m-d', $timestamp + Config::dayOffsetSeconds());
     }
 
     /**
@@ -261,14 +348,28 @@ final class Users
 
         $out = [];
         for ($offset = $days - 1; $offset >= 0; $offset--) {
-            $day = gmdate('Y-m-d', $now - $offset * 86400);
+            $day = self::dayOf($now - $offset * 86400);
             $out[] = ['date' => $day, 'coffees' => $counts[$day] ?? 0];
         }
 
         return [
-            'today' => $counts[gmdate('Y-m-d', $now)] ?? 0,
+            'today' => $counts[self::dayOf($now)] ?? 0,
             'days' => $out,
         ];
+    }
+
+    /** Driver-independent check for a violated UNIQUE/PRIMARY KEY constraint. */
+    private static function isUniqueViolation(PDOException $e): bool
+    {
+        // SQLSTATE 23000 covers integrity constraint violations on both
+        // drivers; the message disambiguates a uniqueness failure from, say,
+        // a foreign-key one.
+        if (($e->errorInfo[0] ?? null) !== '23000' && $e->getCode() !== '23000') {
+            return false;
+        }
+        $message = strtolower($e->getMessage());
+
+        return str_contains($message, 'unique') || str_contains($message, 'duplicate');
     }
 
     /** @return array<string, mixed> */
@@ -403,14 +504,17 @@ final class Users
      */
     public static function reminderMonthTag(int $now): ?string
     {
-        $day = (int) gmdate('j', $now);
-        if ($day === (int) gmdate('t', $now)) {
-            return gmdate('Y-m', $now);
+        // Same day boundary as streaks and history, so a month ends when the
+        // configured day ends rather than at UTC midnight.
+        $local = $now + Config::dayOffsetSeconds();
+        $day = (int) gmdate('j', $local);
+        if ($day === (int) gmdate('t', $local)) {
+            return gmdate('Y-m', $local);
         }
         if ($day <= self::REMINDER_CATCHUP_DAYS) {
             // Going back $day days always lands in the previous month, whatever
             // the time of day.
-            return gmdate('Y-m', $now - $day * 86400);
+            return gmdate('Y-m', $local - $day * 86400);
         }
 
         return null;

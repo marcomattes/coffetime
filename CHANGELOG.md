@@ -9,10 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Work preparing the project for its open-source release.
 
+### Security
+
+- The offline booking queue is now bound to the account that created it and is
+  cleared on sign-out. On a shared device, queued coffees could previously be
+  flushed under whoever signed in next and charged to their tab.
+- `namePepper` is validated: an empty or example-placeholder value is refused
+  instead of silently producing name fingerprints anyone could recompute.
+  Documented that the wizard stores the pepper in the database, so a backup
+  carries the key to its own fingerprints — set it in `config.php` to avoid that.
+- Rate limiting on registration, login, device linking and setup
+  (`RateLimit`, new `rate_limits` table), so the invite code and the
+  `name_taken` response are no longer an unthrottled guessing oracle.
+- The app shell is served with a `Content-Security-Policy` and
+  `X-Frame-Options: DENY`; `/?book=1` no longer books automatically when the
+  app was opened from another site.
+- Sessions gained an absolute 180-day cap on top of the sliding idle window,
+  and completing an admin-issued recovery code now ends that account's other
+  sessions.
+- Request bodies are bounded and answered with `413` instead of being buffered
+  until `memory_limit` produced a `500`.
+- `--genkey` writes the private key as `0600` and refuses to overwrite an
+  existing one.
+
+### Fixed
+
+- Registration writes the user and its first passkey in one transaction. A
+  failure in between left a user who could never sign in while permanently
+  reserving the name — and, for the first user, the admin flag.
+- `tools/decrypt-users.php` computed balances from the *current* price,
+  contradicting the app after any price change; it now uses the stored
+  `tab_cents` with each booking's frozen price.
+- The offline-queue idempotency key is unique per user rather than globally, so
+  one account's client-generated id can no longer swallow another's booking.
+- MySQL/MariaDB: the first-user-becomes-admin check is a locking read, so two
+  concurrent first registrations cannot both become admin; migrations take an
+  advisory lock and no longer fail a request on a lost `CREATE INDEX` race.
+- Uniqueness-critical indexes are re-checked and retried; a single failed
+  creation no longer left uniqueness silently unenforced forever.
+- An admin payment reminder is withheld while nothing is outstanding, instead
+  of telling a settled user to pay "0.00 €".
+- Names containing control characters no longer produce a `500` at
+  registration; they are normalized away and an over-long name is a `400`.
+- The admin screen no longer hides every name behind a "wrong key" message when
+  a single ciphertext fails to decrypt, and its totals no longer net
+  overpayments against other people's real debt.
+
 ### Added
 
 - Community health files for external contributors: `CODE_OF_CONDUCT.md`,
   `SECURITY.md`, this `CHANGELOG.md`.
+- `trustProxy` config option so a TLS-terminating reverse proxy's
+  `X-Forwarded-Proto` is honored — without it a derived origin fell back to
+  `http://`, breaking WebAuthn and dropping the cookie's `Secure` flag.
+- `dayOffsetMinutes` config option to move the day boundary for streaks,
+  history and month-end reminders off UTC.
 
 ### Changed
 

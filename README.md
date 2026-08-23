@@ -79,6 +79,13 @@ If `config.php` already sets `adminPublicKey`, the setup wizard is skipped. Once
 
 `config.php` returns an array. Important settings are `priceCents`, `invite`, `admins` (user IDs as strings), `rpId`, `origin`, `dbPath` (or `db`, see [Database](#database)), `adminPublicKey`, and the secret `namePepper`. Keep the SQLite database and all private keys outside `public/`.
 
+Two optional settings matter for real deployments:
+
+- **`trustProxy`** (default `false`) — set it only when a reverse proxy sets the `X-Forwarded-*` headers itself. A TLS-terminating proxy otherwise looks like plain HTTP to PHP, which downgrades a *derived* origin to `http://` and drops the session cookie's `Secure` flag. Pinning `origin` and `rpId` explicitly is still the more robust fix.
+- **`dayOffsetMinutes`** (default `0`) — the day boundary for streaks, the history chart and the month-end reminder, in minutes east of UTC. `0` keeps days ending at UTC midnight; set it to your office's standard offset (Berlin winter = `60`) so a late-evening coffee counts for the day it was actually had. A fixed offset does not follow daylight saving time.
+
+`namePepper` must be a real random secret — generate one with `php -r 'echo bin2hex(random_bytes(32)), "\n";'`. The example placeholder is refused at runtime, because `name_hash` is a *keyed fingerprint* of a guessable value (see [Security and privacy](#security-and-privacy)).
+
 The public key must be a PEM-encoded RSA key of at least 4096 bits. New ciphertexts use RSA-OAEP (the SHA-1 OAEP profile supported by PHP OpenSSL and Web Crypto) and carry the `rsa-oaep-sha1:` prefix. Existing X25519 ciphertexts need to be exported with the earlier CLI before upgrading.
 
 ### Settings precedence
@@ -103,6 +110,8 @@ SQLite is the default: set `dbPath` to a writable file outside `public/`. To use
 
 An invalid or incomplete `db` block falls back to SQLite. Schema migrations run automatically on both drivers. The offline CLI export (`tools/decrypt-users.php`) reads the SQLite file directly and does not support MySQL; the in-app admin export (decrypt-and-download in the browser) works with either driver, since it goes through the API.
 
+The CLI takes each account's balance from the stored `tab_cents`, which sums every booking at the price frozen when it was made, so its figures match the app after a price change. `--price` is only consulted for a pre-v5 database that has no such column.
+
 ## Administration
 
 Add the account ID to `admins` (or rely on the first-registered-user rule), sign in, and select `admin-private.pem` in the Administration section. JavaScript imports it as a non-extractable Web Crypto key and decrypts API ciphertexts in memory. No request containing the key or plaintext names is ever made. From the same screen an administrator can book a payment against a user's tab and export the decrypted roster as CSV, both without the key leaving the browser.
@@ -118,9 +127,13 @@ php tools/decrypt-users.php --db ./coffee.sqlite --key ./admin-private.pem --pri
 
 A signed-in device can generate a link code (valid 15 minutes) to add a passkey on a new device to the same account. An administrator can generate a longer-lived recovery code (60 minutes) for a user who lost every device. Codes are single-use; only their hash is stored, never the plaintext.
 
+Completing an **admin-issued** recovery code also signs that account out everywhere else, so a lost device stops being able to book coffees. A self-issued link code (adding a second device of your own) leaves your other sessions signed in.
+
 ## Offline use
 
-The service worker caches the app shell for offline start. A coffee booked while offline is queued on the device and retried automatically once the connection returns; the server deduplicates by the booking's event ID, so a retried booking is never counted twice.
+The service worker caches the app shell for offline start. A coffee booked while offline is queued on the device and retried automatically once the connection returns; the server deduplicates by the booking's event ID (per account), so a retried booking is never counted twice.
+
+The queue belongs to the account that made the bookings: signing out clears it, and an entry can never be flushed under a different account. That matters on the shared kitchen tablet this app is built for. Signing out while offline clears everything locally, but the server-side session can only end once the device is back online — the app says so when that happens.
 
 ## Deployment
 
@@ -172,9 +185,28 @@ Design decisions and invariants — price freezing, the migration model, reminde
 
 The database contains IDs, encrypted names, keyed name fingerprints, counters, balances, and passkey material — no email addresses and no passwords. Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
+### Where to put `namePepper`
+
+Names are protected two different ways, and only one of them is unconditional:
+
+- `name_encrypted` is sealed with the admin's RSA public key. The private half never touches the server, so a stolen database cannot be decrypted. This holds regardless of configuration.
+- `name_hash` is `HMAC-SHA256(namePepper, name)`, used only to reject duplicate registrations. It is a *deterministic fingerprint of a guessable value*: anyone holding both a database copy and the pepper can recover every registered name by hashing candidates from, say, a staff list.
+
+So the two must not live in the same place. Setting `namePepper` in `config.php` keeps it out of database dumps. **The setup wizard has nowhere else to store it and writes it into the `settings` table**, which is convenient but means a database backup carries the key to its own fingerprints. If that matters for your deployment, configure `namePepper` in `config.php` before the first registration. Encrypted names stay safe either way.
+
+Neither `adminPublicKey` nor `namePepper` can be rotated afterwards — see [Key rotation](ARCHITECTURE.md#key-rotation).
+
 ### Backups
 
 Back up the database (the SQLite file, or regular dumps for MySQL/MariaDB) and the admin private key. They protect different things: the database backup restores balances, counters, and history; only the private key can ever decrypt the encrypted names again. **A lost private key makes existing encrypted names permanently unrecoverable** — balances and counters are unaffected, but names are gone for good. Keep `testMode` disabled in production; it exposes reset/seed/clock endpoints guarded only by a shared token.
+
+Do not back up SQLite by copying `coffee.sqlite` while the app is running: the database runs in WAL mode with `synchronous = NORMAL`, so a plain file copy can miss committed transactions that still live in the `-wal` file, and the most recent commits can be lost on power loss. Use SQLite's own consistent snapshot instead:
+
+```bash
+sqlite3 data/coffee.sqlite ".backup '/path/to/coffee-backup.sqlite'"
+```
+
+For MySQL/MariaDB use `mysqldump --single-transaction`.
 
 ## Contributing and license
 

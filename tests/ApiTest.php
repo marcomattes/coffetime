@@ -217,7 +217,14 @@ check(
     'link/options user.name uses the same opaque coffee- label scheme as registration',
     str_starts_with((string) ($linkOptions['user']['name'] ?? ''), 'coffee-')
 );
-check('link/options carries no plaintext name anywhere in user.name', !str_contains((string) ($linkOptions['user']['name'] ?? ''), ' '));
+// Assert the field is really there first: a bare "does not contain a space"
+// check would also pass when user.name is missing entirely.
+$linkUserName = $linkOptions['user']['name'] ?? null;
+check('link/options returns a user.name at all', is_string($linkUserName) && $linkUserName !== '');
+check(
+    'link/options carries no plaintext name anywhere in user.name',
+    is_string($linkUserName) && $linkUserName !== '' && !str_contains($linkUserName, ' ')
+);
 
 // peek() semantics: calling options twice with the same code must both succeed
 // (the code is not consumed just by building options for it).
@@ -552,8 +559,56 @@ check('re-login as the non-admin user with a settled tab succeeds', $r['status']
 $r = $client->get('/api/reminders');
 check('with a settled tab, no month-end reminder is due even in the window', ($r['json']['monthEnd'] ?? null) === null && array_key_exists('monthEnd', $r['json']));
 
+// An admin reminder for a settled tab would tell the user to pay "0.00 €",
+// so it is withheld exactly like the month-end notice.
+$r = $client->post('/api/test/login', ['userId' => $adminId], $testHeaders);
+check('re-login as the admin to queue a reminder on a settled tab succeeds', $r['status'] === 200);
+$r = $client->post('/api/admin/remind', ['userId' => $normalId]);
+check('queueing a reminder for the settled user succeeds', $r['status'] === 200);
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('re-login as the settled non-admin user succeeds', $r['status'] === 200);
+$r = $client->get('/api/reminders');
+check(
+    'an admin reminder is withheld while nothing is outstanding',
+    ($r['json']['admin'] ?? null) === null && array_key_exists('admin', $r['json'])
+);
+
+// Once the user owes something again, the queued reminder does show up.
+$r = $client->post('/api/coffee');
+check('booking a coffee puts the account back in debt', ($r['json']['balanceCents'] ?? 0) > 0);
+$r = $client->get('/api/reminders');
+check('the queued admin reminder appears once there is a balance again', is_array($r['json']['admin'] ?? null));
+$client->post('/api/coffee/undo');
+
 // Restore the clock so nothing lingers for whatever runs next on this host.
 $client->post('/api/test/clock', ['offsetSeconds' => 0], $testHeaders);
+
+// -------------------------------------------------------- response headers ---
+
+// The shell carries the framing/CSP defenses; every state-changing control
+// lives on it, so it must not be embeddable.
+$r = $client->get('/');
+check('the app shell is served', $r['status'] === 200);
+$shellHeaders = array_change_key_case($r['headers'], CASE_LOWER);
+check('the shell sends a Content-Security-Policy', isset($shellHeaders['content-security-policy']));
+check(
+    'the shell forbids being framed',
+    str_contains((string) ($shellHeaders['content-security-policy'] ?? ''), "frame-ancestors 'none'")
+);
+check('the shell sends X-Frame-Options: DENY', ($shellHeaders['x-frame-options'] ?? null) === 'DENY');
+
+$r = $client->get('/api/setup/status');
+$apiHeaders = array_change_key_case($r['headers'], CASE_LOWER);
+check('API responses are not cached', ($apiHeaders['cache-control'] ?? null) === 'no-store');
+check('API responses forbid framing too', isset($apiHeaders['content-security-policy']));
+
+// ------------------------------------------------------ oversized request ---
+
+// An unbounded body would be buffered until memory_limit turned it into a
+// 500; it is refused with a real status instead.
+$r = $client->post('/api/coffee', ['eventId' => str_repeat('a', 300000)]);
+check('an oversized request body is refused with 413', $r['status'] === 413);
+check('an oversized request body reports payload_too_large', ($r['json']['error'] ?? null) === 'payload_too_large');
 
 // ------------------------------------------------------ decryption roundtrip ---
 

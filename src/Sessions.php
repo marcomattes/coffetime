@@ -23,6 +23,13 @@ final class Sessions
     /** Server-side idle lifetime of a session: 30 days. */
     public const IDLE_LIFETIME = 2592000;
 
+    /**
+     * Hard ceiling on a session's age: 180 days. Without it, the sliding
+     * idle window means a token that keeps being used never expires, so a
+     * stolen one stays valid indefinitely.
+     */
+    public const ABSOLUTE_LIFETIME = 15552000;
+
     public static function start(string $userId): string
     {
         $token = Encoding::base64UrlEncode(random_bytes(32));
@@ -72,6 +79,16 @@ final class Sessions
             return null;
         }
 
+        $createdAt = isset($session['created_at']) && is_numeric($session['created_at'])
+            ? (int) $session['created_at']
+            : 0;
+        if ($createdAt > 0 && $createdAt + self::ABSOLUTE_LIFETIME <= $now) {
+            // Past the hard ceiling the session ends regardless of activity.
+            self::destroy($id);
+
+            return null;
+        }
+
         $user = Users::find((string) ($session['user_id'] ?? ''));
         if ($user === null) {
             self::destroy($id);
@@ -101,6 +118,27 @@ final class Sessions
             self::destroy(self::tokenId($token));
         }
         self::clearCookie();
+    }
+
+    /**
+     * Ends every session of one account, optionally sparing one (the caller's
+     * freshly created session). This is what makes an admin-issued recovery
+     * link actually recover an account: whoever holds the lost device is
+     * signed out instead of keeping a valid session for another 30 days.
+     */
+    public static function destroyForUser(string $userId, ?string $exceptToken = null): void
+    {
+        $exceptId = $exceptToken !== null && $exceptToken !== '' ? self::tokenId($exceptToken) : null;
+
+        Db::transaction(static function (PDO $pdo) use ($userId, $exceptId): void {
+            if ($exceptId === null) {
+                $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([(int) $userId]);
+
+                return;
+            }
+            $pdo->prepare('DELETE FROM sessions WHERE user_id = ? AND id <> ?')
+                ->execute([(int) $userId, $exceptId]);
+        });
     }
 
     public static function destroy(string $id): void
