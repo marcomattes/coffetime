@@ -36,6 +36,21 @@ return [
     // rpId: derived from the request when omitted, pin it in production.
     'origin' => 'http://localhost:8123',
 
+    // Set this only when a reverse proxy in front of the app sets the
+    // X-Forwarded-* headers itself (and strips any the client sent). It lets
+    // a derived origin take its scheme from X-Forwarded-Proto, which is what
+    // a TLS-terminating proxy needs so the session cookie keeps its Secure
+    // flag and WebAuthn origins match. Pinning 'origin' above is still the
+    // more robust option.
+    'trustProxy' => false,
+
+    // Day boundary for streaks, the history chart and the month-end
+    // reminder, in minutes east of UTC. 0 means days end at UTC midnight.
+    // Set it to your office's standard offset (Berlin winter = 60) so a
+    // late-evening coffee counts for the day people actually had it. A fixed
+    // offset does not follow daylight saving time.
+    'dayOffsetMinutes' => 0,
+
     // SQLite path. Keep it outside public/. Ignored when 'db' below selects
     // the mysql driver.
     'dbPath' => __DIR__ . '/data/coffee.sqlite',
@@ -75,5 +90,14 @@ PEM,
     // via the settings table on first run; like adminPublicKey, it is never
     // rewritten afterward, since that would invalidate every existing
     // duplicate-name check.
+    //
+    // Generate one with: php -r 'echo bin2hex(random_bytes(32)), "\n";'
+    // The value below is refused at runtime precisely because it is public —
+    // name_hash is a keyed fingerprint, so a known key would let anyone with
+    // a copy of the database recover names by guessing them.
+    //
+    // Setting it HERE rather than letting the wizard store it in the database
+    // is the stronger option: a database backup then no longer contains the
+    // key to its own name fingerprints. See "Name privacy" in ARCHITECTURE.md.
     'namePepper' => 'change-me-to-a-long-random-value',
 ];

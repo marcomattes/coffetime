@@ -14,7 +14,9 @@ declare(strict_types=1);
  *     php tools/decrypt-users.php --db <path> --key <path-to-key-file>
  *
  * Optional:
- *     --price <cents>  price per coffee (otherwise from ../config.php)
+ *     --price <cents>  price per coffee. Only used for pre-v5 databases that
+ *                      have no tab_cents column; newer ones carry each
+ *                      booking's own frozen price and ignore this.
  *     --xlsx <path>    additionally writes an Excel spreadsheet (.xlsx)
  *                      with the same data — name, coffees, outstanding
  *                      amount. Replaces online payment booking: who owes
@@ -78,14 +80,36 @@ function parseArguments(array $argv): array
 
 function generateKeyPair(): never
 {
+    // Overwriting an existing private key is unrecoverable: every name sealed
+    // with the old one becomes permanently unreadable. Refuse instead.
+    foreach (['admin-private.pem', 'admin-public.pem'] as $existing) {
+        if (file_exists($existing)) {
+            fail(
+                $existing . ' already exists. Move it away first — overwriting a private key'
+                . ' makes every name encrypted with it unrecoverable.'
+            );
+        }
+    }
+
     $key = openssl_pkey_new(['private_key_bits' => 4096, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
     if ($key === false || !openssl_pkey_export($key, $privateKey)) {
         fail('Could not generate an RSA key pair.');
     }
     $publicKey = openssl_pkey_get_details($key)['key'] ?? '';
-    file_put_contents('admin-private.pem', $privateKey);
+
+    // Create the private key readable only by its owner, and do so BEFORE
+    // writing to it: a default umask would otherwise leave a window in which
+    // the key is world-readable on a shared machine.
+    $handle = fopen('admin-private.pem', 'w');
+    if ($handle === false) {
+        fail('Could not create admin-private.pem');
+    }
+    @chmod('admin-private.pem', 0600);
+    fwrite($handle, $privateKey);
+    fclose($handle);
+
     file_put_contents('admin-public.pem', $publicKey);
-    echo "Created admin-private.pem and admin-public.pem\n";
+    echo "Created admin-private.pem (mode 0600) and admin-public.pem\n";
     echo "Keep admin-private.pem offline and copy the public PEM into config.php.\n";
     exit(EXIT_OK);
 }
@@ -126,6 +150,8 @@ function resolvePriceCents(array $options): int
         }
     }
 
+    // Only reached for a pre-v5 database; from v5 on the balance comes from
+    // tab_cents and this value is never consulted.
     fwrite(STDERR, 'Warning: no price found (--price or config.php); using 0.' . PHP_EOL);
 
     return 0;
@@ -323,9 +349,27 @@ $privateKey = loadSecretKey($options['key']);
 $priceCents = resolvePriceCents($options);
 $pdo = openDatabase($options['db']);
 
+// Schema v5 and later keep the authoritative running total in tab_cents:
+// every booking freezes the price that applied at the time, so a later price
+// change must not re-value coffees that were already booked. Only a pre-v5
+// database (no such column) still needs coffees * price.
+$hasTabCents = false;
+try {
+    $columns = $pdo->query('PRAGMA table_info(users)');
+    foreach ($columns === false ? [] : $columns->fetchAll() as $column) {
+        if (($column['name'] ?? null) === 'tab_cents') {
+            $hasTabCents = true;
+        }
+    }
+} catch (Throwable $e) {
+    fail('Could not inspect the users table: ' . $e->getMessage());
+}
+
 try {
     $statement = $pdo->query(
-        'SELECT id, name, name_encrypted, coffees, paid_cents FROM users ORDER BY id ASC'
+        'SELECT id, name, name_encrypted, coffees, paid_cents'
+        . ($hasTabCents ? ', tab_cents' : '')
+        . ' FROM users ORDER BY id ASC'
     );
     $rows = $statement === false ? [] : $statement->fetchAll();
 } catch (Throwable $e) {
@@ -349,7 +393,13 @@ foreach ($rows as $row) {
         [$firstName, $lastName] = splitLegacyName((string) ($row['name'] ?? ''));
     }
 
-    $balanceCents = $coffees * $priceCents - $paid;
+    // tab_cents already sums each booking at its own frozen price; falling
+    // back to the current price would silently re-value old coffees and make
+    // this export disagree with what the app shows.
+    $tabCents = $hasTabCents && isset($row['tab_cents']) && is_numeric($row['tab_cents'])
+        ? (int) $row['tab_cents']
+        : $coffees * $priceCents;
+    $balanceCents = $tabCents - $paid;
 
     $lines[] = implode('|', [
         (string) $id,

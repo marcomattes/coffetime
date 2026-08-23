@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Coffee;
 
+use InvalidArgumentException;
 use Throwable;
 
 /**
@@ -153,8 +154,31 @@ final class Api
         }
     }
 
+    /**
+     * Encrypts a name, turning "this name cannot be sealed" into a 400 rather
+     * than an uncaught 500. Crypto rejects a payload that would exceed the
+     * RSA-OAEP plaintext capacity, which is a property of the input.
+     */
+    private static function sealName(Crypto $crypto, string $first, string $last): string
+    {
+        try {
+            return $crypto->sealName($first, $last);
+        } catch (InvalidArgumentException $e) {
+            Http::error('invalid_name', 400);
+        } catch (Throwable $e) {
+            error_log('[coffee] sealing the name failed: ' . $e->getMessage());
+            Http::error('server_misconfigured', 500);
+        }
+    }
+
     private static function registerOptions(): never
     {
+        // Before the invite is even compared: an unthrottled invite check is
+        // an offline-speed guessing oracle for a code as short as four
+        // characters, and the 409 below additionally reveals whether a given
+        // real name is registered.
+        RateLimit::enforce('register', RateLimit::REGISTER_MAX);
+
         $body = Http::body();
         self::requireInvite($body);
         [$first, $last] = self::requireNames($body);
@@ -168,7 +192,7 @@ final class Api
         $handleEncoded = Encoding::base64UrlEncode($handleRaw);
         $options = WebAuthnService::creationOptions($handleRaw, self::userLabel($handleEncoded));
         $payload = [
-            'nameEncrypted' => $crypto->sealName($first, $last),
+            'nameEncrypted' => self::sealName($crypto, $first, $last),
             'nameHash' => $nameHash,
             'userHandle' => $handleEncoded,
         ];
@@ -185,6 +209,8 @@ final class Api
 
     private static function registerVerify(): never
     {
+        RateLimit::enforce('register', RateLimit::REGISTER_MAX);
+
         $body = Http::body();
         self::requireInvite($body);
         self::requireNames($body);
@@ -235,8 +261,10 @@ final class Api
         }
 
         // Registration is the only place where a user comes into existence.
-        $user = Users::create($nameEncrypted, $nameHash, $handle);
-        Credentials::store((string) $user['id'], $record);
+        // The user row and its first passkey are written as one transaction:
+        // a half-finished registration would reserve the name forever without
+        // anyone being able to sign in as it.
+        $user = Users::createWithCredential($nameEncrypted, $nameHash, $handle, $record);
         Sessions::start((string) $user['id']);
 
         Http::json(['ok' => true, 'user' => self::meView($user)]);
@@ -256,6 +284,8 @@ final class Api
 
     private static function loginVerify(): never
     {
+        RateLimit::enforce('login', RateLimit::LOGIN_MAX);
+
         $body = Http::body();
         $raw = self::credentialFromBody($body);
         if ($raw === null) {
@@ -341,6 +371,10 @@ final class Api
      */
     private static function linkOptions(): never
     {
+        // The code is the only proof of authorization on this public
+        // endpoint, so guessing attempts have to be throttled.
+        RateLimit::enforce('link', RateLimit::LINK_MAX);
+
         $body = Http::body();
         $code = Http::stringField($body, 'code');
         if ($code === null) {
@@ -387,6 +421,8 @@ final class Api
      */
     private static function linkVerify(): never
     {
+        RateLimit::enforce('link', RateLimit::LINK_MAX);
+
         $body = Http::body();
 
         $raw = self::credentialFromBody($body);
@@ -454,7 +490,15 @@ final class Api
         }
 
         Credentials::store($userId, $record);
-        Sessions::start($userId);
+        $token = Sessions::start($userId);
+
+        // An admin-issued code is the lost-device recovery path: whoever
+        // holds the lost device would otherwise keep a valid session for up
+        // to 30 more days. A self-issued code is the opposite case (adding a
+        // second device of one's own), so it leaves other sessions alone.
+        if ((string) ($linkRow['created_by'] ?? '') === 'admin') {
+            Sessions::destroyForUser($userId, $token);
+        }
 
         Http::json(['ok' => true, 'user' => self::meView($user)]);
     }
@@ -532,8 +576,11 @@ final class Api
             $monthEnd = ['month' => $tag, 'balanceCents' => $balance];
         }
 
+        // Like the month-end notice, an admin reminder is only worth showing
+        // while something is actually outstanding — otherwise a user who has
+        // paid in the meantime gets told to settle "0.00 €".
         $requestedAt = Users::remindRequestedAt($user);
-        $admin = $requestedAt > 0
+        $admin = $requestedAt > 0 && $balance > 0
             ? ['requestedAt' => $requestedAt, 'balanceCents' => $balance]
             : null;
 
@@ -737,6 +784,8 @@ final class Api
      */
     private static function setupInit(): never
     {
+        RateLimit::enforce('register', RateLimit::REGISTER_MAX);
+
         if (!self::needsSetup()) {
             Http::error('already_initialized', 409);
         }
@@ -748,9 +797,10 @@ final class Api
             Http::error('invalid_key', 400);
         }
         try {
-            // Instantiated for validation only – the pepper is irrelevant
-            // here, this is solely about the public key.
-            new Crypto($publicKey, 'probe');
+            // Validates the key alone. It deliberately does not construct a
+            // Crypto instance: no pepper exists yet at this point, and a
+            // throwaway one would now be rejected by the pepper check.
+            Crypto::assertValidPublicKey($publicKey);
         } catch (Throwable) {
             Http::error('invalid_key', 400);
         }
@@ -878,7 +928,7 @@ final class Api
                 Http::error('name_taken', 409);
             }
             $user = Users::create(
-                $crypto->sealName($first, $last),
+                self::sealName($crypto, $first, $last),
                 $nameHash,
                 Users::newHandle(),
                 $coffees,

@@ -77,6 +77,9 @@
   interface QueueEntry {
     id: string;
     at: number;
+    /* Account the booking was made under. A queued coffee must never be
+       charged to whoever signs in next on a shared device. */
+    uid?: string;
   }
 
   class ApiError extends Error {
@@ -181,6 +184,11 @@
    * the id is queued in localStorage and retried later with that SAME id,
    * so the server-side idempotency check (see Users::addCoffee) collapses
    * any retries into the single original booking.
+   *
+   * Each entry also records the account it belongs to. The kitchen tablet
+   * this app is built for is shared, so a queue that survived a sign-out
+   * would otherwise let one person's offline coffee land on the next
+   * person's tab.
    */
 
   const QUEUE_KEY = 'coffeeQueue';
@@ -234,7 +242,8 @@
             if (isQueueEntry(item)) {
               queue.push({
                 id: item.id,
-                at: typeof item.at === 'number' ? item.at : Date.now()
+                at: typeof item.at === 'number' ? item.at : Date.now(),
+                uid: typeof item.uid === 'string' && item.uid !== '' ? item.uid : undefined
               });
             }
           }
@@ -282,10 +291,21 @@
     if (queue.length >= QUEUE_MAX) {
       return false;
     }
-    queue.push({ id: id, at: Date.now() });
+    queue.push({ id: id, at: Date.now(), uid: state.me ? state.me.id : undefined });
     saveQueue(queue);
     updateQueueHint(queue);
     return true;
+  }
+
+  /* Drops the queue outright. Called on sign-out so nothing can be replayed
+     under the next account on a shared device. */
+  function clearQueue(): void {
+    try {
+      window.localStorage.removeItem(QUEUE_KEY);
+    } catch (e) {
+      /* Storage unavailable -- there is nothing persisted to clear. */
+    }
+    updateQueueHint([]);
   }
 
   /*
@@ -298,8 +318,19 @@
   async function flushQueue(): Promise<void> {
     const queue = loadQueue();
     let changed = false;
+    const currentUid = state.me ? state.me.id : null;
     while (queue.length > 0) {
       const entry = queue[0];
+      // A booking stamped with a different account can never be sent
+      // correctly -- the server would charge it to whoever is signed in now.
+      // Drop it rather than misattribute a coffee.
+      if (entry.uid !== undefined && currentUid !== null && entry.uid !== currentUid) {
+        queue.shift();
+        saveQueue(queue);
+        updateQueueHint(queue);
+        changed = true;
+        continue;
+      }
       try {
         await api('/api/coffee', { eventId: entry.id });
         queue.shift();
@@ -572,16 +603,25 @@
       return;
     }
     let coffees = 0;
-    let balance = 0;
+    let outstanding = 0;
+    let credit = 0;
     users.forEach((user) => {
       coffees += typeof user.coffees === 'number' ? user.coffees : 0;
-      balance += typeof user.balanceCents === 'number' ? user.balanceCents : 0;
+      const balance = typeof user.balanceCents === 'number' ? user.balanceCents : 0;
+      // Netting the two would let an overpaid account mask somebody else's
+      // real debt, so they are counted -- and shown -- separately.
+      if (balance > 0) {
+        outstanding += balance;
+      } else {
+        credit -= balance;
+      }
     });
     text(
       totalsNode,
       users.length + (users.length === 1 ? ' account' : ' accounts') +
         ' · ' + coffees + (coffees === 1 ? ' coffee' : ' coffees') +
-        ' · ' + money(balance) + ' outstanding'
+        ' · ' + money(outstanding) + ' outstanding' +
+        (credit > 0 ? ' · ' + money(credit) + ' in credit' : '')
     );
   }
 
@@ -888,8 +928,19 @@
       const pem = await file.text();
       const key = await crypto.subtle.importKey('pkcs8', pemBytes(pem), { name: 'RSA-OAEP', hash: 'SHA-1' }, false, ['decrypt']);
       state.adminKey = key;
-      await Promise.all(state.users.map(decryptAdminName));
-      text(status, 'Names decrypted locally. The key has not left this browser.');
+      // allSettled, not all: one unreadable ciphertext (a legacy or corrupt
+      // row) must not hide every other name behind a misleading "wrong key".
+      const results = await Promise.allSettled(state.users.map(decryptAdminName));
+      const failed = results.filter((entry) => entry.status === 'rejected').length;
+      if (failed === results.length && results.length > 0) {
+        // Nothing decrypted at all: that really is the wrong key.
+        state.adminKey = null;
+        text(status, 'Could not decrypt names. Check that this is the matching PKCS#8 key.');
+      } else if (failed > 0) {
+        text(status, 'Names decrypted locally. ' + failed + ' entr' + (failed === 1 ? 'y' : 'ies') + ' could not be read.');
+      } else {
+        text(status, 'Names decrypted locally. The key has not left this browser.');
+      }
       renderAdmin(state.users);
     } catch (e) {
       state.adminKey = null;
@@ -1270,13 +1321,25 @@
   }
 
   async function logout(): Promise<void> {
+    let serverEnded = true;
     try {
       await api('/api/logout', {});
     } catch (e) {
-      /* ignored – the client-side state is cleared regardless. */
+      // Offline: the cookie is HttpOnly, so only the server can really end
+      // the session. Everything local is still cleared, and the user is told
+      // the sign-out is not complete yet.
+      serverEnded = !isNetworkError(e);
     }
+    // Always drop the queue: these bookings belong to the account signing
+    // out, and this device may well be handed to someone else next.
+    clearQueue();
     state.me = null;
+    state.users = [];
+    state.adminKey = null;
     show('auth');
+    if (!serverEnded) {
+      text(el('auth-error'), 'Signed out on this device. You were offline, so the session ends on the server at the next connection.');
+    }
     if ('clearAppBadge' in navigator) {
       (navigator as any).clearAppBadge().catch(() => {});
     }
@@ -1316,11 +1379,33 @@
     if (params.get('book') !== '1') {
       return;
     }
-    state.pendingBook = true;
     window.history.replaceState(null, '', window.location.pathname);
+
+    // The session cookie is SameSite=Lax, so a plain top-level link from any
+    // site would carry it and book a coffee with a single click. An NFC tag
+    // or the installed app's shortcut opens with no referrer, and a link
+    // inside the app is same-origin -- only those book without being asked.
+    // Anything arriving from another site just opens the app.
+    if (!openedWithoutForeignReferrer()) {
+      return;
+    }
+
+    state.pendingBook = true;
     const hint = el('nfc-hint');
     if (hint) {
       hint.hidden = false;
+    }
+  }
+
+  function openedWithoutForeignReferrer(): boolean {
+    const referrer = document.referrer;
+    if (!referrer) {
+      return true;
+    }
+    try {
+      return new URL(referrer).origin === window.location.origin;
+    } catch (e) {
+      return false;
     }
   }
 
