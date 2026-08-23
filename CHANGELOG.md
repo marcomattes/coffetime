@@ -60,6 +60,18 @@ Work preparing the project for its open-source release.
 
 ### Fixed
 
+- A container deployment reported its build as `dev`. `Version::current()`
+  reads `src/build.json`, which only `scripts/build-release.sh` wrote, and
+  falls back to `.git`, which `.dockerignore` excludes — so the footer build
+  indicator worked for the FTP deploy and was blank in Docker. The image now
+  writes the same file from a build argument.
+- PHP's error log now goes to stderr in the image. The first-run setup token is
+  logged on generation and the documented way to read it is `docker compose
+  logs`, which only works if the log leaves the container.
+- The README described a `config.php` baked into the image that pinned `origin`
+  to `http://localhost:8123`. No such file was ever written; the origin is
+  derived from the request, which is what lets one image serve any host.
+
 - The installed app could not be scrolled on Android. `overscroll-behavior-y:
   contain` was set on `body` as well as `html`, and `body { overflow-x: hidden }`
   had already turned the body into a scroll container of its own — a scroll
@@ -111,6 +123,12 @@ Work preparing the project for its open-source release.
 
 ### Added
 
+- A published container image at `ghcr.io/marcomattes/coffetime`, built for
+  `linux/amd64` and `linux/arm64` and pushed only after the full CI suite goes
+  green. A `v*` git tag publishes the semver tags and moves `latest`; commits
+  on `main` move `edge`; every build also gets an immutable `sha-` tag and a
+  signed build provenance attestation. Running the app no longer requires
+  cloning the repository.
 - Administrators can delete an account (`POST /api/admin/user/delete`, Delete
   button in the user list). It is a hard delete — the row, its passkeys,
   sessions, bookings and any pending link code go together in one transaction.

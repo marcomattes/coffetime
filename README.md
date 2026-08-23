@@ -68,9 +68,34 @@ The wizard asks for a **setup token** first. The server prints it to the error l
 docker compose up --build
 ```
 
-Open <http://localhost:8123> and follow the setup wizard as above; read the setup token with `docker compose logs | grep 'setup token'`. The SQLite database persists in the `coffee-data` named volume. The image bakes in a one-line `config.php` that only pins `origin` to `http://localhost:8123` (so WebAuthn matches the published port); everything else, including `adminPublicKey`, is left unset so the wizard still runs on first use. To use a fixed configuration instead, bind-mount your own `config.php` over `/var/www/html/config.php` (see the commented-out example in `compose.yaml`).
+Open <http://localhost:8123> and follow the setup wizard as above; read the setup token with `docker compose logs | grep 'setup token'`. The SQLite database and the setup token persist in the `coffee-data` named volume, mounted at `/var/www/html/data` — that directory sits outside the document root, so neither is reachable over HTTP.
 
-Once you deploy beyond localhost, set `rpId` to the host without a port and `origin` to the complete origin. Production WebAuthn deployments require HTTPS.
+The image ships no `config.php` at all: `origin` and `rpId` are derived from the request, which is what lets the same image serve localhost and your own domain without a rebuild. To pin them — which you should for anything past localhost — bind-mount your own file over `/var/www/html/config.php` (see the commented-out example in `compose.yaml`). Set `rpId` to the host without a port and `origin` to the complete origin. Production WebAuthn deployments require HTTPS.
+
+### Run the published image
+
+Every green build on `main` publishes a multi-architecture image (`linux/amd64`, `linux/arm64`) to the GitHub Container Registry:
+
+```bash
+docker run -d -p 8123:80 -v coffee-data:/var/www/html/data \
+  ghcr.io/marcomattes/coffetime:latest
+docker logs $(docker ps -lq) 2>&1 | grep 'setup token'
+```
+
+| Tag | Points at |
+| --- | --- |
+| `latest` | the newest released version |
+| `1.2.3`, `1.2`, `1` | a specific release, from a `v1.2.3` git tag |
+| `edge` | the latest commit on `main` |
+| `sha-abc1234` | one exact commit |
+
+`latest` and the semver tags only move when a `v*` tag is pushed; `edge` moves with `main`. Pin a semver tag in production and treat `edge` as a preview. The footer and `GET /api/version` report the commit the image was built from, so you can tell what is actually running.
+
+Images are built by [`.github/workflows/docker.yml`](.github/workflows/docker.yml) only after the full test suite passes, and carry a signed build provenance attestation:
+
+```bash
+gh attestation verify oci://ghcr.io/marcomattes/coffetime:latest --owner marcomattes
+```
 
 ### Manual configuration (advanced / production)
 

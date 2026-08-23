@@ -1,0 +1,120 @@
+name: Publish container image
+
+# Builds the runtime image and pushes it to the GitHub Container Registry.
+# Like deploy.yml this is workflow_call-only plus a manual trigger, so the
+# image is only ever published behind ci.yml's test gate -- an image tagged
+# "latest" that never ran the suite is worse than no image at all.
+#
+# Tags produced (docker/metadata-action):
+#   push to main      -> edge, sha-<short>
+#   tag v1.2.3        -> 1.2.3, 1.2, 1, latest, sha-<short>
+# The semver comes from the git tag; src/build.json inside the image carries
+# the commit, because Version::shorten() only accepts a hex sha.
+#
+# No secrets to configure: GITHUB_TOKEN can write to ghcr.io for this repo
+# given the packages:write permission below.
+#
+# ONE-TIME MANUAL STEP: the first push creates the GHCR package as *private*,
+# and nothing here can change that. Until it is switched to public under
+# Packages -> coffetime -> Package settings -> Change visibility, the pull
+# commands in README.md fail with "denied" for anyone not logged in.
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghcr-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Required by attest-build-provenance to sign the attestation.
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # linux/arm64 is emulated through QEMU here. It roughly triples the job
+      # for that architecture because pdo_sqlite is compiled from source, but
+      # a self-hosted coffee tracker is exactly the kind of thing that ends up
+      # on a Raspberry Pi or an ARM VPS, so it is worth the wall clock.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=edge,branch=main
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=Coffee Time
+            org.opencontainers.image.description=Self-hosted coffee tab tracker with passkey sign-in
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build timestamp
+        id: stamp
+        run: echo "epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_COMMIT=${{ github.sha }}
+            BUILD_AT=${{ steps.stamp.outputs.epoch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            printf '### Published image\n\n'
+            printf '```\n%s\n```\n\n' '${{ steps.meta.outputs.tags }}'
+            printf 'Digest: `%s`\n\n' '${{ steps.build.outputs.digest }}'
+            printf 'Built from commit `%s`.\n' '${{ github.sha }}'
+          } >> "$GITHUB_STEP_SUMMARY"

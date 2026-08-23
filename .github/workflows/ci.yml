@@ -176,3 +176,19 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/deploy.yml
     secrets: inherit
+
+  # Same gate as the FTP deploy: only ever publish an image that the suite
+  # above went green on. Tag pushes publish too (that is where the semver
+  # tags come from) but deliberately do not reach the deploy job, so cutting
+  # a release does not re-upload the FTP target as a side effect.
+  publish-image:
+    needs: build
+    if: >-
+      github.event_name == 'push'
+      && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/docker.yml
