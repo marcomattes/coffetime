@@ -14,7 +14,7 @@ declare(strict_types=1);
 @ini_set('html_errors', '0');
 ob_start();
 
-require __DIR__ . '/../src/Bootstrap.php';
+require_once __DIR__ . '/../src/Bootstrap.php';
 
 use Coffee\Api;
 use Coffee\Bootstrap;
@@ -60,6 +60,6 @@ if (!is_file(__DIR__ . '/../vendor/autoload.php')) {
 
     return;
 }
-require __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../vendor/autoload.php';
 
 Api::dispatch();

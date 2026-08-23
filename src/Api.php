@@ -410,7 +410,14 @@ final class Api
         Http::json(['ok' => true, 'user' => self::meView($user)]);
     }
 
-    /** @param array<string, mixed> $user */
+    /**
+     * @param array<string, mixed> $user Unused by this handler. Kept anyway:
+     *     dispatchApi() calls every protected handler as `$callable($user)`
+     *     so the whole family shares one calling shape (see dispatchApi()
+     *     and, e.g., me()/stats()/history() below); dropping it here only
+     *     would make logout() the odd one out for no behavioural gain, since
+     *     PHP happily ignores the extra argument either way.
+     */
     private static function logout(array $user): never
     {
         Sessions::logoutCurrent();
@@ -505,33 +512,7 @@ final class Api
             Http::error('invalid_credential', 400);
         }
 
-        $ceremony = Ceremonies::consume(Ceremonies::KIND_LINK, $challenge);
-        if ($ceremony === null) {
-            Http::error('challenge_invalid', 400);
-        }
-        $options = WebAuthnService::creationOptionsFromJson((string) ($ceremony['options'] ?? ''));
-        if ($options === null) {
-            Http::error('challenge_invalid', 400);
-        }
-        $payload = json_decode((string) ($ceremony['payload'] ?? '[]'), true);
-        if (!is_array($payload)) {
-            Http::error('challenge_invalid', 400);
-        }
-
-        $userId = (string) ($payload['userId'] ?? '');
-        $storedCode = (string) ($payload['code'] ?? '');
-        if ($userId === '' || $storedCode === '') {
-            Http::error('challenge_invalid', 400);
-        }
-
-        // The code sent in the body must be exactly the code this ceremony was
-        // created for – otherwise a foreign ceremony could be used to smuggle a
-        // different code through.
-        $bodyCode = Http::stringField($body, 'code');
-        $normalizedBody = $bodyCode !== null ? LinkCodes::normalize($bodyCode) : '';
-        if ($normalizedBody === '' || !hash_equals($storedCode, $normalizedBody)) {
-            Http::error('challenge_invalid', 400);
-        }
+        [$options, $userId, $bodyCode] = self::resolveLinkCeremony($challenge, $body);
 
         $credential = WebAuthnService::parseCredential($raw);
         if ($credential === null) {
@@ -550,7 +531,7 @@ final class Api
         // credential ID is free – from here on the link can no longer fail,
         // unless the code was consumed elsewhere in the meantime (concurrent
         // attempt).
-        $linkRow = LinkCodes::consume((string) $bodyCode);
+        $linkRow = LinkCodes::consume($bodyCode);
         if ($linkRow === null) {
             Http::error('challenge_invalid', 400);
         }
@@ -572,6 +553,47 @@ final class Api
         }
 
         Http::json(['ok' => true, 'user' => self::meView($user)]);
+    }
+
+    /**
+     * Resolves the ceremony consumed by linkVerify(): decodes its stored
+     * options and payload, and confirms the code in the request body is
+     * exactly the one this ceremony was created for – otherwise a foreign
+     * ceremony could be used to smuggle a different code through. Split out
+     * of linkVerify() only to keep that method's cognitive complexity within
+     * budget; behaviour (including every error response) is unchanged.
+     *
+     * @param array<string, mixed> $body
+     * @return array{0: \Webauthn\PublicKeyCredentialCreationOptions, 1: string, 2: string} [$options, $userId, $bodyCode]
+     */
+    private static function resolveLinkCeremony(string $challenge, array $body): array
+    {
+        $ceremony = Ceremonies::consume(Ceremonies::KIND_LINK, $challenge);
+        if ($ceremony === null) {
+            Http::error('challenge_invalid', 400);
+        }
+        $options = WebAuthnService::creationOptionsFromJson((string) ($ceremony['options'] ?? ''));
+        if ($options === null) {
+            Http::error('challenge_invalid', 400);
+        }
+        $payload = json_decode((string) ($ceremony['payload'] ?? '[]'), true);
+        if (!is_array($payload)) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        $userId = (string) ($payload['userId'] ?? '');
+        $storedCode = (string) ($payload['code'] ?? '');
+        if ($userId === '' || $storedCode === '') {
+            Http::error('challenge_invalid', 400);
+        }
+
+        $bodyCode = Http::stringField($body, 'code');
+        $normalizedBody = $bodyCode !== null ? LinkCodes::normalize($bodyCode) : '';
+        if ($normalizedBody === '' || !hash_equals($storedCode, $normalizedBody)) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        return [$options, $userId, (string) $bodyCode];
     }
 
     // ------------------------------------------------------------ Counter ---
@@ -912,32 +934,13 @@ final class Api
 
         $pairs = [];
         if ($hasPrice) {
-            $priceRaw = $body['priceCents'];
-            if (!is_int($priceRaw) || $priceRaw < 1 || $priceRaw > 100000) {
-                Http::error('invalid_settings', 400);
-            }
-            $pairs['priceCents'] = (string) $priceRaw;
+            $pairs['priceCents'] = self::validateSettingsPrice($body['priceCents']);
         }
         if ($hasInvite) {
-            $inviteRaw = $body['invite'];
-            $invite = is_string($inviteRaw) ? trim($inviteRaw) : '';
-            if (mb_strlen($invite) < 4 || mb_strlen($invite) > 64) {
-                Http::error('invalid_settings', 400);
-            }
-            $pairs['invite'] = $invite;
+            $pairs['invite'] = self::validateSettingsInvite($body['invite']);
         }
         if ($hasPaypal) {
-            $paypalRaw = $body['paypalHandle'];
-            if (!is_string($paypalRaw)) {
-                Http::error('invalid_settings', 400);
-            }
-            // An empty field is how the button is switched off again, so only
-            // a non-empty value that does not survive normalization is wrong.
-            $handle = Config::normalizePaypalHandle($paypalRaw);
-            if (trim($paypalRaw) !== '' && $handle === '') {
-                Http::error('invalid_paypal', 400);
-            }
-            $pairs['paypalHandle'] = $handle;
+            $pairs['paypalHandle'] = self::validateSettingsPaypal($body['paypalHandle']);
         }
 
         Settings::setMany($pairs);
@@ -948,6 +951,58 @@ final class Api
             'invite' => Config::invite(),
             'paypalHandle' => Config::paypalHandle(),
         ]);
+    }
+
+    /**
+     * Validates a new priceCents value, called only when the request body
+     * actually included the key. Split out of adminSettingsUpdate() only to
+     * keep that method's cognitive complexity within budget; behaviour is
+     * unchanged.
+     */
+    private static function validateSettingsPrice(mixed $priceRaw): string
+    {
+        if (!is_int($priceRaw) || $priceRaw < 1 || $priceRaw > 100000) {
+            Http::error('invalid_settings', 400);
+        }
+
+        return (string) $priceRaw;
+    }
+
+    /**
+     * Validates a new invite code, called only when the request body
+     * actually included the key. Split out of adminSettingsUpdate() only to
+     * keep that method's cognitive complexity within budget; behaviour is
+     * unchanged.
+     */
+    private static function validateSettingsInvite(mixed $inviteRaw): string
+    {
+        $invite = is_string($inviteRaw) ? trim($inviteRaw) : '';
+        if (mb_strlen($invite) < 4 || mb_strlen($invite) > 64) {
+            Http::error('invalid_settings', 400);
+        }
+
+        return $invite;
+    }
+
+    /**
+     * Validates a new PayPal.me handle, called only when the request body
+     * actually included the key. Split out of adminSettingsUpdate() only to
+     * keep that method's cognitive complexity within budget; behaviour is
+     * unchanged.
+     */
+    private static function validateSettingsPaypal(mixed $paypalRaw): string
+    {
+        if (!is_string($paypalRaw)) {
+            Http::error('invalid_settings', 400);
+        }
+        // An empty field is how the button is switched off again, so only
+        // a non-empty value that does not survive normalization is wrong.
+        $handle = Config::normalizePaypalHandle($paypalRaw);
+        if (trim($paypalRaw) !== '' && $handle === '') {
+            Http::error('invalid_paypal', 400);
+        }
+
+        return $handle;
     }
 
     /**

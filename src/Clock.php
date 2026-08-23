@@ -32,27 +32,31 @@ final class Clock
             return self::$offsetCache;
         }
 
-        self::$offsetCache = 0;
+        self::$offsetCache = self::readPersistedOffset() ?? 0;
 
+        return self::$offsetCache;
+    }
+
+    /**
+     * Reads and validates the offset file, discarding it if it belongs to a
+     * process that is no longer alive. Returns null when there is nothing
+     * usable — a missing file, an unparsable one, or a stale one.
+     */
+    private static function readPersistedOffset(): ?int
+    {
         $raw = @file_get_contents(self::offsetFile());
-        if ($raw === false || trim($raw) === '') {
-            return 0;
-        }
-
-        $data = json_decode(trim($raw), true);
+        $data = $raw === false || trim($raw) === '' ? null : json_decode(trim($raw), true);
         if (!is_array($data) || !isset($data['offset'], $data['pid']) || !is_numeric($data['offset'])) {
-            return 0;
+            return null;
         }
         if (!self::processIsAlive((int) $data['pid'])) {
             // Offset from a previous server instance: discard it.
             @unlink(self::offsetFile());
 
-            return 0;
+            return null;
         }
 
-        self::$offsetCache = (int) $data['offset'];
-
-        return self::$offsetCache;
+        return (int) $data['offset'];
     }
 
     public static function setOffset(int $seconds): void
@@ -83,17 +87,32 @@ final class Clock
         if ($pid === getmypid()) {
             return true;
         }
+
+        return self::procDirAlive($pid) ?? self::posixAlive($pid);
+    }
+
+    /**
+     * Checks /proc directly, which is conclusive on Linux. Returns null when
+     * /proc itself does not exist, so the caller falls back to another
+     * method instead of reporting the process dead.
+     */
+    private static function procDirAlive(int $pid): ?bool
+    {
         if (is_dir('/proc/' . $pid)) {
             return true;
         }
-        if (is_dir('/proc')) {
-            // Linux with /proc: the directory's absence is conclusive.
-            return false;
-        }
-        if (function_exists('posix_kill')) {
-            return @posix_kill($pid, 0);
-        }
 
-        return false;
+        // Linux with /proc: the directory's absence is conclusive.
+        return is_dir('/proc') ? false : null;
+    }
+
+    /**
+     * Last resort where /proc does not exist (e.g. macOS): signal 0 probes
+     * whether the process can be signaled without actually sending one.
+     * False when posix_kill() itself is unavailable.
+     */
+    private static function posixAlive(int $pid): bool
+    {
+        return function_exists('posix_kill') && @posix_kill($pid, 0);
     }
 }

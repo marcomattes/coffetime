@@ -65,19 +65,8 @@ final class Ceremonies
         $now = Clock::now();
 
         return Db::transaction(static function (PDO $pdo) use ($kind, $normalized, $now): ?array {
-            $row = Db::fetchRow(
-                'SELECT * FROM ceremonies WHERE challenge = ? AND kind = ? AND used = 0',
-                [$normalized, $kind],
-                $pdo
-            );
+            $row = self::claim($pdo, $kind, $normalized);
             if ($row === null) {
-                return null;
-            }
-
-            $update = $pdo->prepare('UPDATE ceremonies SET used = 1 WHERE id = ? AND used = 0');
-            $update->execute([$row['id']]);
-            if ($update->rowCount() !== 1) {
-                // A concurrent request won the race.
                 return null;
             }
 
@@ -88,6 +77,34 @@ final class Ceremonies
 
             return $row;
         });
+    }
+
+    /**
+     * Fetches the unused ceremony for a challenge and atomically marks it
+     * used, so a concurrent second call for the same challenge cannot also
+     * claim it. Returns null when there is nothing unused to claim.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function claim(PDO $pdo, string $kind, string $normalized): ?array
+    {
+        $row = Db::fetchRow(
+            'SELECT * FROM ceremonies WHERE challenge = ? AND kind = ? AND used = 0',
+            [$normalized, $kind],
+            $pdo
+        );
+        if ($row === null) {
+            return null;
+        }
+
+        $update = $pdo->prepare('UPDATE ceremonies SET used = 1 WHERE id = ? AND used = 0');
+        $update->execute([$row['id']]);
+        if ($update->rowCount() !== 1) {
+            // A concurrent request won the race.
+            return null;
+        }
+
+        return $row;
     }
 
     public static function clearForKind(string $kind): void

@@ -63,36 +63,10 @@ final class Sessions
             return null;
         }
         $id = self::tokenId($token);
-
-        $session = Db::fetchRow('SELECT * FROM sessions WHERE id = ?', [$id]);
-        if ($session === null) {
-            return null;
-        }
-
         $now = Clock::now();
-        $expiresAt = isset($session['expires_at']) && is_numeric($session['expires_at'])
-            ? (int) $session['expires_at']
-            : 0;
-        if ($expiresAt <= $now) {
-            self::destroy($id);
 
-            return null;
-        }
-
-        $createdAt = isset($session['created_at']) && is_numeric($session['created_at'])
-            ? (int) $session['created_at']
-            : 0;
-        if ($createdAt > 0 && $createdAt + self::ABSOLUTE_LIFETIME <= $now) {
-            // Past the hard ceiling the session ends regardless of activity.
-            self::destroy($id);
-
-            return null;
-        }
-
-        $user = Users::find((string) ($session['user_id'] ?? ''));
+        $user = self::sessionUser($id, $now);
         if ($user === null) {
-            self::destroy($id);
-
             return null;
         }
 
@@ -100,6 +74,53 @@ final class Sessions
         self::sendCookie($token, self::COOKIE_MAX_AGE);
 
         return $user;
+    }
+
+    /**
+     * The user behind a session id, or null if the session does not exist,
+     * is expired, is past its absolute ceiling, or points at a user that no
+     * longer exists. Destroys the row in every case but the first — there is
+     * nothing to destroy for an id that was never a valid session.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function sessionUser(string $id, int $now): ?array
+    {
+        $session = Db::fetchRow('SELECT * FROM sessions WHERE id = ?', [$id]);
+        if ($session === null) {
+            return null;
+        }
+
+        $user = self::isExpired($session, $now) ? null : Users::find((string) ($session['user_id'] ?? ''));
+        if ($user === null) {
+            self::destroy($id);
+        }
+
+        return $user;
+    }
+
+    /**
+     * Whether a session row is past either the sliding idle window or the
+     * hard absolute ceiling (ABSOLUTE_LIFETIME) — the ceiling exists so a
+     * token that keeps being used never expires.
+     *
+     * @param array<string, mixed> $session
+     */
+    private static function isExpired(array $session, int $now): bool
+    {
+        $expiresAt = isset($session['expires_at']) && is_numeric($session['expires_at'])
+            ? (int) $session['expires_at']
+            : 0;
+        if ($expiresAt <= $now) {
+            return true;
+        }
+
+        $createdAt = isset($session['created_at']) && is_numeric($session['created_at'])
+            ? (int) $session['created_at']
+            : 0;
+
+        // Past the hard ceiling the session ends regardless of activity.
+        return $createdAt > 0 && $createdAt + self::ABSOLUTE_LIFETIME <= $now;
     }
 
     private static function touch(string $id, int $now): void

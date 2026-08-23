@@ -47,10 +47,7 @@ final class Version
     private static function fromBundle(): ?array
     {
         $raw = @file_get_contents(__DIR__ . '/build.json');
-        if (!is_string($raw) || trim($raw) === '') {
-            return null;
-        }
-        $data = json_decode($raw, true);
+        $data = is_string($raw) && trim($raw) !== '' ? json_decode($raw, true) : null;
         if (!is_array($data)) {
             return null;
         }
@@ -71,14 +68,14 @@ final class Version
      *
      * @return array{version: string, builtAt: int}|null
      */
+    /** @return array{version: string, builtAt: int}|null */
     private static function fromGit(): ?array
     {
         $gitDir = dirname(__DIR__) . '/.git';
-        $head = @file_get_contents($gitDir . '/HEAD');
-        if (!is_string($head)) {
+        $head = self::readHead($gitDir);
+        if ($head === null) {
             return null;
         }
-        $head = trim($head);
 
         // Detached HEAD holds the commit itself; otherwise it points at a ref.
         if (!str_starts_with($head, 'ref: ')) {
@@ -87,12 +84,39 @@ final class Version
             return $version === null ? null : ['version' => $version, 'builtAt' => self::mtime($gitDir . '/HEAD')];
         }
 
+        $ref = self::parseRef($head);
+
+        return $ref === null ? null : self::versionFromRef($gitDir, $ref);
+    }
+
+    private static function readHead(string $gitDir): ?string
+    {
+        $head = @file_get_contents($gitDir . '/HEAD');
+
+        return is_string($head) ? trim($head) : null;
+    }
+
+    /** Validates and extracts the ref path from a "ref: refs/..." HEAD line. */
+    private static function parseRef(string $head): ?string
+    {
         $ref = trim(substr($head, 5));
         // The file is ours, but a ref is still a path: keep it inside .git.
         if (preg_match('#^refs/[A-Za-z0-9._/-]+$#', $ref) !== 1 || str_contains($ref, '..')) {
             return null;
         }
 
+        return $ref;
+    }
+
+    /**
+     * Resolves a ref to a commit, trying the loose ref file first and
+     * falling back to a scan of packed-refs for a ref that has been packed
+     * away.
+     *
+     * @return array{version: string, builtAt: int}|null
+     */
+    private static function versionFromRef(string $gitDir, string $ref): ?array
+    {
         $loose = $gitDir . '/' . $ref;
         $version = self::shorten(@file_get_contents($loose));
         if ($version !== null) {
@@ -104,6 +128,15 @@ final class Version
         if (!is_string($packed)) {
             return null;
         }
+
+        $commit = self::findPackedRef($packed, $ref);
+
+        return $commit === null ? null : ['version' => $commit, 'builtAt' => self::mtime($gitDir . '/packed-refs')];
+    }
+
+    /** Scans packed-refs text for the commit a ref was packed with. */
+    private static function findPackedRef(string $packed, string $ref): ?string
+    {
         foreach (explode("\n", $packed) as $line) {
             $line = trim($line);
             if ($line === '' || $line[0] === '#' || $line[0] === '^') {
@@ -113,7 +146,7 @@ final class Version
             if (is_array($parts) && count($parts) === 2 && $parts[1] === $ref) {
                 $version = self::shorten($parts[0]);
                 if ($version !== null) {
-                    return ['version' => $version, 'builtAt' => self::mtime($gitDir . '/packed-refs')];
+                    return $version;
                 }
             }
         }

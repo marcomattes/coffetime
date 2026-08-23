@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Coffee;
 
 use InvalidArgumentException;
-use RuntimeException;
 
 /** Encrypts names for the administrator and creates uniqueness HMACs. */
 final class Crypto
@@ -68,7 +67,17 @@ final class Crypto
     /** @return \OpenSSLAsymmetricKey */
     private static function loadPublicKey(string $adminPublicKey)
     {
-        $key = openssl_pkey_get_public(trim($adminPublicKey));
+        $trimmed = trim($adminPublicKey);
+        // openssl_pkey_get_public() also accepts a "file://…" (or bare path)
+        // argument, not just PEM text. adminPublicKey is user-supplied — the
+        // setup wizard takes a pasted/uploaded key — so without this guard a
+        // crafted "public key" could turn into an arbitrary server-side file
+        // read instead of a PEM parse. Requiring an inline PEM block up front
+        // closes that off before OpenSSL ever sees the value.
+        if (!str_starts_with($trimmed, '-----BEGIN ')) {
+            throw new InvalidArgumentException('adminPublicKey must be a valid PEM-encoded RSA public key');
+        }
+        $key = openssl_pkey_get_public($trimmed);
         if ($key === false) {
             throw new InvalidArgumentException('adminPublicKey must be a valid PEM-encoded RSA public key');
         }
@@ -131,7 +140,7 @@ final class Crypto
         }
         $encrypted = '';
         if (!openssl_public_encrypt($payload, $encrypted, $this->publicKey, OPENSSL_PKCS1_OAEP_PADDING)) {
-            throw new RuntimeException('Could not encrypt the name');
+            throw new CryptoException('Could not encrypt the name');
         }
         return self::CIPHER_PREFIX . base64_encode($encrypted);
     }

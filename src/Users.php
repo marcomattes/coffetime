@@ -701,7 +701,7 @@ final class Users
 
     public static function isValidId(string $id): bool
     {
-        return preg_match('/^[0-9]{1,18}$/', $id) === 1;
+        return preg_match('/^\d{1,18}$/', $id) === 1;
     }
 
     public static function newHandle(): string

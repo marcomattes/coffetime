@@ -6,7 +6,6 @@ namespace Coffee;
 
 use PDO;
 use PDOException;
-use RuntimeException;
 use Throwable;
 
 /**
@@ -26,6 +25,30 @@ final class Db
 
     /** Time to wait for an InnoDB row lock (MySQL/MariaDB), in seconds. */
     private const MYSQL_LOCK_WAIT_SECONDS = 15;
+
+    /**
+     * Column-type fragments repeated across sqliteSteps()/mysqlSteps() and
+     * expectedColumns(), spelled out exactly once here. INTEGER/BIGINT differ
+     * only in the type word, so they are kept as two independent constants
+     * rather than composed from a shared suffix -- a typo turning one into
+     * the other would otherwise be invisible in a diff.
+     */
+    private const COL_INT_ZERO = 'INTEGER NOT NULL DEFAULT 0';
+
+    /** MySQL/MariaDB counterpart to COL_INT_ZERO. */
+    private const COL_BIGINT_ZERO = 'BIGINT NOT NULL DEFAULT 0';
+
+    /** Indexed short-string column type (name_hash, client_event_id, ...). */
+    private const COL_SHORT_STRING = 'VARCHAR(64)';
+
+    /** Indexed longer-string column type (credential_id, password_hash). */
+    private const COL_STRING = 'VARCHAR(255)';
+
+    /** Column list shared by the plain single-column (user_id) indexes. */
+    private const IDX_USER_ID = '(user_id)';
+
+    /** Logged when a best-effort index create/drop is skipped; see migrate(). */
+    private const LOG_INDEX_SKIPPED = '[coffee] index skipped: ';
 
     private static ?PDO $pdo = null;
 
@@ -84,7 +107,7 @@ final class Db
 
         $dir = dirname($path);
         if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-            throw new RuntimeException('Cannot create database directory');
+            throw new DbException('Cannot create database directory');
         }
         // Safety net for hosting where the directory ends up inside the
         // document tree. Written whenever it is missing, not only when this
@@ -111,7 +134,7 @@ final class Db
         // allows readers alongside a writer; the mode is stored in the file, so
         // it is only switched when still missing – switching requires an
         // exclusive lock.
-        $pdo->exec('PRAGMA busy_timeout = ' . (self::BUSY_TIMEOUT_SECONDS * 1000));
+        $pdo->exec('PRAGMA busy_timeout = ' . self::sqlInt(self::BUSY_TIMEOUT_SECONDS * 1000));
         try {
             $mode = $pdo->query('PRAGMA journal_mode')->fetchAll();
             $current = strtolower((string) ($mode[0]['journal_mode'] ?? ''));
@@ -149,7 +172,7 @@ final class Db
         $pdo->exec("SET time_zone = '+00:00'");
         // Analogous to the SQLite busy timeout: competing writers wait for an
         // InnoDB row lock instead of failing immediately.
-        $pdo->exec('SET SESSION innodb_lock_wait_timeout = ' . self::MYSQL_LOCK_WAIT_SECONDS);
+        $pdo->exec('SET SESSION innodb_lock_wait_timeout = ' . self::sqlInt(self::MYSQL_LOCK_WAIT_SECONDS));
 
         return $pdo;
     }
@@ -249,13 +272,9 @@ final class Db
         while (true) {
             $attempts++;
             try {
-                if ($mysql) {
-                    $pdo->beginTransaction();
-                } else {
-                    $pdo->exec('BEGIN IMMEDIATE');
-                }
+                self::beginTransaction($pdo, $mysql);
             } catch (PDOException $e) {
-                if ($attempts < 12 && self::isRetryable($pdo, $e)) {
+                if (self::shouldRetryTransaction($pdo, $e, $attempts)) {
                     usleep(random_int(2000, 25000));
                     continue;
                 }
@@ -264,32 +283,64 @@ final class Db
 
             try {
                 $result = $work($pdo);
-                if ($mysql) {
-                    $pdo->commit();
-                } else {
-                    $pdo->exec('COMMIT');
-                }
+                self::commitTransaction($pdo, $mysql);
 
                 return $result;
             } catch (Throwable $e) {
-                try {
-                    if ($mysql) {
-                        if ($pdo->inTransaction()) {
-                            $pdo->rollBack();
-                        }
-                    } else {
-                        $pdo->exec('ROLLBACK');
-                    }
-                } catch (Throwable) {
-                    // Transaction had already ended.
-                }
-                if ($attempts < 12 && $e instanceof PDOException && self::isRetryable($pdo, $e)) {
+                self::rollbackTransaction($pdo, $mysql);
+                if (self::shouldRetryTransaction($pdo, $e, $attempts)) {
                     usleep(random_int(2000, 25000));
                     continue;
                 }
                 throw $e;
             }
         }
+    }
+
+    /** Starts the transaction the driver-appropriate way. */
+    private static function beginTransaction(PDO $pdo, bool $mysql): void
+    {
+        if ($mysql) {
+            $pdo->beginTransaction();
+        } else {
+            $pdo->exec('BEGIN IMMEDIATE');
+        }
+    }
+
+    /** Commits the transaction the driver-appropriate way. */
+    private static function commitTransaction(PDO $pdo, bool $mysql): void
+    {
+        if ($mysql) {
+            $pdo->commit();
+        } else {
+            $pdo->exec('COMMIT');
+        }
+    }
+
+    /**
+     * Rolls back the transaction the driver-appropriate way. Any error here
+     * is swallowed: by the time this runs, the original failure is what
+     * matters, and the transaction may already have ended on its own.
+     */
+    private static function rollbackTransaction(PDO $pdo, bool $mysql): void
+    {
+        try {
+            if ($mysql) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+            } else {
+                $pdo->exec('ROLLBACK');
+            }
+        } catch (Throwable) {
+            // Transaction had already ended.
+        }
+    }
+
+    /** Whether a failure during transaction() is worth retrying. */
+    private static function shouldRetryTransaction(PDO $pdo, Throwable $e, int $attempts): bool
+    {
+        return $attempts < 12 && $e instanceof PDOException && self::isRetryable($pdo, $e);
     }
 
     /** Driver-dependent: is the error a reason to retry? */
@@ -471,6 +522,16 @@ final class Db
         }
     }
 
+    /** Table each entry in criticalIndexesPresent()'s required list lives on. */
+    private const CRITICAL_INDEX_TABLES = [
+        'idx_users_name_hash' => 'users',
+        'idx_users_handle' => 'users',
+        'idx_credentials_credential_id' => 'credentials',
+        'idx_ceremonies_challenge' => 'ceremonies',
+        'idx_link_codes_hash' => 'link_codes',
+        'idx_coffee_events_user_client' => 'coffee_events',
+    ];
+
     /**
      * Cheap check that the uniqueness-critical indexes really exist. They are
      * created best-effort (a failure is logged, not fatal), so this is what
@@ -478,32 +539,29 @@ final class Db
      */
     private static function criticalIndexesPresent(PDO $pdo): bool
     {
-        $required = [
-            'idx_users_name_hash',
-            'idx_users_handle',
-            'idx_credentials_credential_id',
-            'idx_ceremonies_challenge',
-            'idx_link_codes_hash',
-            'idx_coffee_events_user_client',
-        ];
+        $required = array_keys(self::CRITICAL_INDEX_TABLES);
 
-        if (self::driverOf($pdo) === 'mysql') {
-            foreach ($required as $name) {
-                $table = $name === 'idx_users_name_hash' || $name === 'idx_users_handle'
-                    ? 'users'
-                    : ($name === 'idx_credentials_credential_id'
-                        ? 'credentials'
-                        : ($name === 'idx_ceremonies_challenge'
-                            ? 'ceremonies'
-                            : ($name === 'idx_link_codes_hash' ? 'link_codes' : 'coffee_events')));
-                if (!self::indexExists($pdo, $table, $name)) {
-                    return false;
-                }
+        return self::driverOf($pdo) === 'mysql'
+            ? self::mysqlCriticalIndexesPresent($pdo, $required)
+            : self::sqliteCriticalIndexesPresent($pdo, $required);
+    }
+
+    /** @param list<string> $required */
+    private static function mysqlCriticalIndexesPresent(PDO $pdo, array $required): bool
+    {
+        foreach ($required as $name) {
+            $table = self::CRITICAL_INDEX_TABLES[$name] ?? 'coffee_events';
+            if (!self::indexExists($pdo, $table, $name)) {
+                return false;
             }
-
-            return true;
         }
 
+        return true;
+    }
+
+    /** @param list<string> $required */
+    private static function sqliteCriticalIndexesPresent(PDO $pdo, array $required): bool
+    {
         $rows = self::fetchRows("SELECT name FROM sqlite_master WHERE type = 'index'", [], $pdo);
         $present = [];
         foreach ($rows as $row) {
@@ -562,7 +620,7 @@ final class Db
                 self::ensureColumn($pdo, 'credentials', 'transports', 'TEXT');
                 self::ensureColumn($pdo, 'credentials', 'attestation_type', 'TEXT');
                 self::ensureColumn($pdo, 'credentials', 'trust_path', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'last_used_at', 'INTEGER NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'credentials', 'last_used_at', self::COL_INT_ZERO);
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS ceremonies (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -601,15 +659,15 @@ final class Db
                 // price, and the per-user balance is kept additively in
                 // tab_cents instead of being computed retroactively from
                 // coffees × current price.
-                self::ensureColumn($pdo, 'users', 'tab_cents', 'INTEGER NOT NULL DEFAULT 0');
-                self::ensureColumn($pdo, 'coffee_events', 'price_cents', 'INTEGER NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'tab_cents', self::COL_INT_ZERO);
+                self::ensureColumn($pdo, 'coffee_events', 'price_cents', self::COL_INT_ZERO);
                 self::backfillPriceCents($pdo);
             },
             6 => static function (PDO $pdo): void {
                 // Admin flag directly on the user: allows an admin check
                 // without an extra query once the row is loaded anyway (see
                 // Users::isAdminRow()).
-                self::ensureColumn($pdo, 'users', 'is_admin', 'INTEGER NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'is_admin', self::COL_INT_ZERO);
                 // Runtime settings that take precedence over config.php (see
                 // the Config class): price, invite code, public admin key and
                 // name pepper, coming from the setup wizard or from later admin
@@ -657,7 +715,7 @@ final class Db
                 // (0 = none), reminded_month the most recently acknowledged
                 // month-end notice ('YYYY-MM'), so that every reminder appears
                 // at most once across all of a user's devices.
-                self::ensureColumn($pdo, 'users', 'remind_requested_at', 'INTEGER NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'remind_requested_at', self::COL_INT_ZERO);
                 self::ensureColumn($pdo, 'users', 'reminded_month', 'TEXT');
             },
             10 => static function (PDO $pdo): void {
@@ -686,7 +744,7 @@ final class Db
                 // existing row keeps: the column only ever becomes non-NULL
                 // when an admin deliberately sets one.
                 self::ensureColumn($pdo, 'users', 'password_hash', 'TEXT');
-                self::ensureColumn($pdo, 'users', 'password_set_at', 'INTEGER NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'password_set_at', self::COL_INT_ZERO);
             },
         ];
     }
@@ -732,13 +790,13 @@ final class Db
             },
             2 => static function (PDO $pdo): void {
                 self::ensureColumn($pdo, 'users', 'name_encrypted', 'TEXT');
-                self::ensureColumn($pdo, 'users', 'name_hash', 'VARCHAR(64)');
+                self::ensureColumn($pdo, 'users', 'name_hash', self::COL_SHORT_STRING);
                 self::ensureColumn($pdo, 'users', 'user_handle', 'VARCHAR(32)');
                 self::ensureColumn($pdo, 'credentials', 'aaguid', 'TEXT');
                 self::ensureColumn($pdo, 'credentials', 'transports', 'TEXT');
                 self::ensureColumn($pdo, 'credentials', 'attestation_type', 'TEXT');
                 self::ensureColumn($pdo, 'credentials', 'trust_path', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'last_used_at', 'BIGINT NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'credentials', 'last_used_at', self::COL_BIGINT_ZERO);
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS ceremonies (
                         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -772,14 +830,14 @@ final class Db
                              ON coffee_events (user_id, created_at)'
                         );
                     } catch (Throwable $e) {
-                        error_log('[coffee] index skipped: ' . $e->getMessage());
+                        error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
                     }
                 }
             },
             5 => static function (PDO $pdo): void {
                 // Price per booking: see the comment in sqliteSteps().
-                self::ensureColumn($pdo, 'users', 'tab_cents', 'BIGINT NOT NULL DEFAULT 0');
-                self::ensureColumn($pdo, 'coffee_events', 'price_cents', 'BIGINT NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'tab_cents', self::COL_BIGINT_ZERO);
+                self::ensureColumn($pdo, 'coffee_events', 'price_cents', self::COL_BIGINT_ZERO);
                 self::backfillPriceCents($pdo);
             },
             6 => static function (PDO $pdo): void {
@@ -811,7 +869,7 @@ final class Db
                 // See the comment in sqliteSteps(). MySQL/MariaDB permits any
                 // number of NULLs in an ordinary UNIQUE index – a partial index
                 // (WHERE ...) is not needed here.
-                self::ensureColumn($pdo, 'coffee_events', 'client_event_id', 'VARCHAR(64)');
+                self::ensureColumn($pdo, 'coffee_events', 'client_event_id', self::COL_SHORT_STRING);
                 if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_client')) {
                     // See step 4: the check and the CREATE are not atomic.
                     try {
@@ -820,13 +878,13 @@ final class Db
                              ON coffee_events (client_event_id)'
                         );
                     } catch (Throwable $e) {
-                        error_log('[coffee] index skipped: ' . $e->getMessage());
+                        error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
                     }
                 }
             },
             9 => static function (PDO $pdo): void {
                 // See the comment in sqliteSteps().
-                self::ensureColumn($pdo, 'users', 'remind_requested_at', 'BIGINT NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'remind_requested_at', self::COL_BIGINT_ZERO);
                 self::ensureColumn($pdo, 'users', 'reminded_month', 'VARCHAR(7)');
             },
             10 => static function (PDO $pdo): void {
@@ -848,14 +906,14 @@ final class Db
                              ON coffee_events (user_id, client_event_id)'
                         );
                     } catch (Throwable $e) {
-                        error_log('[coffee] index skipped: ' . $e->getMessage());
+                        error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
                     }
                 }
             },
             11 => static function (PDO $pdo): void {
                 // See the comment in sqliteSteps().
-                self::ensureColumn($pdo, 'users', 'password_hash', 'VARCHAR(255)');
-                self::ensureColumn($pdo, 'users', 'password_set_at', 'BIGINT NOT NULL DEFAULT 0');
+                self::ensureColumn($pdo, 'users', 'password_hash', self::COL_STRING);
+                self::ensureColumn($pdo, 'users', 'password_set_at', self::COL_BIGINT_ZERO);
             },
         ];
     }
@@ -909,12 +967,27 @@ final class Db
      */
     private static function schemaLooksComplete(PDO $pdo): bool
     {
+        return self::usersColumnsComplete($pdo)
+            && self::coreTableColumnsComplete($pdo)
+            && self::auxiliaryTablesComplete($pdo);
+    }
+
+    /** Every users column later steps and expectedColumns() rely on. */
+    private static function usersColumnsComplete(PDO $pdo): bool
+    {
         $userColumns = self::columns($pdo, 'users');
         foreach (['coffees', 'paid_cents', 'name_encrypted', 'name_hash', 'user_handle', 'tab_cents', 'is_admin', 'password_hash'] as $column) {
             if (!in_array($column, $userColumns, true)) {
                 return false;
             }
         }
+
+        return true;
+    }
+
+    /** Marker columns on the other core tables (credentials, sessions, ceremonies). */
+    private static function coreTableColumnsComplete(PDO $pdo): bool
+    {
         if (!in_array('sign_count', self::columns($pdo, 'credentials'), true)) {
             return false;
         }
@@ -922,23 +995,19 @@ final class Db
             return false;
         }
 
-        if (!in_array('challenge', self::columns($pdo, 'ceremonies'), true)) {
-            return false;
+        return in_array('challenge', self::columns($pdo, 'ceremonies'), true);
+    }
+
+    /** Tables that must exist outright (added whole, not via ensureColumn). */
+    private static function auxiliaryTablesComplete(PDO $pdo): bool
+    {
+        foreach (['coffee_events', 'settings', 'rate_limits', 'link_codes'] as $table) {
+            if (!self::tableExists($pdo, $table)) {
+                return false;
+            }
         }
 
-        if (!self::tableExists($pdo, 'coffee_events')) {
-            return false;
-        }
-
-        if (!self::tableExists($pdo, 'settings')) {
-            return false;
-        }
-
-        if (!self::tableExists($pdo, 'rate_limits')) {
-            return false;
-        }
-
-        return self::tableExists($pdo, 'link_codes');
+        return true;
     }
 
     /**
@@ -985,7 +1054,7 @@ final class Db
             try {
                 $pdo->exec($sql);
             } catch (Throwable $e) {
-                error_log('[coffee] index skipped: ' . $e->getMessage());
+                error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
             }
         }
     }
@@ -1001,14 +1070,14 @@ final class Db
             ['idx_users_name_hash', 'users', 'UNIQUE', '(name_hash)'],
             ['idx_users_handle', 'users', 'UNIQUE', '(user_handle)'],
             ['idx_credentials_credential_id', 'credentials', 'UNIQUE', '(credential_id)'],
-            ['idx_credentials_user', 'credentials', '', '(user_id)'],
-            ['idx_sessions_user', 'sessions', '', '(user_id)'],
+            ['idx_credentials_user', 'credentials', '', self::IDX_USER_ID],
+            ['idx_sessions_user', 'sessions', '', self::IDX_USER_ID],
             ['idx_ceremonies_challenge', 'ceremonies', 'UNIQUE', '(challenge)'],
-            ['idx_coffee_events_user', 'coffee_events', '', '(user_id)'],
+            ['idx_coffee_events_user', 'coffee_events', '', self::IDX_USER_ID],
             ['idx_coffee_events_user_created', 'coffee_events', '', '(user_id, created_at)'],
             ['idx_coffee_events_user_client', 'coffee_events', 'UNIQUE', '(user_id, client_event_id)'],
             ['idx_link_codes_hash', 'link_codes', 'UNIQUE', '(code_hash)'],
-            ['idx_link_codes_user', 'link_codes', '', '(user_id)'],
+            ['idx_link_codes_user', 'link_codes', '', self::IDX_USER_ID],
         ];
         foreach ($indexes as [$name, $table, $modifier, $columnsSql]) {
             if (!self::tableExists($pdo, $table) || self::indexExists($pdo, $table, $name)) {
@@ -1023,7 +1092,7 @@ final class Db
                     $columnsSql
                 ));
             } catch (Throwable $e) {
-                error_log('[coffee] index skipped: ' . $e->getMessage());
+                error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
             }
         }
     }
@@ -1040,64 +1109,64 @@ final class Db
             return [
                 'users' => [
                     'name' => 'TEXT',
-                    'coffees' => 'BIGINT NOT NULL DEFAULT 0',
-                    'paid_cents' => 'BIGINT NOT NULL DEFAULT 0',
-                    'created_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'coffees' => self::COL_BIGINT_ZERO,
+                    'paid_cents' => self::COL_BIGINT_ZERO,
+                    'created_at' => self::COL_BIGINT_ZERO,
                     'name_encrypted' => 'TEXT',
-                    'name_hash' => 'VARCHAR(64)',
+                    'name_hash' => self::COL_SHORT_STRING,
                     'user_handle' => 'VARCHAR(32)',
-                    'tab_cents' => 'BIGINT NOT NULL DEFAULT 0',
+                    'tab_cents' => self::COL_BIGINT_ZERO,
                     'is_admin' => 'TINYINT NOT NULL DEFAULT 0',
-                    'remind_requested_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'remind_requested_at' => self::COL_BIGINT_ZERO,
                     'reminded_month' => 'VARCHAR(7)',
-                    'password_hash' => 'VARCHAR(255)',
-                    'password_set_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'password_hash' => self::COL_STRING,
+                    'password_set_at' => self::COL_BIGINT_ZERO,
                 ],
                 'credentials' => [
-                    'user_id' => 'BIGINT NOT NULL DEFAULT 0',
-                    'credential_id' => 'VARCHAR(255)',
+                    'user_id' => self::COL_BIGINT_ZERO,
+                    'credential_id' => self::COL_STRING,
                     'public_key' => 'TEXT',
-                    'sign_count' => 'BIGINT NOT NULL DEFAULT 0',
-                    'created_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'sign_count' => self::COL_BIGINT_ZERO,
+                    'created_at' => self::COL_BIGINT_ZERO,
                     'aaguid' => 'TEXT',
                     'transports' => 'TEXT',
                     'attestation_type' => 'TEXT',
                     'trust_path' => 'TEXT',
-                    'last_used_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'last_used_at' => self::COL_BIGINT_ZERO,
                 ],
                 'sessions' => [
-                    'user_id' => 'BIGINT NOT NULL DEFAULT 0',
-                    'created_at' => 'BIGINT NOT NULL DEFAULT 0',
-                    'expires_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'user_id' => self::COL_BIGINT_ZERO,
+                    'created_at' => self::COL_BIGINT_ZERO,
+                    'expires_at' => self::COL_BIGINT_ZERO,
                 ],
                 'ceremonies' => [
                     'kind' => 'VARCHAR(16)',
                     'challenge' => 'VARCHAR(128)',
                     'options' => 'TEXT',
                     'payload' => 'TEXT',
-                    'used' => 'BIGINT NOT NULL DEFAULT 0',
-                    'created_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'used' => self::COL_BIGINT_ZERO,
+                    'created_at' => self::COL_BIGINT_ZERO,
                 ],
                 'coffee_events' => [
-                    'user_id' => 'BIGINT NOT NULL DEFAULT 0',
-                    'created_at' => 'BIGINT NOT NULL DEFAULT 0',
-                    'price_cents' => 'BIGINT NOT NULL DEFAULT 0',
-                    'client_event_id' => 'VARCHAR(64)',
+                    'user_id' => self::COL_BIGINT_ZERO,
+                    'created_at' => self::COL_BIGINT_ZERO,
+                    'price_cents' => self::COL_BIGINT_ZERO,
+                    'client_event_id' => self::COL_SHORT_STRING,
                 ],
                 'settings' => [
                     'value' => 'TEXT',
                 ],
                 'link_codes' => [
-                    'user_id' => 'BIGINT NOT NULL DEFAULT 0',
-                    'code_hash' => 'VARCHAR(64)',
+                    'user_id' => self::COL_BIGINT_ZERO,
+                    'code_hash' => self::COL_SHORT_STRING,
                     'created_by' => 'VARCHAR(16)',
-                    'used' => 'BIGINT NOT NULL DEFAULT 0',
-                    'expires_at' => 'BIGINT NOT NULL DEFAULT 0',
-                    'created_at' => 'BIGINT NOT NULL DEFAULT 0',
+                    'used' => self::COL_BIGINT_ZERO,
+                    'expires_at' => self::COL_BIGINT_ZERO,
+                    'created_at' => self::COL_BIGINT_ZERO,
                 ],
                 'rate_limits' => [
-                    'attempts' => 'BIGINT NOT NULL DEFAULT 0',
-                    'window_start' => 'BIGINT NOT NULL DEFAULT 0',
+                    'attempts' => self::COL_BIGINT_ZERO,
+                    'window_start' => self::COL_BIGINT_ZERO,
                 ],
             ];
         }
@@ -1105,64 +1174,64 @@ final class Db
         return [
             'users' => [
                 'name' => 'TEXT',
-                'coffees' => 'INTEGER NOT NULL DEFAULT 0',
-                'paid_cents' => 'INTEGER NOT NULL DEFAULT 0',
-                'created_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'coffees' => self::COL_INT_ZERO,
+                'paid_cents' => self::COL_INT_ZERO,
+                'created_at' => self::COL_INT_ZERO,
                 'name_encrypted' => 'TEXT',
                 'name_hash' => 'TEXT',
                 'user_handle' => 'TEXT',
-                'tab_cents' => 'INTEGER NOT NULL DEFAULT 0',
-                'is_admin' => 'INTEGER NOT NULL DEFAULT 0',
-                'remind_requested_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'tab_cents' => self::COL_INT_ZERO,
+                'is_admin' => self::COL_INT_ZERO,
+                'remind_requested_at' => self::COL_INT_ZERO,
                 'reminded_month' => 'TEXT',
                 'password_hash' => 'TEXT',
-                'password_set_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'password_set_at' => self::COL_INT_ZERO,
             ],
             'credentials' => [
-                'user_id' => 'INTEGER NOT NULL DEFAULT 0',
+                'user_id' => self::COL_INT_ZERO,
                 'credential_id' => 'TEXT',
                 'public_key' => 'TEXT',
-                'sign_count' => 'INTEGER NOT NULL DEFAULT 0',
-                'created_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'sign_count' => self::COL_INT_ZERO,
+                'created_at' => self::COL_INT_ZERO,
                 'aaguid' => 'TEXT',
                 'transports' => 'TEXT',
                 'attestation_type' => 'TEXT',
                 'trust_path' => 'TEXT',
-                'last_used_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'last_used_at' => self::COL_INT_ZERO,
             ],
             'sessions' => [
-                'user_id' => 'INTEGER NOT NULL DEFAULT 0',
-                'created_at' => 'INTEGER NOT NULL DEFAULT 0',
-                'expires_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'user_id' => self::COL_INT_ZERO,
+                'created_at' => self::COL_INT_ZERO,
+                'expires_at' => self::COL_INT_ZERO,
             ],
             'ceremonies' => [
                 'kind' => 'TEXT',
                 'challenge' => 'TEXT',
                 'options' => 'TEXT',
                 'payload' => 'TEXT',
-                'used' => 'INTEGER NOT NULL DEFAULT 0',
-                'created_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'used' => self::COL_INT_ZERO,
+                'created_at' => self::COL_INT_ZERO,
             ],
             'coffee_events' => [
-                'user_id' => 'INTEGER NOT NULL DEFAULT 0',
-                'created_at' => 'INTEGER NOT NULL DEFAULT 0',
-                'price_cents' => 'INTEGER NOT NULL DEFAULT 0',
+                'user_id' => self::COL_INT_ZERO,
+                'created_at' => self::COL_INT_ZERO,
+                'price_cents' => self::COL_INT_ZERO,
                 'client_event_id' => 'TEXT',
             ],
             'settings' => [
                 'value' => 'TEXT',
             ],
             'link_codes' => [
-                'user_id' => 'INTEGER NOT NULL DEFAULT 0',
+                'user_id' => self::COL_INT_ZERO,
                 'code_hash' => 'TEXT',
                 'created_by' => 'TEXT',
-                'used' => 'INTEGER NOT NULL DEFAULT 0',
-                'expires_at' => 'INTEGER NOT NULL DEFAULT 0',
-                'created_at' => 'INTEGER NOT NULL DEFAULT 0',
+                'used' => self::COL_INT_ZERO,
+                'expires_at' => self::COL_INT_ZERO,
+                'created_at' => self::COL_INT_ZERO,
             ],
             'rate_limits' => [
-                'attempts' => 'INTEGER NOT NULL DEFAULT 0',
-                'window_start' => 'INTEGER NOT NULL DEFAULT 0',
+                'attempts' => self::COL_INT_ZERO,
+                'window_start' => self::COL_INT_ZERO,
             ],
         ];
     }
@@ -1254,6 +1323,20 @@ final class Db
                 throw $e;
             }
         }
+    }
+
+    /**
+     * Formats an int for interpolation into SQL that cannot take a bound
+     * parameter (PRAGMA and SET SESSION accept neither placeholders nor,
+     * for PRAGMA, even a prepared statement in SQLite). Both call sites pass
+     * a private class constant, never request data, but the int type hint
+     * still makes the safety structural rather than assumed: with
+     * strict_types enabled, anything that is not a genuine integer is
+     * rejected here with a TypeError before it can reach the query string.
+     */
+    private static function sqlInt(int $value): string
+    {
+        return (string) $value;
     }
 
     /** Identifier quoting is driver-dependent: SQLite "..", MySQL `..`. */

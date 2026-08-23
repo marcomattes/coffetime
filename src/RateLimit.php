@@ -123,17 +123,11 @@ final class RateLimit
                     ? (int) $row['attempts']
                     : 0;
 
-                if ($row === null) {
-                    $pdo->prepare('INSERT INTO rate_limits (bucket, attempts, window_start) VALUES (?, 1, ?)')
-                        ->execute([$bucket, $now]);
-
-                    return true;
-                }
-
-                if ($windowStart + $windowSeconds <= $now) {
-                    // The previous window has rolled over: start a new one.
-                    $pdo->prepare('UPDATE rate_limits SET attempts = 1, window_start = ? WHERE bucket = ?')
-                        ->execute([$now, $bucket]);
+                // A brand-new bucket and a window that has rolled over mean the
+                // same thing here: this request is the first attempt of a fresh
+                // window.
+                if ($row === null || $windowStart + $windowSeconds <= $now) {
+                    self::resetWindow($pdo, $bucket, $now, $row === null);
 
                     return true;
                 }
@@ -152,6 +146,24 @@ final class RateLimit
 
             return true;
         }
+    }
+
+    /**
+     * Starts a fresh window for one bucket: an INSERT for a bucket seen for
+     * the first time, an UPDATE when the previous window has rolled over.
+     * Either way this request is the first attempt of the new window.
+     */
+    private static function resetWindow(PDO $pdo, string $bucket, int $now, bool $isNew): void
+    {
+        if ($isNew) {
+            $pdo->prepare('INSERT INTO rate_limits (bucket, attempts, window_start) VALUES (?, 1, ?)')
+                ->execute([$bucket, $now]);
+
+            return;
+        }
+
+        $pdo->prepare('UPDATE rate_limits SET attempts = 1, window_start = ? WHERE bucket = ?')
+            ->execute([$now, $bucket]);
     }
 
     /** Answers 429 and ends the request when the limit is exhausted. */

@@ -19,6 +19,16 @@ final class Frontend
 
     private static function markup(): string
     {
+        return self::head() . "\n"
+            . self::bodyOpen() . "\n"
+            . self::setupScreen() . "\n"
+            . self::loginScreen() . "\n"
+            . self::appScreen() . "\n"
+            . self::bodyClose();
+    }
+
+    private static function head(): string
+    {
         return <<<'HTML'
 <!DOCTYPE html>
 <html lang="en">
@@ -42,11 +52,23 @@ final class Frontend
 <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
+HTML;
+    }
+
+    private static function bodyOpen(): string
+    {
+        return <<<'HTML'
 <body>
 <div class="safe-top" aria-hidden="true"></div>
 <div id="pull-indicator" data-testid="pull-indicator" class="pull" aria-hidden="true"><span class="pull-spinner"></span></div>
 <main class="wrap">
 
+HTML;
+    }
+
+    private static function setupScreen(): string
+    {
+        return <<<'HTML'
   <section id="view-setup" data-testid="view-setup" hidden>
     <h1 class="brand"><span aria-hidden="true">&#9749;</span> Coffee Time</h1>
     <p class="lead">First-run setup &ndash; this instance has no administrator yet.</p>
@@ -84,6 +106,12 @@ final class Frontend
       <button type="button" id="btn-setup-init" data-testid="btn-setup-init" class="btn btn-primary" disabled>Finish setup</button>
     </div>
   </section>
+HTML;
+    }
+
+    private static function loginScreen(): string
+    {
+        return <<<'HTML'
 
   <section id="view-auth" data-testid="view-auth" hidden>
     <h1 class="brand"><span aria-hidden="true">&#9749;</span> Coffee Time</h1>
@@ -154,6 +182,12 @@ final class Frontend
 
     <p id="auth-error" data-testid="auth-error" class="error" role="alert"></p>
   </section>
+HTML;
+    }
+
+    private static function appScreen(): string
+    {
+        $open = <<<'HTML'
 
   <section id="view-app" data-testid="view-app" hidden>
 
@@ -162,12 +196,41 @@ final class Frontend
          sidebar where there is room for one and a tab row where there is not --
          a drawer would mean an overlay, a focus trap and one more tap for
          every switch. -->
+HTML;
+
+        $close = <<<'HTML'
+    <!-- Outside the pages: an error and the way out have to be reachable from
+         whichever page is open. -->
+    <div class="app-foot">
+      <p id="app-error" class="error" role="alert"></p>
+      <button type="button" id="btn-logout" data-testid="btn-logout" class="btn btn-quiet">Sign out</button>
+    </div>
+  </section>
+HTML;
+
+        return $open . "\n"
+            . self::adminNav() . "\n"
+            . self::coffeePage() . "\n"
+            . self::usersPage() . "\n"
+            . self::settingsPage() . "\n"
+            . $close;
+    }
+
+    private static function adminNav(): string
+    {
+        return <<<'HTML'
     <nav id="admin-nav" data-testid="admin-nav" class="nav" aria-label="Sections" hidden>
       <button type="button" class="nav-item" data-page="coffee" data-testid="nav-coffee">Coffee</button>
       <button type="button" class="nav-item" data-page="users" data-testid="nav-users">Users</button>
       <button type="button" class="nav-item" data-page="settings" data-testid="nav-settings">Settings</button>
     </nav>
 
+HTML;
+    }
+
+    private static function coffeePage(): string
+    {
+        return <<<'HTML'
     <div id="page-coffee" data-testid="page-coffee" class="page">
       <!-- "?book=1" arriving anywhere but the installed app asks before it
            books. A foreign page can navigate a signed-in browser here and the
@@ -270,6 +333,12 @@ final class Frontend
 
     </div>
 
+HTML;
+    }
+
+    private static function usersPage(): string
+    {
+        return <<<'HTML'
     <div id="page-users" data-testid="page-users" class="page" hidden>
       <div class="card">
         <h2>Administration</h2>
@@ -288,6 +357,12 @@ final class Frontend
       </div>
     </div>
 
+HTML;
+    }
+
+    private static function settingsPage(): string
+    {
+        return <<<'HTML'
     <div id="page-settings" data-testid="page-settings" class="page" hidden>
       <div class="card">
         <h2>Settings</h2>
@@ -360,17 +435,30 @@ final class Frontend
       </div>
     </div>
 
-    <!-- Outside the pages: an error and the way out have to be reachable from
-         whichever page is open. -->
-    <div class="app-foot">
-      <p id="app-error" class="error" role="alert"></p>
-      <button type="button" id="btn-logout" data-testid="btn-logout" class="btn btn-quiet">Sign out</button>
-    </div>
-  </section>
+HTML;
+    }
+
+    private static function bodyClose(): string
+    {
+        $mainClose = <<<'HTML'
 
 </main>
 <!-- Opened in a new tab on purpose: in the installed app an in-page navigation
      would leave the manifest scope and replace the PWA with a browser view. -->
+HTML;
+
+        $scripts = <<<'HTML'
+<script src="/app.js"></script>
+</body>
+</html>
+HTML;
+
+        return $mainClose . "\n" . self::footer() . "\n" . $scripts;
+    }
+
+    private static function footer(): string
+    {
+        return <<<'HTML'
 <footer class="footer">
   <p>&copy; <a href="https://mattes.dev" target="_blank" rel="noopener noreferrer">Marco Mattes</a></p>
   <!-- The build baked in here is the one this shell was served as, which after
@@ -380,9 +468,6 @@ final class Frontend
   <p><button type="button" id="build-badge" data-testid="build-badge" class="build"
              data-build="{{BUILD}}" title="Tap twice to clear the cache and reload">build {{BUILD}}</button></p>
 </footer>
-<script src="/app.js"></script>
-</body>
-</html>
 HTML;
     }
 }

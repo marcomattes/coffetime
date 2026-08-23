@@ -34,7 +34,7 @@ final class Bootstrap
             $relative = substr($class, strlen('Coffee\\'));
             $file = __DIR__ . '/' . str_replace('\\', '/', $relative) . '.php';
             if (is_file($file)) {
-                require $file;
+                require_once $file;
             }
         });
 

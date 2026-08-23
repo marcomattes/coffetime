@@ -32,12 +32,21 @@ final class Passwords
     public const MAX_LENGTH = 200;
 
     /**
-     * A real hash of a value nobody knows. Verifying against it costs the same
-     * as verifying a genuine one, which is what keeps "no such account" and
-     * "wrong password" indistinguishable by timing. Never used as a credential:
-     * its plaintext was random and was discarded.
+     * A real bcrypt hash, but not a credential: the plaintext that produced it
+     * was generated at random for this purpose and immediately discarded, and
+     * was never anyone's password. Nobody — including whoever wrote this line
+     * — knows it or can reconstruct it, so there is nothing here to revoke,
+     * rotate or leak; it is a fixed timing-equalisation constant, not a secret
+     * standing in for one.
+     *
+     * Verifying a candidate against it costs the same as verifying against a
+     * genuine stored hash, which is what keeps "no such account" and "wrong
+     * password" indistinguishable by response time (see verify() below). A
+     * lazily computed password_hash() would not do: it would add a second
+     * bcrypt round only on the unknown-account path, which is itself a timing
+     * signal and reintroduces exactly the leak this constant exists to close.
      */
-    private const DUMMY_HASH = '$2y$12$ZmprTJdUKDLce27B16UAKOTghVz02b4C4aB1PYas8guf9BCCfqw1.';
+    private const DUMMY_HASH = '$2y$12$ZmprTJdUKDLce27B16UAKOTghVz02b4C4aB1PYas8guf9BCCfqw1.'; // NOSONAR — not a credential; see doc comment above
 
     /**
      * Normalizes a password into a fixed-size, printable string before it ever

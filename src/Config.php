@@ -47,6 +47,15 @@ final class Config
             if (function_exists('opcache_invalidate')) {
                 @opcache_invalidate($path, true);
             }
+            // Deliberately `require`, not `require_once`: self::$values above
+            // is already the request-local cache, cleared explicitly via
+            // forget(). The test suite reloads config by rewriting THIS SAME
+            // path with new content and calling forget() between phases (see
+            // writeTestConfig() in tests/helpers.php, used repeatedly
+            // against one workspace throughout tests/UnitTest.php).
+            // require_once tracks inclusion by resolved path, so it would
+            // skip the file on every reload after the first and silently
+            // return stale (or default) config instead of the new one.
             /** @psalm-suppress UnresolvableInclude */
             $result = require $path;
             if (is_array($result)) {
@@ -311,7 +320,7 @@ final class Config
     private static function requestHost(bool $withPort): string
     {
         $host = $_SERVER['HTTP_HOST'] ?? '';
-        if (!is_string($host) || preg_match('/^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/', $host) !== 1) {
+        if (!is_string($host) || preg_match('/^[A-Za-z0-9.-]+(:\d{1,5})?$/', $host) !== 1) {
             return '';
         }
 
@@ -342,18 +351,30 @@ final class Config
         }
 
         $driver = $value['driver'] ?? 'sqlite';
-        if (!is_string($driver) || !in_array($driver, ['sqlite', 'mysql'], true)) {
-            return ['driver' => 'sqlite'];
-        }
-        if ($driver === 'sqlite') {
+        if (!is_string($driver) || !in_array($driver, ['sqlite', 'mysql'], true) || $driver === 'sqlite') {
             return ['driver' => 'sqlite'];
         }
 
+        return self::mysqlConfig($value) ?? ['driver' => 'sqlite'];
+    }
+
+    /**
+     * Builds the mysql driver config once db() has established that a
+     * 'mysql' driver was actually requested. Split out purely to keep db()'s
+     * return count within the linter's budget; returns null when the
+     * configuration is unusable, in which case the caller falls back to
+     * sqlite exactly as before.
+     *
+     * @param array<string, mixed> $value
+     * @return array<string, mixed>|null
+     */
+    private static function mysqlConfig(array $value): ?array
+    {
         $database = $value['database'] ?? null;
         $user = $value['user'] ?? null;
         if (!is_string($database) || $database === '' || !is_string($user) || $user === '') {
             // Without a database name and user, the configuration is unusable.
-            return ['driver' => 'sqlite'];
+            return null;
         }
 
         $host = $value['host'] ?? '127.0.0.1';

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Coffee;
 
-use RuntimeException;
 use Symfony\Component\Serializer\Serializer;
 use Throwable;
 use Webauthn\AttestationStatement\AttestationStatementSupportManager;
@@ -51,7 +50,7 @@ final class WebAuthnService
             $support = new AttestationStatementSupportManager([new NoneAttestationStatementSupport()]);
             $created = (new WebauthnSerializerFactory($support))->create();
             if (!$created instanceof Serializer) {
-                throw new RuntimeException('Unexpected serializer implementation from webauthn-lib');
+                throw new WebAuthnException('Unexpected serializer implementation from webauthn-lib');
             }
             self::$serializer = $created;
         }
@@ -190,10 +189,9 @@ final class WebAuthnService
     public static function challengeFromCredential(array $raw): ?string
     {
         $clientData = $raw['response']['clientDataJSON'] ?? null;
-        if (!is_string($clientData) || $clientData === '') {
-            return null;
-        }
-        $decoded = Encoding::base64UrlDecode($clientData);
+        $decoded = is_string($clientData) && $clientData !== ''
+            ? Encoding::base64UrlDecode($clientData)
+            : null;
         if ($decoded === null) {
             return null;
         }
