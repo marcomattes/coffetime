@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-23
+
+Mostly a hardening release. Three of the fixes below are ones an operator
+cannot work around from the outside — the setup token could be read empty on a
+healthy install, a pasted admin key could be turned into a file read, and the
+service worker acted on messages without checking where they came from. The
+visible change is that the image is now on Docker Hub as well.
+
 ### Added
 
 - The release image is now published to Docker Hub as
