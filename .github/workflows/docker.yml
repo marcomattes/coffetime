@@ -1,9 +1,14 @@
 name: Publish container image
 
-# Builds the runtime image and pushes it to the GitHub Container Registry.
-# Like deploy.yml this is workflow_call-only plus a manual trigger, so the
-# image is only ever published behind ci.yml's test gate -- an image tagged
-# "latest" that never ran the suite is worse than no image at all.
+# Builds the runtime image once and pushes that same manifest to both the
+# GitHub Container Registry and Docker Hub. Like deploy.yml this is
+# workflow_call-only plus a manual trigger, so the image is only ever
+# published behind ci.yml's test gate -- an image tagged "latest" that never
+# ran the suite is worse than no image at all.
+#
+# Registries:
+#   ghcr.io/<owner>/<repo>           always
+#   docker.io/marcomattes/coffetime  only when both Docker Hub secrets exist
 #
 # Tags produced (docker/metadata-action):
 #   push to main      -> edge, sha-<short>
@@ -11,13 +16,21 @@ name: Publish container image
 # The semver comes from the git tag; src/build.json inside the image carries
 # the commit, because Version::shorten() only accepts a hex sha.
 #
-# No secrets to configure: GITHUB_TOKEN can write to ghcr.io for this repo
-# given the packages:write permission below.
+# ghcr.io needs no secrets: GITHUB_TOKEN can write to it for this repo given
+# the packages:write permission below. Docker Hub needs two repository
+# secrets, and the push there is skipped -- not failed -- when they are
+# missing, so a fork still gets its ghcr.io image without any setup:
+#   DOCKERHUB_USERNAME  Docker Hub account name
+#   DOCKERHUB_TOKEN     access token with Read & Write scope, from
+#                       hub.docker.com -> Account settings -> Personal access
+#                       tokens. Not the account password.
+# The Docker Hub repository itself is created by the first push; make it
+# public there if the README pull commands should work unauthenticated.
 #
-# The package inherited this repository's public visibility on first push, so
-# the pull commands in README.md work unauthenticated. If that ever changes,
-# it is fixed under Packages -> coffetime -> Package settings -> Change
-# visibility; nothing in this file can set it.
+# The ghcr.io package inherited this repository's public visibility on first
+# push, so the pull commands in README.md work unauthenticated. If that ever
+# changes, it is fixed under Packages -> coffetime -> Package settings ->
+# Change visibility; nothing in this file can set it.
 
 on:
   workflow_call: {}
@@ -27,12 +40,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: ghcr-publish-${{ github.ref }}
+  group: image-publish-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Docker Hub has no owner/repo to derive this from, so it is spelled out.
+  DOCKERHUB_IMAGE: marcomattes/coffetime
 
 jobs:
   publish:
@@ -66,11 +81,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Everything Docker Hub touches hangs off this one flag, so a repository
+      # without the secrets -- a fork, or this one before they were added --
+      # publishes to ghcr.io and says why it stopped there.
+      - name: Check for Docker Hub credentials
+        id: hub
+        env:
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$USERNAME" ] && [ -n "$TOKEN" ]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::DOCKERHUB_USERNAME/DOCKERHUB_TOKEN are not set; publishing to ghcr.io only.'
+          fi
+
+      - name: Log in to Docker Hub
+        if: steps.hub.outputs.enabled == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Derive image tags and labels
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: |
+            name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            name=docker.io/${{ env.DOCKERHUB_IMAGE }},enable=${{ steps.hub.outputs.enabled }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -103,10 +143,21 @@ jobs:
           provenance: mode=max
           sbom: true
 
-      - name: Attest build provenance
+      # One attestation per registry: the digest is identical (it is the same
+      # manifest list) but the subject name is part of what gets signed, so
+      # `gh attestation verify` on a docker.io reference needs its own.
+      - name: Attest build provenance (ghcr.io)
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest build provenance (Docker Hub)
+        if: steps.hub.outputs.enabled == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: docker.io/${{ env.DOCKERHUB_IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
@@ -116,5 +167,8 @@ jobs:
             printf '### Published image\n\n'
             printf '```\n%s\n```\n\n' '${{ steps.meta.outputs.tags }}'
             printf 'Digest: `%s`\n\n' '${{ steps.build.outputs.digest }}'
-            printf 'Built from commit `%s`.\n' '${{ github.sha }}'
+            printf 'Built from commit `%s`.\n\n' '${{ github.sha }}'
+            if [ '${{ steps.hub.outputs.enabled }}' != 'true' ]; then
+              printf 'Docker Hub was skipped: `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` are not configured.\n'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

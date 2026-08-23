@@ -74,13 +74,22 @@ The image ships no `config.php` at all: `origin` and `rpId` are derived from the
 
 ### Run the published image
 
-Every green build on `main` publishes a multi-architecture image (`linux/amd64`, `linux/arm64`) to the GitHub Container Registry:
+Every green build on `main` publishes a multi-architecture image (`linux/amd64`, `linux/arm64`) to the GitHub Container Registry and to Docker Hub. Both registries receive the same manifest from the same build, so the digests match and it makes no difference which one you pull from:
 
 ```bash
+# GitHub Container Registry
 docker run -d -p 8123:80 -v coffee-data:/var/www/html/data \
   ghcr.io/marcomattes/coffetime:latest
 docker logs $(docker ps -lq) 2>&1 | grep 'setup token'
 ```
+
+```bash
+# Docker Hub -- same image, same tags
+docker run -d -p 8123:80 -v coffee-data:/var/www/html/data \
+  marcomattes/coffetime:latest
+```
+
+The tags below exist in both registries.
 
 | Tag | Points at |
 | --- | --- |
@@ -95,6 +104,7 @@ Images are built by [`.github/workflows/docker.yml`](.github/workflows/docker.ym
 
 ```bash
 gh attestation verify oci://ghcr.io/marcomattes/coffetime:latest --owner marcomattes
+gh attestation verify oci://docker.io/marcomattes/coffetime:latest --owner marcomattes
 ```
 
 ### Manual configuration (advanced / production)
@@ -199,6 +209,8 @@ The queue belongs to the account that made the bookings: signing out clears it, 
 Point the web root at `public/`, run `composer install --no-dev`, make the database directory writable by PHP, configure HTTPS, and keep `testMode` disabled. Apache rewrite and deny rules are included. Migrations run automatically and are additive.
 
 `./scripts/build-release.sh` assembles a production-only `deploy/` directory with optimized Composer dependencies. GitHub Actions runs the same build after the test suite and deploys pushes to `main` over FTPS. Configure the `FTP_SERVER`, `FTP_USERNAME`, and `FTP_PASSWORD` repository secrets. The optional `FTP_SERVER_DIR`, `FTP_PROTOCOL`, and `FTP_PORT` variables control the destination. The workflow explicitly preserves the server-side `config.php` and `data/` directory.
+
+Publishing the container image needs no setup for `ghcr.io`. The Docker Hub push additionally reads the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets — the token is a Docker Hub personal access token with *Read & Write* scope, not the account password. When either is missing the job publishes to `ghcr.io` alone and says so in its summary, so forks work without any credentials.
 
 ## Development
 

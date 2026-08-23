@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The release image is now published to Docker Hub as
+  `marcomattes/coffetime` alongside `ghcr.io/marcomattes/coffetime`. It is the
+  same build pushed to both registries in one step, so the tags and the digest
+  are identical and neither can drift behind the other. The Docker Hub half
+  reads the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets and
+  is skipped rather than failed when they are absent, which keeps forks
+  publishing to `ghcr.io` without any credentials of their own.
+
 ### Security
 
 - The setup token is now published atomically. It was created empty with

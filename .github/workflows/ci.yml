@@ -192,3 +192,6 @@ jobs:
       id-token: write
       attestations: write
     uses: ./.github/workflows/docker.yml
+    # Passes the Docker Hub credentials through; without this the called
+    # workflow sees empty secrets and silently publishes to ghcr.io only.
+    secrets: inherit

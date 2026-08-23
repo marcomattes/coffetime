@@ -5,6 +5,7 @@ services:
     # README.md ("Run the published image").
     build: .
     # image: ghcr.io/marcomattes/coffetime:latest
+    # image: marcomattes/coffetime:latest
     ports:
       - "8123:80"
     volumes:
