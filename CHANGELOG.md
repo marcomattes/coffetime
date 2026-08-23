@@ -7,7 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Security
+
+- The setup token is now published atomically. It was created empty with
+  `fopen($path, 'x')` and filled a moment later, so anything reading in that
+  window saw an empty file: a second concurrent first request would fall
+  through, fail to create the file that already existed, read it back empty and
+  report that it cannot read the token — on a perfectly healthy install — and an
+  operator running `cat` at the wrong moment saw nothing. The token is now
+  written in full to a private temp file and published with `link()`, which is
+  atomic and, like the `fopen('x')` it replaces, still fails if the destination
+  exists, so two concurrent first requests cannot each install their own token.
+- A pasted admin public key can no longer turn into a file read.
+  `openssl_pkey_get_public()` also accepts `file://` paths, and the setup wizard
+  hands it whatever was pasted in, so the key is now required to be an inline
+  PEM block before OpenSSL ever sees it.
+- The service worker verifies the origin of incoming `message` events before
+  acting on them, instead of trusting any message that carries the right type.
+- Every third-party GitHub Action is pinned to a full commit SHA rather than a
+  mutable tag, `npm ci` runs with `--ignore-scripts` in CI, and the Playwright
+  browser install goes through a package.json script instead of `npx`, which can
+  resolve and execute a package on demand.
+
+### Changed
+
+- A static-analysis sweep over the whole codebase: long functions split into
+  named helpers (`Frontend::markup()`, `Db`'s schema checks, `Api`'s settings
+  update, the icon and export scripts), repeated literals lifted into named
+  constants, dedicated exception types instead of bare `RuntimeException`,
+  identifier whitelists in front of the SQL that cannot use bound parameters,
+  and current JavaScript APIs (`replaceAll`, `Number.isFinite`, `dataset`,
+  optional chaining) in the frontend. Behaviour is unchanged throughout: the
+  emitted HTML, the generated database schema and the tools' output were each
+  verified byte-for-byte against the previous implementation.
+- The offline booking queue no longer falls back to `Math.random()` for its
+  client event id when `crypto.getRandomValues` is missing; the id only has to
+  be unique per client, so it now uses a counter instead of a weak PRNG.
+
+### Fixed
+
+- `setup-wizard` e2e tests no longer read the token file before the server has
+  written it, which made them fail intermittently with "Enter the setup token
+  shown in the server log" despite a filled-in field.
 
 ## [0.9.0] - 2026-08-23
 
