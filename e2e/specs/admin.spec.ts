@@ -209,6 +209,53 @@ test.describe('admin', () => {
     }
   });
 
+  test('paypal: the button appears with the outstanding amount once a handle is configured', async ({ page, testApi }) => {
+    const [admin] = await testApi.seed([{ firstName: 'Ad', lastName: 'Min', coffees: 2 }]);
+    await testApi.loginAs(page, admin.id);
+    await page.goto('/');
+    await expect(page.getByTestId('view-app')).toBeVisible();
+
+    // Nothing configured: no button, however much is outstanding.
+    await expect(page.getByTestId('balance')).toHaveText('3.00 €');
+    await expect(page.getByTestId('paypal-card')).toBeHidden();
+
+    try {
+      // A pasted link is accepted; the server stores the bare handle.
+      await page.getByTestId('admin-paypal-input').fill('https://paypal.me/CoffeeKitchen');
+      await page.getByTestId('btn-admin-settings').click();
+      await expect(page.getByTestId('admin-settings-status')).toContainText('Saved');
+      await expect(page.getByTestId('admin-paypal-input')).toHaveValue('CoffeeKitchen');
+
+      const link = page.getByTestId('paypal-link');
+      await expect(page.getByTestId('paypal-card')).toBeVisible();
+      await expect(link).toHaveText('Pay 3.00 € with PayPal');
+      await expect(link).toHaveAttribute('href', 'https://www.paypal.com/paypalme/CoffeeKitchen/3.00EUR');
+      // An installed PWA must not navigate out of its own scope.
+      await expect(link).toHaveAttribute('target', '_blank');
+
+      // Booking another coffee moves the amount in the link with the balance.
+      await page.getByTestId('btn-add').click();
+      await expect(page.getByTestId('balance')).toHaveText('4.50 €');
+      await expect(link).toHaveAttribute('href', 'https://www.paypal.com/paypalme/CoffeeKitchen/4.50EUR');
+
+      // A settled tab has nothing to pay, so the button goes away again.
+      const payment = await page.request.post('/api/admin/payment', {
+        data: { userId: admin.id, amountCents: 450 },
+      });
+      expect(payment.ok()).toBe(true);
+      await page.reload();
+      await expect(page.getByTestId('view-app')).toBeVisible();
+      await expect(page.getByTestId('balance')).toHaveText('0.00 €');
+      await expect(page.getByTestId('paypal-card')).toBeHidden();
+    } finally {
+      // /api/test/reset never clears the settings table -- always put the
+      // handle back to "not configured", even if an assertion above failed.
+      await page.getByTestId('admin-paypal-input').fill('');
+      await page.getByTestId('btn-admin-settings').click();
+      await expect(page.getByTestId('admin-settings-status')).toContainText('Saved');
+    }
+  });
+
   test('recovery code: the admin issues a code and a fresh device signs into that account', async ({ page, testApi, browser }) => {
     const [admin, user] = await testApi.seed([
       { firstName: 'Ad', lastName: 'Min' },

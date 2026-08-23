@@ -129,6 +129,14 @@ Work preparing the project for its open-source release.
   an in-page navigation would leave the manifest scope and replace the
   installed app with a browser view.
 
+### Added
+
+- Optional **"Pay with PayPal" button**: a plain PayPal.me link carrying the
+  outstanding amount, shown to every user once an admin has stored a handle
+  (`paypalHandle`, admin settings or `config.php`; a pasted paypal.me link is
+  reduced to the handle). No PayPal SDK and no CSP change — and pressing it
+  settles nothing on its own, since only an admin can see the money arrive.
+
 ### Changed
 
 - **Undo is now bounded in time.** `POST /api/coffee/undo` only takes back a

@@ -844,6 +844,7 @@ final class Api
         Http::json([
             'priceCents' => Config::priceCents(),
             'invite' => Config::invite(),
+            'paypalHandle' => Config::paypalHandle(),
             'passwordSet' => Passwords::isSet($user),
             'passwordSetAt' => Passwords::setAt($user),
             'passwordMinLength' => Passwords::MIN_LENGTH,
@@ -851,10 +852,11 @@ final class Api
     }
 
     /**
-     * Changes price and/or invite code at runtime. Deliberately WITHOUT any way
-     * to change adminPublicKey or namePepper: the former would make already
-     * encrypted names unreadable, the latter would invalidate existing name
-     * HMACs, breaking duplicate detection and decryption for existing data.
+     * Changes price, invite code and/or the PayPal.me handle at runtime.
+     * Deliberately WITHOUT any way to change adminPublicKey or namePepper: the
+     * former would make already encrypted names unreadable, the latter would
+     * invalidate existing name HMACs, breaking duplicate detection and
+     * decryption for existing data.
      *
      * @param array<string, mixed> $user
      */
@@ -865,7 +867,8 @@ final class Api
         $body = Http::body();
         $hasPrice = array_key_exists('priceCents', $body);
         $hasInvite = array_key_exists('invite', $body);
-        if (!$hasPrice && !$hasInvite) {
+        $hasPaypal = array_key_exists('paypalHandle', $body);
+        if (!$hasPrice && !$hasInvite && !$hasPaypal) {
             Http::error('invalid_settings', 400);
         }
 
@@ -885,6 +888,19 @@ final class Api
             }
             $pairs['invite'] = $invite;
         }
+        if ($hasPaypal) {
+            $paypalRaw = $body['paypalHandle'];
+            if (!is_string($paypalRaw)) {
+                Http::error('invalid_settings', 400);
+            }
+            // An empty field is how the button is switched off again, so only
+            // a non-empty value that does not survive normalization is wrong.
+            $handle = Config::normalizePaypalHandle($paypalRaw);
+            if (trim($paypalRaw) !== '' && $handle === '') {
+                Http::error('invalid_paypal', 400);
+            }
+            $pairs['paypalHandle'] = $handle;
+        }
 
         Settings::setMany($pairs);
 
@@ -892,6 +908,7 @@ final class Api
             'ok' => true,
             'priceCents' => Config::priceCents(),
             'invite' => Config::invite(),
+            'paypalHandle' => Config::paypalHandle(),
         ]);
     }
 
@@ -1191,6 +1208,9 @@ final class Api
             'streakDays' => Users::streakDays($id),
             'credentials' => Credentials::countForUser($id),
             'undoableSeconds' => self::undoableSeconds($user),
+            // Everyone with a tab needs the handle to settle it; it is the
+            // admin's public payment address, not a secret.
+            'paypalHandle' => Config::paypalHandle(),
         ];
     }
 

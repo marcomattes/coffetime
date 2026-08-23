@@ -905,6 +905,35 @@ check('admin/settings/update leaves the invite unchanged', ($r['json']['invite']
 $r = $setupClient->post('/api/coffee');
 check('a coffee booked after the settings update is billed at the new price', ($r['json']['balanceCents'] ?? null) === 250);
 
+// ----------------------------------------------------------- paypal handle ---
+
+check('no PayPal handle is configured to begin with', ($r = $setupClient->get('/api/admin/settings'))
+    && ($r['json']['paypalHandle'] ?? null) === '');
+$r = $setupClient->get('/api/me');
+check('/api/me reports an empty PayPal handle while none is set', ($r['json']['paypalHandle'] ?? null) === '');
+
+$r = $setupClient->post('/api/admin/settings/update', ['paypalHandle' => 'https://paypal.me/CoffeeKitchen']);
+check('admin/settings/update accepts a pasted paypal.me link', $r['status'] === 200);
+check('the pasted link is stored as the bare handle', ($r['json']['paypalHandle'] ?? null) === 'CoffeeKitchen');
+check('setting only the handle leaves the price alone', ($r['json']['priceCents'] ?? null) === 250);
+
+$r = $setupClient->get('/api/me');
+check('/api/me carries the handle so every user can settle their tab', ($r['json']['paypalHandle'] ?? null) === 'CoffeeKitchen');
+
+$r = $setupClient->post('/api/admin/settings/update', ['paypalHandle' => 'not a handle']);
+check('a handle that is not one is refused with 400', $r['status'] === 400);
+check('a refused handle reports invalid_paypal', ($r['json']['error'] ?? null) === 'invalid_paypal');
+$r = $setupClient->get('/api/admin/settings');
+check('the refused handle left the stored one untouched', ($r['json']['paypalHandle'] ?? null) === 'CoffeeKitchen');
+
+$r = $setupClient->post('/api/admin/settings/update', ['paypalHandle' => 123]);
+check('a non-string handle is refused with 400', $r['status'] === 400);
+check('a non-string handle reports invalid_settings', ($r['json']['error'] ?? null) === 'invalid_settings');
+
+$r = $setupClient->post('/api/admin/settings/update', ['paypalHandle' => '   ']);
+check('an emptied field is accepted and switches the button off', $r['status'] === 200);
+check('an emptied field clears the stored handle', ($r['json']['paypalHandle'] ?? null) === '');
+
 stop_php_server($setupServerProcess);
 $setupServerProcess = null;
 

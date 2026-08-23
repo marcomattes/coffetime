@@ -455,6 +455,42 @@ check(
     Users::tabCents($updated) === 150 && Users::coffees($updated) === 1
 );
 
+// ---------------------------------------------------------------- paypal ---
+
+// Whatever an admin pastes into the field has to come out as a bare handle,
+// and anything that is not one has to come out empty -- a "Pay with PayPal"
+// button pointing at a broken page is worse than no button.
+$paypalCases = [
+    'coffeekitchen' => 'coffeekitchen',
+    '  coffeekitchen  ' => 'coffeekitchen',
+    'paypal.me/coffeekitchen' => 'coffeekitchen',
+    'https://paypal.me/coffeekitchen' => 'coffeekitchen',
+    'https://www.paypal.me/coffeekitchen/' => 'coffeekitchen',
+    'http://PayPal.Me/CoffeeKitchen' => 'CoffeeKitchen',
+    'https://www.paypal.com/paypalme/coffeekitchen' => 'coffeekitchen',
+    'Coffee Kitchen' => '',
+    'coffee-kitchen' => '',
+    'coffee.kitchen' => '',
+    '' => '',
+    '   ' => '',
+    'paypal.me/' => '',
+    str_repeat('a', 21) => '',
+    'a/../b' => '',
+    'evil.example.com/pay' => '',
+];
+foreach ($paypalCases as $input => $expected) {
+    check(
+        'normalizePaypalHandle(' . var_export((string) $input, true) . ') === ' . var_export($expected, true),
+        Config::normalizePaypalHandle((string) $input) === $expected
+    );
+}
+check('a handle of exactly 20 characters is accepted', Config::normalizePaypalHandle(str_repeat('a', 20)) === str_repeat('a', 20));
+check('no configured handle means no button', Config::paypalHandle() === '');
+Settings::set('paypalHandle', 'https://paypal.me/coffeekitchen');
+check('Config::paypalHandle normalizes what the settings table holds', Config::paypalHandle() === 'coffeekitchen');
+Settings::set('paypalHandle', '');
+check('an emptied handle switches the button off again', Config::paypalHandle() === '');
+
 // ----------------------------------------------------------------- stats ---
 
 Db::reset();

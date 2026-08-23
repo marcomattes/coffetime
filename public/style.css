@@ -212,6 +212,13 @@ h2 {
   transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
 }
 
+/* The PayPal button is a real link -- it leaves the app, and an installed PWA
+   must open that in a new tab rather than navigate out of its own scope. */
+a.btn {
+  text-align: center;
+  text-decoration: none;
+}
+
 .btn:active:not(:disabled) {
   transform: scale(0.97);
 }

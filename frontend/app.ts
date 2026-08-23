@@ -17,6 +17,8 @@
        undo. Relative rather than absolute on purpose: a phone whose clock is
        minutes off would misread a server timestamp. */
     undoableSeconds?: number;
+    /* Bare PayPal.me handle, '' when no one configured one. */
+    paypalHandle?: string;
   }
 
   interface DistributionEntry {
@@ -62,6 +64,7 @@
   interface AdminSettings {
     priceCents: number;
     invite: string;
+    paypalHandle?: string;
     passwordSet?: boolean;
     passwordSetAt?: number;
     passwordMinLength?: number;
@@ -724,6 +727,31 @@
     }
 
     renderUndo(me.undoableSeconds);
+    renderPaypal(me.paypalHandle, me.balanceCents);
+  }
+
+  /*
+   * "Pay with PayPal" is a plain link with the amount in it -- no SDK, no
+   * script from paypal.com, nothing for the CSP to allow. It also books
+   * nothing: the balance here moves when an admin records the payment, which
+   * is the only side that can actually see the money arrive.
+   */
+  function renderPaypal(handle: unknown, balanceCents: unknown): void {
+    const card = el('paypal-card');
+    const link = el<HTMLAnchorElement>('paypal-link');
+    if (!card || !link) {
+      return;
+    }
+    const name = typeof handle === 'string' ? handle.trim() : '';
+    const cents = typeof balanceCents === 'number' && isFinite(balanceCents) ? Math.round(balanceCents) : 0;
+    if (name === '' || cents <= 0) {
+      card.hidden = true;
+      return;
+    }
+    const amount = (cents / 100).toFixed(2);
+    link.href = 'https://www.paypal.com/paypalme/' + encodeURIComponent(name) + '/' + amount + 'EUR';
+    text(link, 'Pay ' + money(cents) + ' with PayPal');
+    card.hidden = false;
   }
 
   let undoTimer: number | null = null;
@@ -869,6 +897,10 @@
     }
     if (inviteInput && settings && typeof settings.invite === 'string') {
       inviteInput.value = settings.invite;
+    }
+    const paypalInput = el<HTMLInputElement>('admin-paypal-input');
+    if (paypalInput && settings && typeof settings.paypalHandle === 'string') {
+      paypalInput.value = settings.paypalHandle;
     }
     state.invite = settings && typeof settings.invite === 'string' ? settings.invite : '';
     renderNfcUi();
@@ -1084,9 +1116,19 @@
       return;
     }
 
+    // Sent as typed; the server normalizes a pasted paypal.me link down to the
+    // bare handle and refuses anything that is not one. An empty field is a
+    // deliberate "switch the button off", not a validation failure.
+    const paypalRaw = el<HTMLInputElement>('admin-paypal-input')!.value;
+    const paypalHandle = typeof paypalRaw === 'string' ? paypalRaw.trim() : '';
+
     busy(button, true);
     try {
-      await api('/api/admin/settings/update', { priceCents: priceCents, invite: invite });
+      await api('/api/admin/settings/update', {
+        priceCents: priceCents,
+        invite: invite,
+        paypalHandle: paypalHandle
+      });
       await refresh();
       text(statusNode, 'Saved. New bookings use the new price; existing tabs are unchanged.');
     } catch (error) {

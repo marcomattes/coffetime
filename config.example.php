@@ -30,6 +30,14 @@ return [
     // 30 .. 86400; anything else falls back to the default of 300.
     'undoWindowSeconds' => 300,
 
+    // PayPal.me handle the "Pay with PayPal" button links to, with the
+    // outstanding amount filled in. Leave empty to hide the button. Like
+    // priceCents and invite, an in-app change (admin settings) overrides this
+    // file's value. A full paypal.me link is accepted and reduced to the
+    // handle. Pressing the button settles nothing by itself -- an admin still
+    // records the payment once the money has arrived.
+    'paypalHandle' => '',
+
     // User IDs (as strings) with administrator privileges.
     'admins' => [],
 

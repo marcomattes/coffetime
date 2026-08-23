@@ -184,6 +184,18 @@ final class Frontend
       </div>
     </div>
 
+    <!-- Only shown once an admin has configured a PayPal.me handle and there
+         is something to pay. The link leaves the app on purpose (see the
+         footer for why target="_blank" matters to an installed PWA). -->
+    <div class="card" id="paypal-card" data-testid="paypal-card" hidden>
+      <h2>Settle your tab</h2>
+      <p class="hint">Opens PayPal with the amount already filled in. Your balance here
+        changes once the payment has been booked in the admin area &ndash; not the moment
+        PayPal is done.</p>
+      <a id="paypal-link" data-testid="paypal-link" class="btn btn-primary"
+         href="https://www.paypal.com/paypalme/" target="_blank" rel="noopener noreferrer">Pay with PayPal</a>
+    </div>
+
     <div class="card">
       <h2>Last 14 days</h2>
       <div id="history-chart" data-testid="history-chart" class="chart"></div>
@@ -228,6 +240,13 @@ final class Frontend
           <label for="admin-invite-input">Invite code</label>
           <input type="text" id="admin-invite-input" data-testid="admin-invite-input"
                  autocomplete="off" spellcheck="false" minlength="4" maxlength="64">
+        </div>
+        <div class="field">
+          <label for="admin-paypal-input">PayPal.me handle (optional)</label>
+          <input type="text" id="admin-paypal-input" data-testid="admin-paypal-input"
+                 autocomplete="off" spellcheck="false" maxlength="64" placeholder="yourhandle">
+          <p class="hint">Shows a &ldquo;Pay with PayPal&rdquo; button with the outstanding amount
+            filled in. A full paypal.me link works too. Leave empty to hide the button.</p>
         </div>
         <button type="button" id="btn-admin-settings" data-testid="btn-admin-settings" class="btn settings-btn">Save settings</button>
       </div>

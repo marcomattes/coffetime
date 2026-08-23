@@ -33,6 +33,7 @@ Built to run anywhere PHP runs: no framework, no Node runtime in production, SQL
 - Server-authoritative counter with a time-boxed undo (default 5 minutes — enough for a mis-tap, not enough to edit the tab), balances, streaks, and a personal 28-day history with chart.
 - Every booking freezes the price at booking time — later price changes never reprice existing coffees.
 - Admin payments settle tabs; an offline CLI (with optional XLSX export) covers accounting.
+- Optional "Pay with PayPal" button: a plain PayPal.me link with the outstanding amount filled in, configured by the admin. It moves no balance on its own — the admin books the payment once the money has arrived.
 
 **Offline-capable PWA**
 - Installable app with shortcuts, NFC links, and an app badge that flags a waiting reminder and clears itself the moment the app is opened. An in-app card offers the browser's install prompt, or the Share-sheet steps on iOS, which has no install API.
@@ -81,7 +82,7 @@ If `config.php` already sets `adminPublicKey`, the setup wizard is skipped. Once
 
 ## Configuration
 
-`config.php` returns an array. Important settings are `priceCents`, `invite`, `admins` (user IDs as strings), `rpId`, `origin`, `dbPath` (or `db`, see [Database](#database)), `adminPublicKey`, and the secret `namePepper`. Keep the SQLite database and all private keys outside `public/`.
+`config.php` returns an array. Important settings are `priceCents`, `invite`, `paypalHandle`, `admins` (user IDs as strings), `rpId`, `origin`, `dbPath` (or `db`, see [Database](#database)), `adminPublicKey`, and the secret `namePepper`. Keep the SQLite database and all private keys outside `public/`.
 
 Three optional settings matter for real deployments:
 
@@ -95,7 +96,7 @@ The public key must be a PEM-encoded RSA key of at least 4096 bits. New cipherte
 
 ### Settings precedence
 
-`priceCents`, `invite`, `adminPublicKey`, and `namePepper` can each be set two ways: in `config.php`, or at runtime through the app (the setup wizard, or the admin settings screen for price/invite). Whichever a database `settings` row exists for wins over `config.php`; if no row exists, the `config.php` value (or built-in default) applies. Connection and bootstrap values — `rpId`, `origin`, `dbPath`/`db`, `admins`, `testMode`, `testToken` — are read from `config.php` only.
+`priceCents`, `invite`, `paypalHandle`, `adminPublicKey`, and `namePepper` can each be set two ways: in `config.php`, or at runtime through the app (the setup wizard, or the admin settings screen for price, invite and the PayPal handle). Whichever a database `settings` row exists for wins over `config.php`; if no row exists, the `config.php` value (or built-in default) applies. Connection and bootstrap values — `rpId`, `origin`, `dbPath`/`db`, `admins`, `testMode`, `testToken` — are read from `config.php` only.
 
 ### Database
 

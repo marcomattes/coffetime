@@ -141,20 +141,26 @@ authenticator (CDP) — nothing in the app is mocked.
 4. Settings: saving price 2.50 € + invite `NEW-INVITE` shows the saved status;
    the app price stat updates; registration with the old invite now fails and
    with the new invite succeeds. (The spec restores the defaults afterwards.)
-5. Recovery code: the admin generates a code for another user; a fresh context
+5. PayPal: with no handle stored, the card is hidden even with 3.00 €
+   outstanding. Saving a pasted `https://paypal.me/CoffeeKitchen` stores the
+   bare handle, shows "Pay 3.00 € with PayPal" linking to
+   `https://www.paypal.com/paypalme/CoffeeKitchen/3.00EUR` with
+   `target="_blank"`, and the amount follows the balance. A settled tab hides
+   the card again. (The spec clears the handle afterwards.)
+6. Recovery code: the admin generates a code for another user; a fresh context
    redeems it under "Link this device" and is signed into *that* user's account.
-6. Local decryption: selecting the matching `admin-private.pem` decrypts the
+7. Local decryption: selecting the matching `admin-private.pem` decrypts the
    seeded names in the rows ("Names decrypted locally…" status); a non-matching
    key file shows the failure status and leaves ciphertexts visible.
-7. CSV export downloads `coffee-time.csv`; with the key loaded it contains the
+8. CSV export downloads `coffee-time.csv`; with the key loaded it contains the
    decrypted names and per-user balances.
-8. XSS safety: a seeded name containing `<img src=x onerror=…>` renders as
+9. XSS safety: a seeded name containing `<img src=x onerror=…>` renders as
    text after decryption — no `img` element appears in the admin rows.
-9. NFC tags: the card shows `/?book=1` and `/?invite=<saved code>` as full
+10. NFC tags: the card shows `/?book=1` and `/?invite=<saved code>` as full
    URLs; on desktop Chromium, which has no Web NFC, the write buttons stay
    hidden behind the "Chrome on Android" hint, and a non-admin never sees the
    card at all.
-10. NFC writing (`window.NDEFReader` stubbed via `addInitScript`, since no
+11. NFC writing (`window.NDEFReader` stubbed via `addInitScript`, since no
    real adapter exists in CI): each button hands the adapter exactly one `url`
    record carrying its own link, and a rejected write (`AbortError`) shows the
    "No tag found" advice and re-enables both buttons.

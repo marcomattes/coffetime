@@ -93,13 +93,19 @@ One behavior looks like a bug but is deliberate, and is called out here so it is
 
 The window is decided by the same transaction that removes the event, so concurrent presses from two devices can never take back more than the bookings that are there. `Users::undoableSeconds()` reports the remaining time (relative, not an absolute timestamp: a phone with a skewed clock would misread the latter), which rides along on `/api/me` and both coffee endpoints. The app uses it to show the undo button at all and to take it away again on a timer; a request that arrives late is answered `409 undo_expired`. An account at zero coffees keeps the older contract and answers `200` with unchanged state — a stale client is not an error. A pre-schema-v5 row with no event carries no date, cannot be told apart from last month's coffee, and therefore is not undoable at all.
 
+## Paying the tab
+
+The optional "Pay with PayPal" button is a plain `<a>` to `https://www.paypal.com/paypalme/<handle>/<amount>EUR` with `target="_blank"` — no PayPal SDK, no script from paypal.com, and therefore nothing to loosen in the CSP; the new tab also keeps an installed PWA from navigating out of its own scope. The handle is a runtime setting (`paypalHandle`, admin settings screen, `settings` table) and rides along on `/api/me`, since everyone with a tab needs it. `Config::normalizePaypalHandle()` reduces whatever was pasted — bare handle, `paypal.me/name`, either full URL spelling — to the bare handle and rejects anything that is not 1–20 ASCII alphanumerics, which is also what makes it safe to interpolate into a URL. An empty value hides the button, as does a balance of zero.
+
+The button deliberately moves no money in the app's own books: pressing it settles nothing, and the balance changes only when an admin records the payment. The server cannot see whether PayPal was actually paid, and a control that lets a user zero their own tab is the same hole the undo window above closes.
+
 ## Price freezing
 
 Each coffee booking reads the current price once and freezes it twice: into `coffee_events.price_cents` for that event, and added into the user's running `users.tab_cents`. A later price change only affects bookings made after it; undo reverses the specific event's frozen price. `balanceCents` is `tab_cents - paid_cents`, both driven by frozen per-event prices and admin payments, never recomputed from the live price.
 
 ## Runtime settings
 
-A `settings` table holds runtime-configurable values (`priceCents`, `invite`, `adminPublicKey`, `namePepper`) as name/value string pairs, written by `Settings::setMany()` via a portable select-then-update-or-insert upsert (no `ON CONFLICT`/`ON DUPLICATE KEY`, to stay driver-neutral). `Config` reads each of these through `Settings::get()` first, falling back to the `config.php` array only when no row exists — DB values take precedence once set, and only price/invite can be changed after initial setup (changing `adminPublicKey`/`namePepper` post-hoc would strand existing ciphertext/HMACs). `Settings` caches all rows per request and treats a missing `settings` table (mid-migration on a fresh install) as "nothing set" rather than failing.
+A `settings` table holds runtime-configurable values (`priceCents`, `invite`, `paypalHandle`, `adminPublicKey`, `namePepper`) as name/value string pairs, written by `Settings::setMany()` via a portable select-then-update-or-insert upsert (no `ON CONFLICT`/`ON DUPLICATE KEY`, to stay driver-neutral). `Config` reads each of these through `Settings::get()` first, falling back to the `config.php` array only when no row exists — DB values take precedence once set, and only price/invite can be changed after initial setup (changing `adminPublicKey`/`namePepper` post-hoc would strand existing ciphertext/HMACs). `Settings` caches all rows per request and treats a missing `settings` table (mid-migration on a fresh install) as "nothing set" rather than failing.
 
 ## Device linking and recovery codes
 

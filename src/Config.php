@@ -149,6 +149,40 @@ final class Config
         return is_string($value) ? $value : '';
     }
 
+    /**
+     * PayPal.me handle the "Pay with PayPal" button links to, or '' when the
+     * tab is settled some other way – the button is then simply not shown.
+     */
+    public static function paypalHandle(): string
+    {
+        $fromDb = Settings::get('paypalHandle');
+        if ($fromDb !== null) {
+            return self::normalizePaypalHandle($fromDb);
+        }
+
+        $value = self::get('paypalHandle', '');
+
+        return is_string($value) ? self::normalizePaypalHandle($value) : '';
+    }
+
+    /**
+     * Takes what people actually paste – a bare handle, `paypal.me/name`, or
+     * the full URL in either of PayPal's two spellings – and returns the bare
+     * handle. Anything that is not a usable handle afterwards becomes '': a
+     * button leading to a broken PayPal page is worse than no button.
+     */
+    public static function normalizePaypalHandle(string $raw): string
+    {
+        $value = trim($raw);
+        $value = (string) preg_replace('#^https?://#i', '', $value);
+        $value = (string) preg_replace('#^(www\.)?(paypal\.me|paypal\.com/paypalme)/#i', '', $value);
+        $value = trim($value, '/');
+
+        // PayPal.me handles are 1-20 ASCII letters and digits. Keeping to that
+        // set is also what makes the handle safe to put in a URL unescaped.
+        return preg_match('/^[A-Za-z0-9]{1,20}$/', $value) === 1 ? $value : '';
+    }
+
     public static function rpId(): string
     {
         $value = self::get('rpId', '');
