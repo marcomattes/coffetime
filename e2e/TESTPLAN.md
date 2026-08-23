@@ -145,6 +145,14 @@ authenticator (CDP) — nothing in the app is mocked.
    decrypted names and per-user balances.
 8. XSS safety: a seeded name containing `<img src=x onerror=…>` renders as
    text after decryption — no `img` element appears in the admin rows.
+9. NFC tags: the card shows `/?book=1` and `/?invite=<saved code>` as full
+   URLs; on desktop Chromium, which has no Web NFC, the write buttons stay
+   hidden behind the "Chrome on Android" hint, and a non-admin never sees the
+   card at all.
+10. NFC writing (`window.NDEFReader` stubbed via `addInitScript`, since no
+   real adapter exists in CI): each button hands the adapter exactly one `url`
+   record carrying its own link, and a rejected write (`AbortError`) shows the
+   "No tag found" advice and re-enables both buttons.
 
 ### 9. `security.spec.ts` (API-level, `request` fixture)
 

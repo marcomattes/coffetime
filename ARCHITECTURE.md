@@ -40,6 +40,12 @@ The application shell is served with a `Content-Security-Policy` that allows onl
 
 The strip preserves any other query parameters, because `checkPendingBook()` runs afterwards and still has to see a `?book=1` that arrived alongside it. `checkInviteLink()` must therefore stay ordered before it: `checkPendingBook()` rewrites the URL with no query string at all.
 
+## Writing NFC tags
+
+The admin view shows both tag links in full — `/?book=1` for the sticker on the machine, `/?invite=CODE` for the one that hands out accounts — and, where Web NFC exists (Chrome on Android, secure context, from a user gesture), writes either of them to a blank tag as a single NDEF `url` record. `NDEFReader` is feature-detected and the buttons stay hidden without it, so the card degrades to two URLs anyone can copy into a tag-writing app or a QR code. Each write is bounded by an `AbortController` (`NFC_WRITE_TIMEOUT_MS`) so a tag that never arrives releases the buttons again, and the `DOMException` names Web NFC reports are mapped individually: whether NFC is switched off, the tag is locked or too small, or it simply moved away mid-write are different things to do next, not one generic failure.
+
+The registration link is built from the invite code the server last confirmed, never from the settings input above it, so an unsaved edit cannot end up on a tag the server would reject; the code is cleared on sign-out, since a kitchen device is shared. A tag is only a link and carries no credential of its own: the booking tag books for whoever is signed in on the phone that taps it, and it only books automatically because a tag opens the app with no referrer (see above). The registration tag is exactly as secret as the invite code printed on it, and rotating that code invalidates every tag carrying the old one.
+
 ## Name privacy
 
 Names are normalized only for a keyed HMAC used to prevent duplicates. The original JSON name is encrypted using the configured RSA public key. The server has no decryption function or private key. Administrators may decrypt API ciphertext in their browser using a selected PKCS#8 key, or use the offline CLI.

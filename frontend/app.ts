@@ -107,6 +107,10 @@
     pendingBook: boolean;
     adminKey: CryptoKey | null;
     setupPublicKey: string | null;
+    /* Last invite code the server confirmed, used to build the registration
+       link for an NFC tag. Empty until /api/admin/settings has answered --
+       the field above it may hold an edit that was never saved. */
+    invite: string;
     /* Server-declared minimum for the admin password, so the client-side
        check cannot drift away from Passwords::MIN_LENGTH. The literal is only
        the value used before /api/admin/settings has answered. */
@@ -119,7 +123,8 @@
     pendingBook: false,
     adminKey: null,
     setupPublicKey: null,
-    passwordMinLength: 12
+    passwordMinLength: 12,
+    invite: ''
   };
 
   function byId<T extends HTMLElement>(id: string): T | null {
@@ -809,6 +814,8 @@
     if (inviteInput && settings && typeof settings.invite === 'string') {
       inviteInput.value = settings.invite;
     }
+    state.invite = settings && typeof settings.invite === 'string' ? settings.invite : '';
+    renderNfcUi();
     if (settings && typeof settings.passwordMinLength === 'number' && settings.passwordMinLength > 0) {
       state.passwordMinLength = settings.passwordMinLength;
     }
@@ -1629,6 +1636,10 @@
     state.me = null;
     state.users = [];
     state.adminKey = null;
+    // The invite code is admin-only; a shared kitchen device must not keep it
+    // on the registration link after the admin signs out.
+    state.invite = '';
+    renderNfcUi();
     show('auth');
     if (!serverEnded) {
       text(el('auth-error'), 'Signed out on this device. You were offline, so the session ends on the server at the next connection.');
@@ -1747,6 +1758,147 @@
     }
     state.pendingBook = false;
     addCoffee();
+  }
+
+  /* ------------------------------------------------- Writing NFC tags --- */
+
+  /*
+   * The two links above are what a sticker on the machine should contain, so
+   * the admin should not have to type them into a separate tag-writing app.
+   * Web NFC (Chrome on Android, secure context only) can write them directly;
+   * everywhere else the card still shows the URLs so they can be copied into
+   * whatever tool is at hand.
+   *
+   * A tag is only a link. The booking tag is not a credential: it opens the
+   * app and books for whoever is signed in on that phone, and only because a
+   * tag opens the app without a referrer (see checkPendingBook). The
+   * registration tag carries the invite code and is therefore exactly as
+   * secret as the code itself.
+   */
+
+  interface NdefRecordInit {
+    recordType: string;
+    data?: unknown;
+  }
+
+  interface NdefWriteOptions {
+    signal?: AbortSignal;
+  }
+
+  interface NdefWriter {
+    write(message: { records: NdefRecordInit[] }, options?: NdefWriteOptions): Promise<void>;
+  }
+
+  type NdefWriterCtor = new () => NdefWriter;
+
+  /* Written tags are held against the phone by hand -- long enough to line the
+     antennas up, short enough that a forgotten write does not keep both
+     buttons disabled forever. */
+  const NFC_WRITE_TIMEOUT_MS = 30000;
+
+  function ndefWriterCtor(): NdefWriterCtor | null {
+    const ctor = (window as any).NDEFReader;
+    return typeof ctor === 'function' ? (ctor as NdefWriterCtor) : null;
+  }
+
+  function bookingLink(): string {
+    return window.location.origin + '/?book=1';
+  }
+
+  function registrationLink(invite: string): string {
+    return window.location.origin + '/?invite=' + encodeURIComponent(invite);
+  }
+
+  function renderNfcUi(): void {
+    const bookUrl = el('nfc-book-url');
+    const inviteUrl = el('nfc-invite-url');
+    const bookButton = el<HTMLButtonElement>('btn-nfc-book');
+    const inviteButton = el<HTMLButtonElement>('btn-nfc-invite');
+    const support = el('nfc-support');
+    if (!bookUrl || !inviteUrl || !bookButton || !inviteButton || !support) {
+      return;
+    }
+
+    text(bookUrl, bookingLink());
+    const hasInvite = state.invite !== '';
+    text(inviteUrl, hasInvite ? registrationLink(state.invite) : 'Loading the invite code…');
+
+    const supported = ndefWriterCtor() !== null;
+    text(
+      support,
+      supported
+        ? 'Tap a button, then hold a blank NFC sticker against the back of the phone.'
+        : 'Writing tags needs Chrome on Android. On any other device, copy the link and write ' +
+          'the tag with an NFC app — the links themselves work everywhere.'
+    );
+    bookButton.hidden = !supported;
+    // A registration tag without a code would send people to the app with an
+    // empty invite field, so the button waits for the settings response.
+    inviteButton.hidden = !supported || !hasInvite;
+  }
+
+  /* Both buttons drive the same NFC adapter, so the second one has to wait. */
+  let nfcWriting = false;
+
+  async function writeNfcTag(url: string, label: string): Promise<void> {
+    const ctor = ndefWriterCtor();
+    const statusNode = el('nfc-status');
+    const errorNode = el('nfc-error');
+    const bookButton = el<HTMLButtonElement>('btn-nfc-book');
+    const inviteButton = el<HTMLButtonElement>('btn-nfc-invite');
+    if (ctor === null || nfcWriting) {
+      return;
+    }
+
+    nfcWriting = true;
+    busy(bookButton, true);
+    busy(inviteButton, true);
+    text(errorNode, '');
+    text(statusNode, 'Hold the tag against the back of the phone…');
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      controller.abort();
+    }, NFC_WRITE_TIMEOUT_MS);
+
+    try {
+      // A "url" record is what makes an ordinary phone open the link on a tap
+      // instead of showing a blob of text.
+      await new ctor().write({ records: [{ recordType: 'url', data: url }] }, { signal: controller.signal });
+      text(statusNode, label + ' written. Tap the tag with a phone to check it.');
+    } catch (error) {
+      text(statusNode, '');
+      text(errorNode, nfcErrorText(error));
+    } finally {
+      window.clearTimeout(timer);
+      nfcWriting = false;
+      busy(bookButton, false);
+      busy(inviteButton, false);
+      // The invite button may have to stay hidden; renderNfcUi decides again.
+      renderNfcUi();
+    }
+  }
+
+  /* Every one of these means something the person holding the tag can act on,
+     so none of them may collapse into a generic failure. */
+  function nfcErrorText(error: unknown): string {
+    const name = error instanceof DOMException ? error.name : '';
+    if (name === 'AbortError') {
+      return 'No tag found. Press the button again and hold the tag still against the back of the phone.';
+    }
+    if (name === 'NotAllowedError') {
+      return 'NFC access was denied. Allow it for this site in the browser settings, then try again.';
+    }
+    if (name === 'NotReadableError') {
+      return 'NFC is switched off. Turn it on in the Android settings and try again.';
+    }
+    if (name === 'NotSupportedError') {
+      return 'The tag would not take this link. It may be locked, not NDEF formatted, or too small.';
+    }
+    if (name === 'NetworkError') {
+      return 'The tag moved away mid-write. Hold it still against the phone and try again.';
+    }
+    return 'Writing the tag failed. Try again with the tag flat against the back of the phone.';
   }
 
   /* -------------------------------------------------- Pull to refresh --- */
@@ -1898,6 +2050,17 @@
     el('btn-admin-settings')!.addEventListener('click', saveAdminSettings);
     el('btn-admin-password')!.addEventListener('click', saveAdminPassword);
     el('btn-admin-password-remove')!.addEventListener('click', removeAdminPassword);
+    el('btn-nfc-book')!.addEventListener('click', () => {
+      writeNfcTag(bookingLink(), 'Booking tag');
+    });
+    el('btn-nfc-invite')!.addEventListener('click', () => {
+      // Deliberately the saved code, not the input above it: an unsaved edit
+      // would produce a tag the server rejects.
+      if (state.invite !== '') {
+        writeNfcTag(registrationLink(state.invite), 'Registration tag');
+      }
+    });
+    renderNfcUi();
     // Before checkPendingBook(): that one rewrites the URL without any query
     // string at all, which would take an "?invite=" alongside it with it.
     checkInviteLink();

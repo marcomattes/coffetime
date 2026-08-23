@@ -481,6 +481,44 @@ input {
   margin: 4px 0 0;
 }
 
+/* ------------------------------------------------------------ NFC tags -- */
+
+.nfc-tag {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+
+.nfc-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* The URL is long and has to stay readable on a phone: monospace, wrapped at
+   any character, and selectable in one tap for the devices that cannot write
+   a tag themselves. */
+.nfc-url {
+  align-self: stretch;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  background: var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.nfc-btn {
+  width: auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  margin: 0;
+}
+
 /* ------------------------------------------------- Pull to refresh ----- */
 
 /*

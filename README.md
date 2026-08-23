@@ -36,6 +36,7 @@ Built to run anywhere PHP runs: no framework, no Node runtime in production, SQL
 
 **Offline-capable PWA**
 - Installable app with shortcuts, NFC links, and app badges. An in-app card offers the browser's install prompt, or the Share-sheet steps on iOS, which has no install API.
+- NFC tags written from the admin area: the booking link and the registration link go onto a sticker straight from the app on Chrome for Android (Web NFC); every other browser still shows both URLs to copy.
 - Built for the installed app, not just the tab: safe-area-aware layout so nothing hides behind a notch or home indicator, and pull to refresh where there is no reload button.
 - Offline booking queue: coffees booked without a connection are queued on the device and retried with an idempotent event ID — never double-counted.
 - Local payment reminders without a push server: an opt-in month-end notification while the tab is open, plus an admin "Remind" button. No VAPID keys, no subscriptions, no third party.

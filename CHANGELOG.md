@@ -96,6 +96,13 @@ Work preparing the project for its open-source release.
 - Invitation links: `/?invite=CODE` prefills the invite code and strips the
   parameter from the URL again. Same shared code as before, one less thing to
   retype.
+- Writing NFC tags from the admin area. The booking link (`/?book=1`) and the
+  registration link (`/?invite=CODE`) are shown as full URLs, and on Chrome for
+  Android a button writes either one to a blank sticker as an NDEF `url` record
+  via Web NFC — no separate tag-writing app. Browsers without Web NFC keep the
+  URLs to copy. The registration tag is exactly as secret as the invite code it
+  carries; the booking tag is not a credential and books for whoever is signed
+  in on the phone that taps it.
 
 ### Changed
 

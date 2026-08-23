@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 
 import { test, expect } from '../helpers/fixtures';
 import { addVirtualAuthenticator, registerUserViaUi } from '../helpers/webauthn';
-import { ADMIN_PRIVATE_KEY_PATH, INVITE, PRICE_CENTS } from '../helpers/env';
+import { ADMIN_PRIVATE_KEY_PATH, INVITE, MAIN_URL, PRICE_CENTS } from '../helpers/env';
 
 const CIPHER_PREFIX = 'rsa-oaep-sha1:';
 const DECRYPT_OK_STATUS = 'Names decrypted locally. The key has not left this browser.';
@@ -20,6 +20,31 @@ const DECRYPT_FAIL_STATUS = 'Could not decrypt names. Check that this is the mat
 
 function adminRow(page: import('@playwright/test').Page, userId: string) {
   return page.locator(`[data-testid="admin-row"][data-user-id="${userId}"]`);
+}
+
+/**
+ * Desktop Chromium has no Web NFC, so the write path can only be exercised
+ * against a stub. It records the NDEF messages the page hands to the adapter,
+ * which is exactly what ends up on the tag.
+ */
+async function stubWebNfc(page: import('@playwright/test').Page, mode: 'ok' | 'abort'): Promise<void> {
+  await page.addInitScript((behaviour: string) => {
+    (window as unknown as { __nfcWrites: unknown[] }).__nfcWrites = [];
+    (window as unknown as { NDEFReader: unknown }).NDEFReader = class {
+      write(message: unknown): Promise<void> {
+        (window as unknown as { __nfcWrites: unknown[] }).__nfcWrites.push(message);
+        if (behaviour === 'abort') {
+          // What Chrome throws when no tag came near the phone in time.
+          return Promise.reject(new DOMException('write timed out', 'AbortError'));
+        }
+        return Promise.resolve();
+      }
+    };
+  }, mode);
+}
+
+function nfcWrites(page: import('@playwright/test').Page): Promise<unknown[]> {
+  return page.evaluate(() => (window as unknown as { __nfcWrites: unknown[] }).__nfcWrites);
 }
 
 test.describe('admin', () => {
@@ -297,5 +322,66 @@ test.describe('admin', () => {
 
     const flagged = await page.evaluate(() => (window as unknown as { __x?: number }).__x);
     expect(flagged).toBeUndefined();
+  });
+  test('the NFC card shows both tag links, and hides the write buttons without Web NFC', async ({ page, testApi }) => {
+    const [admin] = await testApi.seed([{ firstName: 'Ad', lastName: 'Min' }]);
+    await testApi.loginAs(page, admin.id);
+    await page.goto('/');
+
+    await expect(page.getByTestId('nfc-card')).toBeVisible();
+    await expect(page.getByTestId('nfc-book-url')).toHaveText(`${MAIN_URL}/?book=1`);
+    await expect(page.getByTestId('nfc-invite-url')).toHaveText(`${MAIN_URL}/?invite=${INVITE}`);
+
+    // Desktop Chromium has no NDEFReader: the links stay, the buttons do not.
+    await expect(page.getByTestId('nfc-support')).toContainText('Chrome on Android');
+    await expect(page.getByTestId('btn-nfc-book')).toBeHidden();
+    await expect(page.getByTestId('btn-nfc-invite')).toBeHidden();
+  });
+
+  test('a non-admin never sees the NFC card', async ({ page, testApi }) => {
+    const [, user] = await testApi.seed([
+      { firstName: 'Ad', lastName: 'Min' },
+      { firstName: 'Normal', lastName: 'User' },
+    ]);
+    await testApi.loginAs(page, user.id);
+    await page.goto('/');
+
+    await expect(page.getByTestId('view-app')).toBeVisible();
+    await expect(page.getByTestId('nfc-card')).toBeHidden();
+  });
+
+  test('with Web NFC present, each button writes its own link as a url record', async ({ page, testApi }) => {
+    const [admin] = await testApi.seed([{ firstName: 'Ad', lastName: 'Min' }]);
+    await stubWebNfc(page, 'ok');
+    await testApi.loginAs(page, admin.id);
+    await page.goto('/');
+
+    await expect(page.getByTestId('nfc-support')).toContainText('hold a blank NFC sticker');
+
+    await page.getByTestId('btn-nfc-book').click();
+    await expect(page.getByTestId('nfc-status')).toContainText('Booking tag written');
+
+    await page.getByTestId('btn-nfc-invite').click();
+    await expect(page.getByTestId('nfc-status')).toContainText('Registration tag written');
+
+    expect(await nfcWrites(page)).toEqual([
+      { records: [{ recordType: 'url', data: `${MAIN_URL}/?book=1` }] },
+      { records: [{ recordType: 'url', data: `${MAIN_URL}/?invite=${INVITE}` }] },
+    ]);
+    await expect(page.getByTestId('nfc-error')).toHaveText('');
+  });
+
+  test('a failed write reports what to do and leaves both buttons usable again', async ({ page, testApi }) => {
+    const [admin] = await testApi.seed([{ firstName: 'Ad', lastName: 'Min' }]);
+    await stubWebNfc(page, 'abort');
+    await testApi.loginAs(page, admin.id);
+    await page.goto('/');
+
+    await page.getByTestId('btn-nfc-book').click();
+
+    await expect(page.getByTestId('nfc-error')).toContainText('No tag found');
+    await expect(page.getByTestId('nfc-status')).toHaveText('');
+    await expect(page.getByTestId('btn-nfc-book')).toBeEnabled();
+    await expect(page.getByTestId('btn-nfc-invite')).toBeEnabled();
   });
 });

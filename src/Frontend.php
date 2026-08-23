@@ -233,6 +233,31 @@ final class Frontend
       <p id="admin-settings-status" data-testid="admin-settings-status" class="hint" role="status"></p>
     </div>
 
+    <div class="card" id="nfc-card" data-testid="nfc-card">
+      <h2>NFC tags</h2>
+      <p class="hint">Write one of these links onto an NFC sticker and put it next to the machine.
+        Tapping the sticker opens Coffee Time &ndash; the booking tag books a coffee right away.</p>
+      <p id="nfc-support" data-testid="nfc-support" class="hint" role="status"></p>
+
+      <div class="nfc-tag">
+        <span class="nfc-label">Booking tag</span>
+        <span id="nfc-book-url" data-testid="nfc-book-url" class="nfc-url"></span>
+        <button type="button" id="btn-nfc-book" data-testid="btn-nfc-book" class="btn btn-quiet nfc-btn" hidden>Write booking tag</button>
+      </div>
+
+      <div class="nfc-tag">
+        <span class="nfc-label">Registration tag</span>
+        <span id="nfc-invite-url" data-testid="nfc-invite-url" class="nfc-url"></span>
+        <button type="button" id="btn-nfc-invite" data-testid="btn-nfc-invite" class="btn btn-quiet nfc-btn" hidden>Write registration tag</button>
+      </div>
+      <p class="hint">The registration link carries the invite code, so it is exactly as secret as
+        that code: anyone who taps the tag can create an account. Saving a new invite code above
+        changes the link, and tags written with the old one stop working.</p>
+
+      <p id="nfc-status" data-testid="nfc-status" class="hint" role="status"></p>
+      <p id="nfc-error" data-testid="nfc-error" class="error" role="alert"></p>
+    </div>
+
     <div class="card">
       <h2>Password sign-in</h2>
       <p class="hint">A password for <em>your own</em> admin account, for computers where passkeys are
