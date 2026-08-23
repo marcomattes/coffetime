@@ -32,6 +32,7 @@ Built to run anywhere PHP runs: no framework, no Node runtime in production, SQL
 **Bookkeeping that holds up**
 - Server-authoritative counter with a time-boxed undo (default 5 minutes — enough for a mis-tap, not enough to edit the tab), balances, streaks, and a personal 28-day history with chart.
 - Every booking freezes the price at booking time — later price changes never reprice existing coffees.
+- Admins get their own navigation: the counter, the user list and settings are three pages — a sidebar on a wide screen, a tab row on a phone — and the open page is in the URL, so a reload stays put.
 - Admin payments settle tabs; an offline CLI (with optional XLSX export) covers accounting.
 - Optional "Pay with PayPal" button: a plain PayPal.me link with the outstanding amount filled in, configured by the admin. It moves no balance on its own — the admin books the payment once the money has arrived.
 

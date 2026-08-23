@@ -24,6 +24,12 @@ async function openPasswordForm(page: import('@playwright/test').Page): Promise<
   await expect(page.getByTestId('pw-password-input')).toBeVisible();
 }
 
+/** The admin's own password card lives on the Settings page. */
+async function openAdminSettings(page: import('@playwright/test').Page): Promise<void> {
+  await page.getByTestId('nav-settings').click();
+  await expect(page.getByTestId('page-settings')).toBeVisible();
+}
+
 test.describe('admin password sign-in', () => {
   test.beforeEach(async ({ testApi }) => {
     await testApi.reset();
@@ -35,7 +41,8 @@ test.describe('admin password sign-in', () => {
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
 
-    await expect(page.getByTestId('view-admin')).toBeVisible();
+    await expect(page.getByTestId('admin-nav')).toBeVisible();
+    await openAdminSettings(page);
     await expect(page.getByTestId('admin-password-state')).toHaveText(/No password set/);
 
     await page.getByTestId('admin-password-input').fill(PASSWORD);
@@ -59,7 +66,7 @@ test.describe('admin password sign-in', () => {
       await passwordPage.getByTestId('btn-login-password').click();
 
       await expect(passwordPage.getByTestId('view-app')).toBeVisible();
-      await expect(passwordPage.getByTestId('view-admin')).toBeVisible();
+      await expect(passwordPage.getByTestId('admin-nav')).toBeVisible();
       // The field must not keep the password around on a shared device.
       await expect(passwordPage.getByTestId('pw-password-input')).toHaveValue('');
     } finally {
@@ -71,6 +78,7 @@ test.describe('admin password sign-in', () => {
     const [admin] = await testApi.seed([{ firstName: 'Grace', lastName: 'Hopper' }]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminSettings(page);
     await page.getByTestId('admin-password-input').fill(PASSWORD);
     await page.getByTestId('admin-password-repeat').fill(PASSWORD);
     await page.getByTestId('btn-admin-password').click();
@@ -105,7 +113,7 @@ test.describe('admin password sign-in', () => {
     await page.goto('/');
 
     await expect(page.getByTestId('view-app')).toBeVisible();
-    await expect(page.getByTestId('view-admin')).toBeHidden();
+    await expect(page.getByTestId('admin-nav')).toBeHidden();
     await expect(page.getByTestId('admin-password-input')).toBeHidden();
   });
 
@@ -113,6 +121,7 @@ test.describe('admin password sign-in', () => {
     const [admin] = await testApi.seed([{ firstName: 'Grace', lastName: 'Hopper' }]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminSettings(page);
 
     await page.getByTestId('admin-password-input').fill(PASSWORD);
     await page.getByTestId('admin-password-repeat').fill(PASSWORD);
@@ -137,6 +146,7 @@ test.describe('admin password sign-in', () => {
     const [admin] = await testApi.seed([{ firstName: 'Grace', lastName: 'Hopper' }]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminSettings(page);
 
     await page.getByTestId('admin-password-input').fill(PASSWORD);
     await page.getByTestId('admin-password-repeat').fill(PASSWORD + ' typo');
@@ -150,6 +160,7 @@ test.describe('admin password sign-in', () => {
     const [admin] = await testApi.seed([{ firstName: 'Grace', lastName: 'Hopper' }]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminSettings(page);
 
     await page.getByTestId('admin-password-input').fill('short');
     await page.getByTestId('admin-password-repeat').fill('short');

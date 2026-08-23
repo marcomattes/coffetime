@@ -131,7 +131,11 @@ authenticator (CDP) — nothing in the app is mocked.
 
 ### 8. `admin.spec.ts` (main instance)
 
-1. A non-admin user does not see the admin view.
+1. A non-admin user gets no admin navigation.
+1b. Admins land on the counter; Settings and Users are one nav click away and
+   each hides the others. The open page is in the hash, survives a reload and
+   follows the back button; a non-admin opening `#/settings` is put back on the
+   counter and the hash is cleaned out.
 2. The admin (config `admins` entry via test seed order — first registered user
    is flagged) sees the settings card, the user rows with `rsa-oaep-sha1:`
    ciphertexts, and a correct totals line.
@@ -234,7 +238,7 @@ one available would not prove the feature works where passkeys are blocked.
    password field is cleared afterwards.
 2. Wrong password → `Wrong name or password.`, still on the auth view — and an
    account that does not exist answers identically (no account oracle).
-3. A non-admin never sees the password card (it lives inside `view-admin`).
+3. A non-admin never sees the password card (it lives on the admin Settings page).
 4. "Remove password" closes the path again: the same password no longer signs
    in.
 5. A mismatched repeat field is refused client-side, before any request.

@@ -23,6 +23,19 @@ function adminRow(page: import('@playwright/test').Page, userId: string) {
 }
 
 /**
+ * Admins work across three pages now. Every test below that touches the user
+ * list or the settings form has to open the page it lives on first -- which is
+ * also what proves the navigation actually switches pages.
+ */
+async function openAdminPage(
+  page: import('@playwright/test').Page,
+  name: 'coffee' | 'users' | 'settings',
+): Promise<void> {
+  await page.getByTestId('nav-' + name).click();
+  await expect(page.getByTestId('page-' + name)).toBeVisible();
+}
+
+/**
  * Desktop Chromium has no Web NFC, so the write path can only be exercised
  * against a stub. It records the NDEF messages the page hands to the adapter,
  * which is exactly what ends up on the tag.
@@ -62,7 +75,7 @@ test.describe('admin', () => {
     await page.goto('/');
 
     await expect(page.getByTestId('view-app')).toBeVisible();
-    await expect(page.getByTestId('view-admin')).toBeHidden();
+    await expect(page.getByTestId('admin-nav')).toBeHidden();
   });
 
   test('the admin sees the settings card, ciphertext rows and a correct totals line', async ({ page, testApi }) => {
@@ -78,15 +91,62 @@ test.describe('admin', () => {
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
 
-    await expect(page.getByTestId('view-admin')).toBeVisible();
+    // Admins land on the counter like everyone else; the other two pages are
+    // a click away and neither is showing yet.
+    await expect(page.getByTestId('admin-nav')).toBeVisible();
+    await expect(page.getByTestId('page-coffee')).toBeVisible();
+    await expect(page.getByTestId('page-settings')).toBeHidden();
+    await expect(page.getByTestId('page-users')).toBeHidden();
+
+    await openAdminPage(page, 'settings');
     await expect(page.getByTestId('admin-price-input')).toBeVisible();
     await expect(page.getByTestId('admin-invite-input')).toBeVisible();
+    await expect(page.getByTestId('page-coffee')).toBeHidden();
 
+    await openAdminPage(page, 'users');
     await expect(page.getByTestId('admin-row')).toHaveCount(2);
     await expect(page.getByTestId('admin-users')).toContainText(CIPHER_PREFIX);
+    await expect(page.getByTestId('page-settings')).toBeHidden();
 
     // tab: 2 coffees * 150 = 300, minus 100 paid = 200 -> 2.00 EUR outstanding.
     await expect(page.getByTestId('admin-totals')).toHaveText('2 accounts · 2 coffees · 2.00 € outstanding');
+  });
+
+  test('the open page survives a reload and follows the back button', async ({ page, testApi }) => {
+    const [admin] = await testApi.seed([{ firstName: 'Ad', lastName: 'Min' }]);
+    await testApi.loginAs(page, admin.id);
+    await page.goto('/');
+    await expect(page.getByTestId('admin-nav')).toBeVisible();
+    // The counter is the plain page, so it keeps a plain URL.
+    expect(new URL(page.url()).hash).toBe('');
+
+    await openAdminPage(page, 'settings');
+    expect(new URL(page.url()).hash).toBe('#/settings');
+
+    await page.reload();
+    await expect(page.getByTestId('page-settings')).toBeVisible();
+    await expect(page.getByTestId('page-coffee')).toBeHidden();
+
+    await page.goBack();
+    await expect(page.getByTestId('page-coffee')).toBeVisible();
+    await expect(page.getByTestId('page-settings')).toBeHidden();
+  });
+
+  test('a non-admin cannot reach an admin page by its URL', async ({ page, testApi }) => {
+    const [, user] = await testApi.seed([
+      { firstName: 'Ad', lastName: 'Min' },
+      { firstName: 'Normal', lastName: 'User' },
+    ]);
+    await testApi.loginAs(page, user.id);
+
+    await page.goto('/#/settings');
+    await expect(page.getByTestId('view-app')).toBeVisible();
+    await expect(page.getByTestId('page-coffee')).toBeVisible();
+    await expect(page.getByTestId('page-settings')).toBeHidden();
+    await expect(page.getByTestId('admin-nav')).toBeHidden();
+    // The hash is cleaned out rather than left pointing at a page that is not
+    // there. (What actually protects the data is the API, tested separately.)
+    await expect.poll(() => new URL(page.url()).hash).toBe('');
   });
 
   test('recording a payment reduces the outstanding balance and is reflected server-side', async ({ page, testApi }) => {
@@ -96,6 +156,7 @@ test.describe('admin', () => {
     ]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminPage(page, 'users');
 
     const row = adminRow(page, user.id);
     await row.getByTestId('admin-payment-input').fill('2.00');
@@ -117,6 +178,7 @@ test.describe('admin', () => {
     ]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminPage(page, 'users');
 
     let paymentRequestSeen = false;
     page.on('request', (req) => {
@@ -144,7 +206,7 @@ test.describe('admin', () => {
     const [admin] = await testApi.seed([{ firstName: 'Ad', lastName: 'Min' }]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
-    await expect(page.getByTestId('view-admin')).toBeVisible();
+    await openAdminPage(page, 'settings');
 
     try {
       await page.getByTestId('admin-price-input').fill('2.50');
@@ -221,11 +283,13 @@ test.describe('admin', () => {
 
     try {
       // A pasted link is accepted; the server stores the bare handle.
+      await openAdminPage(page, 'settings');
       await page.getByTestId('admin-paypal-input').fill('https://paypal.me/CoffeeKitchen');
       await page.getByTestId('btn-admin-settings').click();
       await expect(page.getByTestId('admin-settings-status')).toContainText('Saved');
       await expect(page.getByTestId('admin-paypal-input')).toHaveValue('CoffeeKitchen');
 
+      await openAdminPage(page, 'coffee');
       const link = page.getByTestId('paypal-link');
       await expect(page.getByTestId('paypal-card')).toBeVisible();
       await expect(link).toHaveText('Pay 3.00 € with PayPal');
@@ -250,6 +314,7 @@ test.describe('admin', () => {
     } finally {
       // /api/test/reset never clears the settings table -- always put the
       // handle back to "not configured", even if an assertion above failed.
+      await openAdminPage(page, 'settings');
       await page.getByTestId('admin-paypal-input').fill('');
       await page.getByTestId('btn-admin-settings').click();
       await expect(page.getByTestId('admin-settings-status')).toContainText('Saved');
@@ -263,6 +328,7 @@ test.describe('admin', () => {
     ]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminPage(page, 'users');
 
     const row = adminRow(page, user.id);
     await row.getByTestId('admin-recovery-btn').click();
@@ -328,6 +394,7 @@ test.describe('admin', () => {
     ]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminPage(page, 'users');
 
     await page.getByTestId('private-key-input').setInputFiles(ADMIN_PRIVATE_KEY_PATH);
     await expect(page.locator('#admin-key-status')).toHaveText(DECRYPT_OK_STATUS);
@@ -374,6 +441,7 @@ test.describe('admin', () => {
     const [admin] = await testApi.seed([{ firstName: 'Ad', lastName: 'Min' }]);
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminPage(page, 'settings');
 
     await expect(page.getByTestId('nfc-card')).toBeVisible();
     await expect(page.getByTestId('nfc-book-url')).toHaveText(`${MAIN_URL}/?book=1`);
@@ -402,6 +470,7 @@ test.describe('admin', () => {
     await stubWebNfc(page, 'ok');
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminPage(page, 'settings');
 
     await expect(page.getByTestId('nfc-support')).toContainText('hold a blank NFC sticker');
 
@@ -423,6 +492,7 @@ test.describe('admin', () => {
     await stubWebNfc(page, 'abort');
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    await openAdminPage(page, 'settings');
 
     await page.getByTestId('btn-nfc-book').click();
 

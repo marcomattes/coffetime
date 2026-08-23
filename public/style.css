@@ -538,6 +538,91 @@ input {
   margin: 0;
 }
 
+/* ------------------------------------------------ Admin navigation ----- */
+
+/*
+ * One markup, two layouts: a tab row on a phone, a real sidebar once there is
+ * room for one. A drawer would need an overlay, a focus trap and an extra tap
+ * per switch; this needs none of the three and never hides where you are.
+ */
+.nav {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nav::-webkit-scrollbar {
+  display: none;
+}
+
+.nav-item {
+  flex: 1 0 auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.nav-item[aria-current="page"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Wide enough for a sidebar: the same buttons stack on the left, the pages
+   share the column next to it, and the wrap grows to make room. */
+@media (min-width: 900px) {
+  body.has-admin-nav .wrap {
+    max-width: 1040px;
+  }
+
+  #view-app.has-nav {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+
+  #view-app.has-nav .nav {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    position: sticky;
+    top: calc(24px + env(safe-area-inset-top, 0px));
+    flex-direction: column;
+    margin: 0;
+  }
+
+  #view-app.has-nav .nav-item {
+    flex: 0 0 auto;
+    text-align: left;
+  }
+
+  /* Every page occupies the same cell; only one is ever not [hidden]. */
+  #view-app.has-nav .page {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  #view-app.has-nav .app-foot {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}
+
 /* ------------------------------------------------- Pull to refresh ----- */
 
 /*

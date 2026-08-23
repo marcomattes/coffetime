@@ -170,7 +170,7 @@ test.describe('setup wizard', () => {
       const authenticator = await addVirtualAuthenticator(page);
       try {
         await registerUserViaUi(page, { firstName: 'First', lastName: 'Admin', invite: 'WIZARD-INVITE' });
-        await expect(page.getByTestId('view-admin')).toBeVisible();
+        await expect(page.getByTestId('admin-nav')).toBeVisible();
         await expect(page.getByTestId('price')).toHaveText('2.00 €');
 
         let state = await setupApi.state();
@@ -182,7 +182,7 @@ test.describe('setup wizard', () => {
         await expect(page.getByTestId('view-auth')).toBeVisible();
 
         await registerUserViaUi(page, { firstName: 'Second', lastName: 'Person', invite: 'WIZARD-INVITE' });
-        await expect(page.getByTestId('view-admin')).toBeHidden();
+        await expect(page.getByTestId('admin-nav')).toBeHidden();
 
         state = await setupApi.state();
         expect(state.users).toHaveLength(2);

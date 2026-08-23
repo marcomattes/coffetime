@@ -131,6 +131,12 @@ Work preparing the project for its open-source release.
 
 ### Added
 
+- **Admin navigation**: settings and the user list are pages of their own
+  instead of cards stacked under the counter. The same nav is a left sidebar
+  from 900px and a tab row below it — no drawer, so no overlay, no focus trap
+  and no extra tap. The open page lives in the hash (`#/users`, `#/settings`),
+  so a reload stays put and the back button walks the pages; the counter keeps
+  a bare URL and non-admins get no navigation at all.
 - The footer names the **deployed build** (short commit hash). The release
   bundle carries `src/build.json` written by `scripts/build-release.sh`, since
   the FTP-mirrored tree has no `.git`; a checkout falls back to reading

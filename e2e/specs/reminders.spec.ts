@@ -94,6 +94,9 @@ test.describe('reminders', () => {
 
     await testApi.loginAs(page, admin.id);
     await page.goto('/');
+    // The user list is its own page now.
+    await page.getByTestId('nav-users').click();
+    await expect(page.getByTestId('page-users')).toBeVisible();
 
     const row = page.locator(`[data-testid="admin-row"][data-user-id="${user.id}"]`);
     await row.getByTestId('admin-remind-btn').click();

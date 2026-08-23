@@ -144,181 +144,202 @@ final class Frontend
   </section>
 
   <section id="view-app" data-testid="view-app" hidden>
-    <div class="card" id="install-card" data-testid="install-card" hidden>
-      <h2>Add to Home Screen</h2>
-      <p id="install-text" data-testid="install-text" class="hint"></p>
-      <ol id="install-steps" class="install-steps" hidden>
-        <li>Tap <strong>Share</strong> in the Safari toolbar (the square with the arrow).</li>
-        <li>Scroll down and choose <strong>Add to Home Screen</strong>.</li>
-        <li>Confirm with <strong>Add</strong>, then open Coffee Time from the Home Screen.</li>
-      </ol>
-      <button type="button" id="btn-install" data-testid="btn-install" class="btn btn-primary" hidden>Add to Home Screen</button>
-      <button type="button" id="btn-install-dismiss" data-testid="btn-install-dismiss" class="btn btn-quiet">Not now</button>
-    </div>
 
-    <div class="card tally">
-      <p class="tally-label">My coffees</p>
-      <p id="counter" data-testid="counter" class="tally-count">0</p>
-      <p id="streak" data-testid="streak" class="hint" hidden></p>
-      <p id="queue-hint" data-testid="queue-hint" class="hint" hidden></p>
-      <button type="button" id="btn-add" data-testid="btn-add" class="btn btn-add">
-        <span aria-hidden="true">&#9749;</span> Take a coffee
-      </button>
-      <!-- Shown by app.ts only while the server would still accept it. -->
-      <button type="button" id="btn-undo" data-testid="btn-undo" class="btn btn-quiet" hidden>Undo last coffee</button>
-    </div>
+    <!-- Admins work across three pages and get a navigation for them; everyone
+         else has the one page and no navigation at all. The same markup is a
+         sidebar where there is room for one and a tab row where there is not --
+         a drawer would mean an overlay, a focus trap and one more tap for
+         every switch. -->
+    <nav id="admin-nav" data-testid="admin-nav" class="nav" aria-label="Sections" hidden>
+      <button type="button" class="nav-item" data-page="coffee" data-testid="nav-coffee">Coffee</button>
+      <button type="button" class="nav-item" data-page="users" data-testid="nav-users">Users</button>
+      <button type="button" class="nav-item" data-page="settings" data-testid="nav-settings">Settings</button>
+    </nav>
 
-    <div class="card grid">
-      <div class="stat">
-        <span class="stat-label">Outstanding</span>
-        <strong id="balance" data-testid="balance" class="stat-value">0.00 &euro;</strong>
+    <div id="page-coffee" data-testid="page-coffee" class="page">
+      <div class="card" id="install-card" data-testid="install-card" hidden>
+        <h2>Add to Home Screen</h2>
+        <p id="install-text" data-testid="install-text" class="hint"></p>
+        <ol id="install-steps" class="install-steps" hidden>
+          <li>Tap <strong>Share</strong> in the Safari toolbar (the square with the arrow).</li>
+          <li>Scroll down and choose <strong>Add to Home Screen</strong>.</li>
+          <li>Confirm with <strong>Add</strong>, then open Coffee Time from the Home Screen.</li>
+        </ol>
+        <button type="button" id="btn-install" data-testid="btn-install" class="btn btn-primary" hidden>Add to Home Screen</button>
+        <button type="button" id="btn-install-dismiss" data-testid="btn-install-dismiss" class="btn btn-quiet">Not now</button>
       </div>
-      <div class="stat">
-        <span class="stat-label">Price</span>
-        <strong id="price" data-testid="price" class="stat-value">0.00 &euro;</strong>
+
+      <div class="card tally">
+        <p class="tally-label">My coffees</p>
+        <p id="counter" data-testid="counter" class="tally-count">0</p>
+        <p id="streak" data-testid="streak" class="hint" hidden></p>
+        <p id="queue-hint" data-testid="queue-hint" class="hint" hidden></p>
+        <button type="button" id="btn-add" data-testid="btn-add" class="btn btn-add">
+          <span aria-hidden="true">&#9749;</span> Take a coffee
+        </button>
+        <!-- Shown by app.ts only while the server would still accept it. -->
+        <button type="button" id="btn-undo" data-testid="btn-undo" class="btn btn-quiet" hidden>Undo last coffee</button>
       </div>
-      <div class="stat">
-        <span class="stat-label">My rank</span>
-        <strong id="rank" data-testid="rank" class="stat-value">-</strong>
+
+      <div class="card grid">
+        <div class="stat">
+          <span class="stat-label">Outstanding</span>
+          <strong id="balance" data-testid="balance" class="stat-value">0.00 &euro;</strong>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Price</span>
+          <strong id="price" data-testid="price" class="stat-value">0.00 &euro;</strong>
+        </div>
+        <div class="stat">
+          <span class="stat-label">My rank</span>
+          <strong id="rank" data-testid="rank" class="stat-value">-</strong>
+        </div>
+        <div class="stat">
+          <span class="stat-label">All coffees</span>
+          <strong id="total" data-testid="total" class="stat-value">0</strong>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Today</span>
+          <strong id="today" data-testid="today" class="stat-value">0</strong>
+        </div>
       </div>
-      <div class="stat">
-        <span class="stat-label">All coffees</span>
-        <strong id="total" data-testid="total" class="stat-value">0</strong>
+
+      <!-- Only shown once an admin has configured a PayPal.me handle and there
+           is something to pay. The link leaves the app on purpose (see the
+           footer for why target="_blank" matters to an installed PWA). -->
+      <div class="card" id="paypal-card" data-testid="paypal-card" hidden>
+        <h2>Settle your tab</h2>
+        <p class="hint">Opens PayPal with the amount already filled in. Your balance here
+          changes once the payment has been booked in the admin area &ndash; not the moment
+          PayPal is done.</p>
+        <a id="paypal-link" data-testid="paypal-link" class="btn btn-primary"
+           href="https://www.paypal.com/paypalme/" target="_blank" rel="noopener noreferrer">Pay with PayPal</a>
       </div>
-      <div class="stat">
-        <span class="stat-label">Today</span>
-        <strong id="today" data-testid="today" class="stat-value">0</strong>
+
+      <div class="card">
+        <h2>Last 14 days</h2>
+        <div id="history-chart" data-testid="history-chart" class="chart"></div>
       </div>
+
+      <div class="card">
+        <h2>Leaderboard</h2>
+        <p class="hint">Anonymous &ndash; ranks and totals only.</p>
+        <ol id="distribution" class="dist"></ol>
+      </div>
+
+      <div class="card">
+        <h2>Reminders</h2>
+        <p id="notify-status" data-testid="notify-status" class="hint" role="status"></p>
+        <button type="button" id="btn-notify-enable" data-testid="btn-notify-enable" class="btn btn-quiet" hidden>Enable reminders</button>
+        <button type="button" id="btn-notify-install" data-testid="btn-notify-install" class="btn btn-quiet" hidden>Show me how</button>
+      </div>
+
+      <div class="card">
+        <h2>Devices</h2>
+        <p id="device-count" data-testid="device-count" class="hint"></p>
+        <button type="button" id="btn-link-code" data-testid="btn-link-code" class="btn btn-quiet">Link another device</button>
+        <p id="link-code-display" data-testid="link-code-display" class="link-code" hidden></p>
+        <p id="link-code-hint" class="hint" hidden>Enter this code on the new device under &ldquo;Link this device&rdquo;. Valid for 15 minutes.</p>
+        <p id="link-code-error" data-testid="link-code-error" class="error" role="alert"></p>
+      </div>
+
     </div>
 
-    <!-- Only shown once an admin has configured a PayPal.me handle and there
-         is something to pay. The link leaves the app on purpose (see the
-         footer for why target="_blank" matters to an installed PWA). -->
-    <div class="card" id="paypal-card" data-testid="paypal-card" hidden>
-      <h2>Settle your tab</h2>
-      <p class="hint">Opens PayPal with the amount already filled in. Your balance here
-        changes once the payment has been booked in the admin area &ndash; not the moment
-        PayPal is done.</p>
-      <a id="paypal-link" data-testid="paypal-link" class="btn btn-primary"
-         href="https://www.paypal.com/paypalme/" target="_blank" rel="noopener noreferrer">Pay with PayPal</a>
-    </div>
-
-    <div class="card">
-      <h2>Last 14 days</h2>
-      <div id="history-chart" data-testid="history-chart" class="chart"></div>
-    </div>
-
-    <div class="card">
-      <h2>Leaderboard</h2>
-      <p class="hint">Anonymous &ndash; ranks and totals only.</p>
-      <ol id="distribution" class="dist"></ol>
-    </div>
-
-    <div class="card">
-      <h2>Reminders</h2>
-      <p id="notify-status" data-testid="notify-status" class="hint" role="status"></p>
-      <button type="button" id="btn-notify-enable" data-testid="btn-notify-enable" class="btn btn-quiet" hidden>Enable reminders</button>
-      <button type="button" id="btn-notify-install" data-testid="btn-notify-install" class="btn btn-quiet" hidden>Show me how</button>
-    </div>
-
-    <div class="card">
-      <h2>Devices</h2>
-      <p id="device-count" data-testid="device-count" class="hint"></p>
-      <button type="button" id="btn-link-code" data-testid="btn-link-code" class="btn btn-quiet">Link another device</button>
-      <p id="link-code-display" data-testid="link-code-display" class="link-code" hidden></p>
-      <p id="link-code-hint" class="hint" hidden>Enter this code on the new device under &ldquo;Link this device&rdquo;. Valid for 15 minutes.</p>
-      <p id="link-code-error" data-testid="link-code-error" class="error" role="alert"></p>
-    </div>
-
-    <p id="app-error" class="error" role="alert"></p>
-    <button type="button" id="btn-logout" data-testid="btn-logout" class="btn btn-quiet">Sign out</button>
-  </section>
-
-  <section id="view-admin" data-testid="view-admin" hidden>
-    <div class="card">
-      <h2>Settings</h2>
-      <div class="settings-form">
+    <div id="page-users" data-testid="page-users" class="page" hidden>
+      <div class="card">
+        <h2>Administration</h2>
+        <p class="hint">Select the RSA private-key PEM file. Decryption happens only in this browser;
+          the key is never uploaded or stored.</p>
         <div class="field">
-          <label for="admin-price-input">Price per coffee (&euro;)</label>
-          <input type="number" id="admin-price-input" data-testid="admin-price-input"
-                 step="0.01" min="0.01" inputmode="decimal">
+          <label for="private-key-input">Private key file</label>
+          <input type="file" id="private-key-input" data-testid="private-key-input" accept=".pem,.key,text/plain">
+        </div>
+        <p id="admin-key-status" class="hint" role="status">Encrypted names are shown until a key is selected.</p>
+        <p id="admin-totals" data-testid="admin-totals" class="hint"></p>
+        <button type="button" id="btn-admin-csv" data-testid="btn-admin-csv" class="btn btn-quiet">Export CSV</button>
+        <p class="hint">Names appear in the CSV only after the matching private key file has been loaded.</p>
+        <p id="admin-status" data-testid="admin-status" class="error" role="alert"></p>
+        <div id="admin-users" data-testid="admin-users" class="rows"></div>
+      </div>
+    </div>
+
+    <div id="page-settings" data-testid="page-settings" class="page" hidden>
+      <div class="card">
+        <h2>Settings</h2>
+        <div class="settings-form">
+          <div class="field">
+            <label for="admin-price-input">Price per coffee (&euro;)</label>
+            <input type="number" id="admin-price-input" data-testid="admin-price-input"
+                   step="0.01" min="0.01" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="admin-invite-input">Invite code</label>
+            <input type="text" id="admin-invite-input" data-testid="admin-invite-input"
+                   autocomplete="off" spellcheck="false" minlength="4" maxlength="64">
+          </div>
+          <div class="field">
+            <label for="admin-paypal-input">PayPal.me handle (optional)</label>
+            <input type="text" id="admin-paypal-input" data-testid="admin-paypal-input"
+                   autocomplete="off" spellcheck="false" maxlength="64" placeholder="yourhandle">
+            <p class="hint">Shows a &ldquo;Pay with PayPal&rdquo; button with the outstanding amount
+              filled in. A full paypal.me link works too. Leave empty to hide the button.</p>
+          </div>
+          <button type="button" id="btn-admin-settings" data-testid="btn-admin-settings" class="btn settings-btn">Save settings</button>
+        </div>
+        <p id="admin-settings-status" data-testid="admin-settings-status" class="hint" role="status"></p>
+      </div>
+
+      <div class="card" id="nfc-card" data-testid="nfc-card">
+        <h2>NFC tags</h2>
+        <p class="hint">Write one of these links onto an NFC sticker and put it next to the machine.
+          Tapping the sticker opens Coffee Time &ndash; the booking tag books a coffee right away.</p>
+        <p id="nfc-support" data-testid="nfc-support" class="hint" role="status"></p>
+
+        <div class="nfc-tag">
+          <span class="nfc-label">Booking tag</span>
+          <span id="nfc-book-url" data-testid="nfc-book-url" class="nfc-url"></span>
+          <button type="button" id="btn-nfc-book" data-testid="btn-nfc-book" class="btn btn-quiet nfc-btn" hidden>Write booking tag</button>
+        </div>
+
+        <div class="nfc-tag">
+          <span class="nfc-label">Registration tag</span>
+          <span id="nfc-invite-url" data-testid="nfc-invite-url" class="nfc-url"></span>
+          <button type="button" id="btn-nfc-invite" data-testid="btn-nfc-invite" class="btn btn-quiet nfc-btn" hidden>Write registration tag</button>
+        </div>
+        <p class="hint">The registration link carries the invite code, so it is exactly as secret as
+          that code: anyone who taps the tag can create an account. Saving a new invite code above
+          changes the link, and tags written with the old one stop working.</p>
+
+        <p id="nfc-status" data-testid="nfc-status" class="hint" role="status"></p>
+        <p id="nfc-error" data-testid="nfc-error" class="error" role="alert"></p>
+      </div>
+
+      <div class="card">
+        <h2>Password sign-in</h2>
+        <p class="hint">A password for <em>your own</em> admin account, for computers where passkeys are
+          blocked. Passkeys keep working; this is an addition, not a replacement.</p>
+        <p id="admin-password-state" data-testid="admin-password-state" class="hint" role="status"></p>
+        <div class="field">
+          <label for="admin-password-input">New password</label>
+          <input type="password" id="admin-password-input" data-testid="admin-password-input"
+                 autocomplete="new-password" maxlength="200">
         </div>
         <div class="field">
-          <label for="admin-invite-input">Invite code</label>
-          <input type="text" id="admin-invite-input" data-testid="admin-invite-input"
-                 autocomplete="off" spellcheck="false" minlength="4" maxlength="64">
+          <label for="admin-password-repeat">Repeat password</label>
+          <input type="password" id="admin-password-repeat" data-testid="admin-password-repeat"
+                 autocomplete="new-password" maxlength="200">
         </div>
-        <div class="field">
-          <label for="admin-paypal-input">PayPal.me handle (optional)</label>
-          <input type="text" id="admin-paypal-input" data-testid="admin-paypal-input"
-                 autocomplete="off" spellcheck="false" maxlength="64" placeholder="yourhandle">
-          <p class="hint">Shows a &ldquo;Pay with PayPal&rdquo; button with the outstanding amount
-            filled in. A full paypal.me link works too. Leave empty to hide the button.</p>
-        </div>
-        <button type="button" id="btn-admin-settings" data-testid="btn-admin-settings" class="btn settings-btn">Save settings</button>
+        <button type="button" id="btn-admin-password" data-testid="btn-admin-password" class="btn">Save password</button>
+        <button type="button" id="btn-admin-password-remove" data-testid="btn-admin-password-remove" class="btn btn-quiet" hidden>Remove password</button>
+        <p id="admin-password-status" data-testid="admin-password-status" class="error" role="alert"></p>
       </div>
-      <p id="admin-settings-status" data-testid="admin-settings-status" class="hint" role="status"></p>
     </div>
 
-    <div class="card" id="nfc-card" data-testid="nfc-card">
-      <h2>NFC tags</h2>
-      <p class="hint">Write one of these links onto an NFC sticker and put it next to the machine.
-        Tapping the sticker opens Coffee Time &ndash; the booking tag books a coffee right away.</p>
-      <p id="nfc-support" data-testid="nfc-support" class="hint" role="status"></p>
-
-      <div class="nfc-tag">
-        <span class="nfc-label">Booking tag</span>
-        <span id="nfc-book-url" data-testid="nfc-book-url" class="nfc-url"></span>
-        <button type="button" id="btn-nfc-book" data-testid="btn-nfc-book" class="btn btn-quiet nfc-btn" hidden>Write booking tag</button>
-      </div>
-
-      <div class="nfc-tag">
-        <span class="nfc-label">Registration tag</span>
-        <span id="nfc-invite-url" data-testid="nfc-invite-url" class="nfc-url"></span>
-        <button type="button" id="btn-nfc-invite" data-testid="btn-nfc-invite" class="btn btn-quiet nfc-btn" hidden>Write registration tag</button>
-      </div>
-      <p class="hint">The registration link carries the invite code, so it is exactly as secret as
-        that code: anyone who taps the tag can create an account. Saving a new invite code above
-        changes the link, and tags written with the old one stop working.</p>
-
-      <p id="nfc-status" data-testid="nfc-status" class="hint" role="status"></p>
-      <p id="nfc-error" data-testid="nfc-error" class="error" role="alert"></p>
-    </div>
-
-    <div class="card">
-      <h2>Password sign-in</h2>
-      <p class="hint">A password for <em>your own</em> admin account, for computers where passkeys are
-        blocked. Passkeys keep working; this is an addition, not a replacement.</p>
-      <p id="admin-password-state" data-testid="admin-password-state" class="hint" role="status"></p>
-      <div class="field">
-        <label for="admin-password-input">New password</label>
-        <input type="password" id="admin-password-input" data-testid="admin-password-input"
-               autocomplete="new-password" maxlength="200">
-      </div>
-      <div class="field">
-        <label for="admin-password-repeat">Repeat password</label>
-        <input type="password" id="admin-password-repeat" data-testid="admin-password-repeat"
-               autocomplete="new-password" maxlength="200">
-      </div>
-      <button type="button" id="btn-admin-password" data-testid="btn-admin-password" class="btn">Save password</button>
-      <button type="button" id="btn-admin-password-remove" data-testid="btn-admin-password-remove" class="btn btn-quiet" hidden>Remove password</button>
-      <p id="admin-password-status" data-testid="admin-password-status" class="error" role="alert"></p>
-    </div>
-
-    <div class="card">
-      <h2>Administration</h2>
-      <p class="hint">Select the RSA private-key PEM file. Decryption happens only in this browser;
-        the key is never uploaded or stored.</p>
-      <div class="field">
-        <label for="private-key-input">Private key file</label>
-        <input type="file" id="private-key-input" data-testid="private-key-input" accept=".pem,.key,text/plain">
-      </div>
-      <p id="admin-key-status" class="hint" role="status">Encrypted names are shown until a key is selected.</p>
-      <p id="admin-totals" data-testid="admin-totals" class="hint"></p>
-      <button type="button" id="btn-admin-csv" data-testid="btn-admin-csv" class="btn btn-quiet">Export CSV</button>
-      <p class="hint">Names appear in the CSV only after the matching private key file has been loaded.</p>
-      <p id="admin-status" data-testid="admin-status" class="error" role="alert"></p>
-      <div id="admin-users" data-testid="admin-users" class="rows"></div>
+    <!-- Outside the pages: an error and the way out have to be reachable from
+         whichever page is open. -->
+    <div class="app-foot">
+      <p id="app-error" class="error" role="alert"></p>
+      <button type="button" id="btn-logout" data-testid="btn-logout" class="btn btn-quiet">Sign out</button>
     </div>
   </section>
 

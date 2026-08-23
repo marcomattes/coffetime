@@ -705,7 +705,114 @@
     el('view-setup')!.hidden = view !== 'setup';
     el('view-auth')!.hidden = view !== 'auth';
     el('view-app')!.hidden = view !== 'app';
-    el('view-admin')!.hidden = !(view === 'app' && state.me !== null && state.me.admin === true);
+
+    // Only an administrator has more than one page, so only an administrator
+    // gets a navigation -- and the layout that goes with it.
+    const admin = view === 'app' && state.me !== null && state.me.admin === true;
+    el('admin-nav')!.hidden = !admin;
+    el('view-app')!.classList.toggle('has-nav', admin);
+    document.body.classList.toggle('has-admin-nav', admin);
+    syncPage();
+  }
+
+  /* -------------------------------------------------------- Admin pages -- */
+
+  /*
+   * Settings and the user list are pages of their own rather than cards piled
+   * under the counter. Which one is open lives in the hash, so a reload stays
+   * where you were and the back button walks the pages; the plain counter page
+   * keeps a bare URL, since that is what everyone who is not an admin ever
+   * sees.
+   *
+   * The hash is a display preference, never a permission: syncPage() reads the
+   * admin flag from `state.me` on every call, so a hash naming an admin page is
+   * simply cleaned out of the URL for anyone else. What actually protects the
+   * data behind those pages is the server refusing the requests.
+   */
+
+  const PAGES = ['coffee', 'users', 'settings'] as const;
+  type Page = typeof PAGES[number];
+
+  function isPage(value: string): value is Page {
+    return (PAGES as readonly string[]).indexOf(value) !== -1;
+  }
+
+  function hashPage(): Page {
+    const raw = window.location.hash.replace(/^#\/?/, '');
+    return isPage(raw) ? raw : 'coffee';
+  }
+
+  /*
+   * The page that was asked for, kept apart from the URL on purpose. Boot shows
+   * the sign-in view before /api/me has answered, and at that moment nobody is
+   * an administrator yet -- reading the hash back at each step would clean away
+   * the page the URL asked for a moment before we know whether it is allowed.
+   */
+  let requestedPage: Page = hashPage();
+
+  function syncPage(): void {
+    const admin = state.me !== null && state.me.admin === true;
+    const active: Page = admin ? requestedPage : 'coffee';
+
+    PAGES.forEach((name) => {
+      const section = el('page-' + name);
+      if (section) {
+        section.hidden = name !== active;
+      }
+      const item = document.querySelector('[data-page="' + name + '"]');
+      if (item) {
+        if (name === active) {
+          item.setAttribute('aria-current', 'page');
+        } else {
+          item.removeAttribute('aria-current');
+        }
+      }
+    });
+
+    // Only rewrite the URL once the app is actually on screen; see the note on
+    // requestedPage above. An unknown page, or one this account may not open,
+    // is replaced rather than pushed -- a redirect is not a place to go back to.
+    if (el('view-app')!.hidden) {
+      return;
+    }
+    const expected = active === 'coffee' ? '' : '#/' + active;
+    if (window.location.hash !== expected) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search + expected);
+    }
+  }
+
+  function goToPage(page: Page): void {
+    requestedPage = page;
+    const target = page === 'coffee' ? '' : '#/' + page;
+    if (window.location.hash !== target) {
+      // pushState rather than assigning the hash: it fires no event, so the
+      // render below happens exactly once, and 'coffee' can drop the '#'
+      // entirely instead of leaving a bare one behind.
+      window.history.pushState(null, '', window.location.pathname + window.location.search + target);
+    }
+    syncPage();
+    window.scrollTo(0, 0);
+  }
+
+  function initAdminNav(): void {
+    const nav = el('admin-nav');
+    if (nav) {
+      nav.addEventListener('click', (event) => {
+        const origin = event.target as HTMLElement | null;
+        const item = origin && origin.closest ? origin.closest('[data-page]') : null;
+        const page = item ? item.getAttribute('data-page') || '' : '';
+        if (isPage(page)) {
+          goToPage(page);
+        }
+      });
+    }
+    // Back/forward, and a hash someone typed or pasted themselves.
+    const fromUrl = (): void => {
+      requestedPage = hashPage();
+      syncPage();
+    };
+    window.addEventListener('popstate', fromUrl);
+    window.addEventListener('hashchange', fromUrl);
   }
 
   function renderMe(me: MeResponse): void {
@@ -1803,7 +1910,13 @@
     }
     params.delete('invite');
     const rest = params.toString();
-    window.history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : ''));
+    // Keep the hash: it names the open page, and stripping the invite must
+    // not also navigate the admin back to the counter.
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + (rest ? '?' + rest : '') + window.location.hash
+    );
 
     const code = invite.trim();
     // Same bounds the server enforces; a link carrying nonsense just opens the
@@ -2305,6 +2418,7 @@
     registerServiceWorker();
     initInstall();
     initReminders();
+    initAdminNav();
     initBuildBadge();
     initPullToRefresh();
     updateQueueHint();
