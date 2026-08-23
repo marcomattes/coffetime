@@ -18,6 +18,7 @@ final class Api
         '/api/register/verify',
         '/api/login/options',
         '/api/login/verify',
+        '/api/login/password',
         '/api/setup/status',
         '/api/setup/init',
         '/api/link/options',
@@ -53,6 +54,7 @@ final class Api
             '/api/register/verify' => ['POST', 'registerVerify'],
             '/api/login/options' => ['POST', 'loginOptions'],
             '/api/login/verify' => ['POST', 'loginVerify'],
+            '/api/login/password' => ['POST', 'loginPassword'],
             '/api/logout' => ['POST', 'logout'],
             '/api/me' => ['GET', 'me'],
             '/api/coffee' => ['POST', 'coffee'],
@@ -65,6 +67,7 @@ final class Api
             '/api/admin/payment' => ['POST', 'adminPayment'],
             '/api/admin/remind' => ['POST', 'adminRemind'],
             '/api/admin/link-code' => ['POST', 'adminLinkCode'],
+            '/api/admin/password' => ['POST', 'adminPassword'],
             '/api/link/code' => ['POST', 'linkCode'],
             '/api/link/options' => ['POST', 'linkOptions'],
             '/api/link/verify' => ['POST', 'linkVerify'],
@@ -334,6 +337,71 @@ final class Api
         }
 
         Credentials::updateSignCount((string) $row['id'], $verified->counter);
+        Sessions::start((string) $user['id']);
+
+        Http::json(['ok' => true, 'user' => self::meView($user)]);
+    }
+
+    /**
+     * Password sign-in, available on administrator accounts only.
+     *
+     * The app is passkey-first and everybody else stays passkey-only; this
+     * path exists for a managed workstation whose policy blocks authenticators
+     * outright, which would otherwise leave the person responsible for the tab
+     * with no way in at all.
+     *
+     * There is no username in the schema, so the account is found the same way
+     * duplicate registrations are detected: by the keyed HMAC of the entered
+     * name. Every failure answers a bare 401 — never "no such account" versus
+     * "wrong password", and never a hint that an account has no password.
+     */
+    private static function loginPassword(): never
+    {
+        RateLimit::enforce('password', RateLimit::PASSWORD_MAX);
+
+        $body = Http::body();
+        [$first, $last] = self::requireNames($body);
+        $password = Http::stringField($body, 'password');
+        if ($password === null || $password === '') {
+            Http::error('unauthorized', 401);
+        }
+        // Bound the work before hashing: an arbitrarily long body must not buy
+        // an attacker a unit of server-side hashing per request.
+        if (mb_strlen($password) > Passwords::MAX_LENGTH) {
+            Http::error('unauthorized', 401);
+        }
+
+        $crypto = self::crypto();
+        $nameHash = $crypto->nameHash($first, $last);
+
+        // A second counter, keyed by the account rather than the caller.
+        // Without it, every address an attacker controls would get its own
+        // PASSWORD_MAX budget against the same account.
+        RateLimit::enforceFor('password', $nameHash, RateLimit::PASSWORD_ACCOUNT_MAX);
+
+        $user = Users::findByNameHash($nameHash);
+
+        // Runs a full verification even when no such account exists, so an
+        // unknown name does not answer measurably faster than a wrong password.
+        $verified = Passwords::verify($user, $password);
+        if (!$verified || $user === null) {
+            Http::error('unauthorized', 401);
+        }
+
+        // A password is only ever a credential on an administrator account.
+        // Checked here and not only where it is set: should a row ever keep a
+        // hash without the flag, the password stops working rather than
+        // quietly remaining a way in.
+        if (!Config::isAdmin((string) $user['id']) && !Users::isAdminRow($user)) {
+            Http::error('unauthorized', 401);
+        }
+
+        // PHP's default cost rises over time, and a successful sign-in is the
+        // only moment the plaintext is at hand to re-hash with.
+        if (Passwords::needsRehash(Passwords::hashOf($user))) {
+            Users::rehashPassword((string) $user['id'], Passwords::hash($password));
+        }
+
         Sessions::start((string) $user['id']);
 
         Http::json(['ok' => true, 'user' => self::meView($user)]);
@@ -691,6 +759,47 @@ final class Api
         Http::json(['code' => $result['code'], 'expiresAt' => $result['expiresAt']]);
     }
 
+    /**
+     * Sets, replaces or removes the signed-in administrator's OWN password.
+     *
+     * Scoped to the caller's own account on purpose: an admin session cannot
+     * mint a password on somebody else's. That keeps this from being a new
+     * escalation — the session already grants /api/admin/link-code for any
+     * account, which is the stronger primitive of the two.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function adminPassword(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $id = (string) $user['id'];
+
+        // Removal is an explicit boolean, not an empty password: an empty
+        // string arriving from a cleared input must not silently disable the
+        // password login.
+        if (($body['remove'] ?? null) === true) {
+            Users::setPasswordHash($id, null);
+            Http::json(['ok' => true, 'passwordSet' => false, 'passwordSetAt' => 0]);
+        }
+
+        $password = Http::stringField($body, 'password');
+        if ($password === null || !Passwords::isAcceptable($password)) {
+            Http::error('invalid_password', 400);
+        }
+
+        Users::setPasswordHash($id, Passwords::hash($password));
+
+        $updated = Users::find($id);
+
+        Http::json([
+            'ok' => true,
+            'passwordSet' => true,
+            'passwordSetAt' => $updated === null ? 0 : Passwords::setAt($updated),
+        ]);
+    }
+
     /** @param array<string, mixed> $user */
     private static function requireAdmin(array $user): void
     {
@@ -708,6 +817,9 @@ final class Api
         Http::json([
             'priceCents' => Config::priceCents(),
             'invite' => Config::invite(),
+            'passwordSet' => Passwords::isSet($user),
+            'passwordSetAt' => Passwords::setAt($user),
+            'passwordMinLength' => Passwords::MIN_LENGTH,
         ]);
     }
 

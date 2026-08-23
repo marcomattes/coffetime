@@ -50,11 +50,32 @@ body {
   display: none !important;
 }
 
+/*
+ * Installed as an app there is no browser chrome: the page starts at the very
+ * top of the display, so the notch / Dynamic Island would sit on the first
+ * card. `viewport-fit=cover` (see Frontend::shell) exposes the insets; the
+ * padding below keeps content out of them and falls back to 0px in a normal
+ * browser tab, where the chrome already does the job.
+ */
 .wrap {
   width: 100%;
   max-width: 720px;
   margin: 0 auto;
-  padding: 12px 12px 32px;
+  padding: calc(12px + env(safe-area-inset-top, 0px)) calc(12px + env(safe-area-inset-right, 0px))
+    calc(32px + env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px));
+}
+
+/* Zero-height wherever iOS reserves the status bar itself. Where it does not,
+   this keeps scrolling content from showing through behind the clock. */
+.safe-top {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top, 0px);
+  background: var(--bg);
+  z-index: 20;
+  pointer-events: none;
 }
 
 .brand {
@@ -81,6 +102,34 @@ h2 {
   border-radius: var(--radius);
   padding: 14px;
   margin: 0 0 12px;
+}
+
+/* A secondary path folded away until it is needed — the password sign-in sits
+   under the passkey button without competing with it. */
+.fold {
+  margin: 12px 0 0;
+  border-top: 1px solid var(--line);
+  padding: 10px 0 0;
+}
+
+.fold > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+
+.fold > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.fold[open] > summary {
+  margin-bottom: 10px;
+  color: var(--ink);
 }
 
 /* Keep the counter and primary action visible without scrolling. */
@@ -432,9 +481,75 @@ input {
   margin: 4px 0 0;
 }
 
+/* ------------------------------------------------- Pull to refresh ----- */
+
+/*
+ * Only active in the installed app (see app.ts): a browser tab still has its
+ * own reload, and its rubber-band overscroll must keep working there.
+ */
+@media (display-mode: standalone) {
+  html,
+  body {
+    overscroll-behavior-y: contain;
+  }
+}
+
+.pull {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  right: 0;
+  z-index: 15;
+  display: flex;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pull-spinner {
+  width: 30px;
+  height: 30px;
+  margin-top: 8px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  background: var(--card);
+}
+
+.pull.is-busy .pull-spinner {
+  animation: pull-spin 0.7s linear infinite;
+}
+
+@keyframes pull-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Still spins – it is the only sign the refresh is running – but calmly. */
+@media (prefers-reduced-motion: reduce) {
+  .pull.is-busy .pull-spinner {
+    animation-duration: 2s;
+  }
+}
+
+/* ------------------------------------------------------ Install hint --- */
+
+.install-steps {
+  margin: 0 0 10px;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.install-steps li {
+  margin: 0 0 4px;
+}
+
 @media (min-width: 700px) {
   .wrap {
-    padding: 24px 16px 40px;
+    padding: calc(24px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px))
+      calc(40px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
   }
 
   .grid {

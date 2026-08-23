@@ -17,10 +17,12 @@ Built to run anywhere PHP runs: no framework, no Node runtime in production, SQL
 ## Highlights
 
 **Authentication & accounts**
-- Passwordless, username-less WebAuthn login with discoverable passkeys — no emails, no passwords stored.
+- Passwordless, username-less WebAuthn login with discoverable passkeys — no emails, no passwords for regular accounts.
 - Device linking: a signed-in device generates a short-lived code to add a passkey on a new device.
 - Admin-issued recovery codes for users who lost every device. Codes are single-use; only their hash is stored.
 - The first account ever registered becomes administrator automatically.
+- Optional password sign-in **for administrators only**, for managed workstations where passkeys are blocked. Opt-in, set by the admin on their own account, and removable again; everyone else stays passkey-only. See [Administrator password](#administrator-password).
+- Invitation links: `https://your-host/?invite=CODE` prefills the invite code, so nobody has to retype it.
 
 **Privacy by construction**
 - Names are encrypted in the browser-facing API with the administrator's RSA public key; the server holds no private key and no decryption code.
@@ -33,7 +35,8 @@ Built to run anywhere PHP runs: no framework, no Node runtime in production, SQL
 - Admin payments settle tabs; an offline CLI (with optional XLSX export) covers accounting.
 
 **Offline-capable PWA**
-- Installable app with shortcuts, NFC links, and app badges.
+- Installable app with shortcuts, NFC links, and app badges. An in-app card offers the browser's install prompt, or the Share-sheet steps on iOS, which has no install API.
+- Built for the installed app, not just the tab: safe-area-aware layout so nothing hides behind a notch or home indicator, and pull to refresh where there is no reload button.
 - Offline booking queue: coffees booked without a connection are queued on the device and retried with an idempotent event ID — never double-counted.
 - Local payment reminders without a push server: an opt-in month-end notification while the tab is open, plus an admin "Remind" button. No VAPID keys, no subscriptions, no third party.
 
@@ -128,6 +131,27 @@ php tools/decrypt-users.php --db ./coffee.sqlite --key ./admin-private.pem --pri
 A signed-in device can generate a link code (valid 15 minutes) to add a passkey on a new device to the same account. An administrator can generate a longer-lived recovery code (60 minutes) for a user who lost every device. Codes are single-use; only their hash is stored, never the plaintext.
 
 Completing an **admin-issued** recovery code also signs that account out everywhere else, so a lost device stops being able to book coffees. A self-issued link code (adding a second device of your own) leaves your other sessions signed in.
+
+### Administrator password
+
+Corporate machines sometimes block WebAuthn outright, which would leave the person who looks after the tab unable to sign in anywhere. An administrator can therefore set a password on **their own** account, under "Password sign-in" in the admin view, and afterwards sign in on the auth screen under "Passkeys blocked on this computer?" with their first name, last name and that password.
+
+Deliberate limits:
+
+- **Administrators only.** There is no way to set a password on another account, and a password on a row without admin rights does not sign in. Everyone else stays passkey-only.
+- **Opt-in and reversible.** No password exists until one is set; "Remove password" closes the path again.
+- **Passkeys are unaffected.** The password is an addition, never a replacement, and the passkey path keeps working.
+- **At least 12 characters**, stored with `password_hash()` (bcrypt via `PASSWORD_DEFAULT`, SHA-256 pre-hashed so nothing is truncated at 72 bytes) — never in plaintext, never recoverable, and never sent back to the browser.
+- **Throttled twice**: per caller and per account (`RateLimit::PASSWORD_MAX` / `PASSWORD_ACCOUNT_MAX`), so guessing from a pool of addresses is no cheaper than from one.
+- Names stay sealed. Even a leaked admin password does not reveal the roster: names are RSA ciphertext and the private key is never on the server.
+
+The account is found by the same keyed HMAC of the name that duplicate detection uses, since there is no username in the schema — so enter the name exactly as it was registered (surrounding whitespace is normalized, capitalization is not).
+
+If passkeys work on the machine, use them. This exists because for some machines they do not.
+
+### Invitation links
+
+`https://your-host/?invite=CODE` opens the app with the invite code already filled in and the parameter stripped from the URL again. It is a convenience around the same shared invite code the admin settings show — not a second credential and not single-use, so it is only as private as wherever the link was pasted. Changing the invite code in the admin settings invalidates every link carrying the old one.
 
 ## Offline use
 

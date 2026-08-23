@@ -141,11 +141,11 @@ check(
     'Db::migrate reaches the target schema version',
     Db::userVersion($migratePdo) === Db::SCHEMA_VERSION
 );
-check('Db::migrate reaches schema version 10', Db::userVersion($migratePdo) === 10);
+check('Db::migrate reaches schema version 11', Db::userVersion($migratePdo) === 11);
 foreach (['users', 'credentials', 'sessions', 'ceremonies', 'coffee_events', 'settings', 'link_codes', 'rate_limits'] as $table) {
     check("Db::migrate creates the {$table} table", Db::tableExists($migratePdo, $table));
 }
-foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents', 'is_admin', 'remind_requested_at', 'reminded_month'] as $column) {
+foreach (['name_encrypted', 'name_hash', 'user_handle', 'coffees', 'paid_cents', 'tab_cents', 'is_admin', 'remind_requested_at', 'reminded_month', 'password_hash', 'password_set_at'] as $column) {
     check(
         "Db::migrate gives users a {$column} column",
         in_array($column, Db::columns($migratePdo, 'users'), true)

@@ -10,11 +10,35 @@ Registration writes the user row and its first passkey in **one** transaction (`
 
 Sessions renew on use but also carry a hard ceiling (`Sessions::ABSOLUTE_LIFETIME`, 180 days) on top of the 30-day idle window, so a stolen token cannot stay valid indefinitely by being used. Completing an **admin-issued** recovery link revokes that account's other sessions (`Sessions::destroyForUser()`), which is what makes lost-device recovery actually end the lost device's access; a self-issued link (adding a second device of one's own) deliberately leaves them alone.
 
+### Administrator password login
+
+WebAuthn is the only credential for regular accounts. Administrators may additionally set a password on **their own** account (`POST /api/admin/password`) and sign in with it (`POST /api/login/password`). This exists for one case WebAuthn cannot cover: a managed workstation whose policy blocks authenticators outright, which would otherwise leave the person responsible for the tab unable to sign in anywhere.
+
+The constraints that keep this from widening the attack surface:
+
+- **Admin-only, checked on both sides.** The setting endpoint requires `requireAdmin()`, and the login endpoint re-checks admin status after verifying the hash — a row that somehow kept a hash without the flag stops being a way in rather than quietly remaining one.
+- **Own account only.** An admin session cannot set a password on somebody else's account. This is not a new escalation either way: that session already grants `POST /api/admin/link-code` for any account, which is the stronger persistence primitive of the two.
+- **No account oracle.** There is no username in the schema, so the account is found by `Crypto::nameHash()` — the same keyed HMAC duplicate detection uses. An unknown name, an account without a password and a wrong password all answer a bare `401`, and `Passwords::verify()` runs a full comparison against a dummy hash in the first two cases so they do not answer measurably faster.
+- **Two counters.** `RateLimit::PASSWORD_MAX` per caller, `PASSWORD_ACCOUNT_MAX` per account across all callers. Without the second, every address an attacker controls would get its own budget against the same account. The cost is that anyone can burn the account counter and block password sign-in for the rest of the window — a nuisance, not a lockout, since the passkey path has its own counter.
+- **Passwords are pre-hashed with SHA-256 before `password_hash()`.** `PASSWORD_DEFAULT` is still bcrypt on the shared hosts this app targets, and bcrypt truncates at 72 bytes and stops at the first NUL. Pre-hashing turns any passphrase into 44 printable characters, so every byte counts. It is applied on both sides, so stored hashes survive a future change of `PASSWORD_DEFAULT`.
+
+A leaked admin password does **not** leak the roster: names are RSA-sealed and the private key is never on the server (see [Name privacy](#name-privacy)). What it grants is the admin API surface — balances, payments, settings, link codes.
+
+`users.password_hash` is NULL for every account that has not opted in, which is every account until an administrator deliberately sets one.
+
+### Rate limiting
+
 The unauthenticated endpoints — registration, login, device linking and setup — are rate limited per caller and endpoint group (`RateLimit`, fixed window in the `rate_limits` table). The invite code can be as short as four characters, and `name_taken` reveals whether a given real name is registered; both are only safe behind a throttle. Counters are keyed by a hash of the endpoint group and client address, so no bare IP is stored, and the limiter fails open if the database is briefly unavailable.
 
 ## Request and response hardening
 
 The application shell is served with a `Content-Security-Policy` that allows only same-origin script and style (it has no inline script or style of its own) and denies framing outright, plus `X-Frame-Options: DENY`. Framing matters here because every state-changing control — "Take a coffee", "Record payment" — lives on that one document, and the session cookie is `SameSite=Lax`. For the same reason `/?book=1` only books automatically when the app was opened without a foreign referrer (an NFC tag or the app shortcut open with none); arriving from another site just opens the app. Request bodies are bounded (`Http::MAX_BODY_BYTES`) and answered with `413` rather than being buffered until `memory_limit` turns them into a `500`.
+
+## Invitation links
+
+`/?invite=CODE` prefills the invite field and strips the parameter from the URL via `replaceState` before anything else runs, so the code does not linger in the address bar, history or a bookmark. It carries the same shared invite the admin settings show — a convenience, not a second credential, and not single-use; a link is exactly as private as wherever it was pasted, and rotating the invite code invalidates every link carrying the old one. A code outside the 4–64 character bounds the server enforces is dropped rather than prefilled.
+
+The strip preserves any other query parameters, because `checkPendingBook()` runs afterwards and still has to see a `?book=1` that arrived alongside it. `checkInviteLink()` must therefore stay ordered before it: `checkPendingBook()` rewrites the URL with no query string at all.
 
 ## Name privacy
 

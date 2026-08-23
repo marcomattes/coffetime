@@ -336,6 +336,116 @@ $r = $client->post('/api/admin/payment', ['userId' => '999999', 'amountCents' =>
 check('admin/payment for an unknown user is 404', $r['status'] === 404);
 check('admin/payment for an unknown user reports unknown_user', ($r['json']['error'] ?? null) === 'unknown_user');
 
+// ------------------------------------------------- admin password login ---
+
+// The seeded admin is "Admin Boss"; the password path finds the account by
+// the HMAC of exactly that name, since there is no username in the schema.
+$adminPassword = 'correct horse battery staple';
+
+$r = $client->get('/api/admin/settings');
+check('admin/settings reports passwordSet false before a password is set', ($r['json']['passwordSet'] ?? null) === false);
+check('admin/settings reports passwordSetAt 0 before a password is set', ($r['json']['passwordSetAt'] ?? null) === 0);
+check('admin/settings publishes the server-side minimum length', ($r['json']['passwordMinLength'] ?? null) === 12);
+
+$r = $client->post('/api/admin/password', ['password' => 'short']);
+check('admin/password with a too-short password is 400', $r['status'] === 400);
+check('admin/password with a too-short password reports invalid_password', ($r['json']['error'] ?? null) === 'invalid_password');
+
+$r = $client->post('/api/admin/password', []);
+check('admin/password with no password field is 400', $r['status'] === 400);
+
+$r = $client->post('/api/admin/password', ['password' => $adminPassword]);
+check('admin/password with an acceptable password succeeds', $r['status'] === 200 && ($r['json']['ok'] ?? false) === true);
+check('admin/password echoes passwordSet true', ($r['json']['passwordSet'] ?? null) === true);
+check('admin/password stamps passwordSetAt', is_int($r['json']['passwordSetAt'] ?? null) && ($r['json']['passwordSetAt'] ?? 0) > 0);
+
+$r = $client->get('/api/admin/settings');
+check('admin/settings reports passwordSet true afterwards', ($r['json']['passwordSet'] ?? null) === true);
+
+// A non-admin session must not be able to give itself a password.
+$r = $client->post('/api/test/login', ['userId' => $normalId], $testHeaders);
+check('re-login as the non-admin user for the password check succeeds', $r['status'] === 200);
+$r = $client->post('/api/admin/password', ['password' => $adminPassword]);
+check('admin/password from a non-admin session is 403', $r['status'] === 403);
+check('the 403 from admin/password reports "forbidden"', ($r['json']['error'] ?? null) === 'forbidden');
+
+// ------------------------------------------------ password sign-in itself ---
+
+$client->clearCookies();
+
+$r = $client->post('/api/login/password', [
+    'firstName' => 'Admin',
+    'lastName' => 'Boss',
+    'password' => 'wrong password entirely',
+]);
+check('login/password with the wrong password is 401', $r['status'] === 401);
+check('login/password with the wrong password reports "unauthorized"', ($r['json']['error'] ?? null) === 'unauthorized');
+check('a failed login/password sets no session cookie', ($client->cookie('coffee_session') ?? '') === '');
+
+$r = $client->post('/api/login/password', [
+    'firstName' => 'Nobody',
+    'lastName' => 'Here',
+    'password' => $adminPassword,
+]);
+check('login/password for an unknown name is 401', $r['status'] === 401);
+check(
+    'an unknown name answers exactly like a wrong password (no account oracle)',
+    ($r['json']['error'] ?? null) === 'unauthorized'
+);
+
+// A user with no password of their own can never be signed in by password,
+// whatever is sent — including the admin's own password.
+$r = $client->post('/api/login/password', [
+    'firstName' => 'Normal',
+    'lastName' => 'Person',
+    'password' => $adminPassword,
+]);
+check('login/password against an account without a password is 401', $r['status'] === 401);
+
+$r = $client->post('/api/login/password', [
+    'firstName' => 'Admin',
+    'lastName' => 'Boss',
+    'password' => $adminPassword,
+]);
+check('login/password with the correct password is 200', $r['status'] === 200);
+check('login/password returns the user view', ($r['json']['user']['id'] ?? null) === $adminId);
+check('the password-authenticated user is admin', ($r['json']['user']['admin'] ?? null) === true);
+check('login/password sets a session cookie', ($client->cookie('coffee_session') ?? '') !== '');
+
+$r = $client->get('/api/me');
+check('the session created by login/password is a real session', $r['status'] === 200);
+check('GET /api/me after a password sign-in reports the admin account', ($r['json']['id'] ?? null) === $adminId);
+
+// Name normalization is shared with registration (Crypto::normalizeNamePart),
+// so surrounding whitespace must not decide whether the admin gets in. Letter
+// case is NOT normalized there and deliberately still matters.
+$client->clearCookies();
+$r = $client->post('/api/login/password', [
+    'firstName' => '  Admin  ',
+    'lastName' => 'Boss',
+    'password' => $adminPassword,
+]);
+check('login/password normalizes surrounding whitespace in the name', $r['status'] === 200);
+
+// ------------------------------------------------------ password removal ---
+
+$r = $client->post('/api/admin/password', ['remove' => true]);
+check('admin/password with remove:true succeeds', $r['status'] === 200);
+check('removal reports passwordSet false', ($r['json']['passwordSet'] ?? null) === false);
+check('removal resets passwordSetAt', ($r['json']['passwordSetAt'] ?? null) === 0);
+
+$client->clearCookies();
+$r = $client->post('/api/login/password', [
+    'firstName' => 'Admin',
+    'lastName' => 'Boss',
+    'password' => $adminPassword,
+]);
+check('the removed password no longer signs in', $r['status'] === 401);
+
+// Back to an admin session for the sections that follow.
+$r = $client->post('/api/test/login', ['userId' => $adminId], $testHeaders);
+check('test/login as the admin user after the password tests succeeds', $r['status'] === 200);
+
 // -------------------------------------------------------- price changes ---
 
 // Regression coverage for retroactive re-pricing: booking a coffee, raising

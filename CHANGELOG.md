@@ -54,6 +54,17 @@ Work preparing the project for its open-source release.
 - The admin screen no longer hides every name behind a "wrong key" message when
   a single ciphertext fails to decrypt, and its totals no longer net
   overpayments against other people's real debt.
+- The app icons were drawn off-centre and too small for their canvas, so the
+  installed app showed a lopsided cup floating in brown. They are regenerated
+  centred, and the apple-touch icon is now full-bleed and fully opaque, which
+  is what iOS expects before applying its own squircle mask.
+- Installed on iOS, the first card sat underneath the notch: the status bar
+  style is no longer `black-translucent`, and every edge of the layout now
+  respects `env(safe-area-inset-*)` — including the home indicator and, in
+  landscape, the rounded corners.
+- iOS in a browser tab has no Notification API at all, so the reminders card
+  reported notifications as unsupported on a device that supports them
+  perfectly well once installed. It now says so and links to the steps.
 
 ### Added
 
@@ -64,6 +75,27 @@ Work preparing the project for its open-source release.
   `http://`, breaking WebAuthn and dropping the cookie's `Secure` flag.
 - `dayOffsetMinutes` config option to move the day boundary for streaks,
   history and month-end reminders off UTC.
+- An "Add to Home Screen" card: the browser's own install prompt where one is
+  offered, and the Share-sheet steps on iOS, which has no install API. It is
+  dismissible and never appears in the installed app.
+- Pull to refresh. The installed app has no browser chrome and therefore no
+  reload button; the gesture is handled only there, so a browser tab keeps its
+  own.
+- `scripts/make-icons.mjs` renders every file in `public/icons/` from one
+  vector description, with the margins each purpose needs.
+- Optional password sign-in for **administrators only**, for managed
+  workstations where passkeys are blocked (schema v11, `users.password_hash`).
+  An admin sets a password on their own account in the admin view and signs in
+  with name plus password; it is opt-in, removable, and never replaces the
+  passkey path. Regular accounts stay passkey-only, and a password on a row
+  without admin rights does not sign in. Hashed with `password_hash()` over a
+  SHA-256 pre-hash (so bcrypt's 72-byte truncation cannot silently drop input),
+  and throttled both per caller and per account so guessing from a pool of
+  addresses is no cheaper than from one. Names stay sealed either way — the RSA
+  private key is never on the server.
+- Invitation links: `/?invite=CODE` prefills the invite code and strips the
+  parameter from the URL again. Same shared code as before, one less thing to
+  retype.
 
 ### Changed
 

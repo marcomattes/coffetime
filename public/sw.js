@@ -1,7 +1,7 @@
 /* Coffee Time service worker: cache the static shell, never the API. */
 'use strict';
 const sw = self;
-const CACHE = 'coffeetime-v5';
+const CACHE = 'coffeetime-v6';
 const SHELL = [
     '/',
     '/style.css',

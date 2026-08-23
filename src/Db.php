@@ -19,7 +19,7 @@ use Throwable;
 final class Db
 {
     /** Target version of the schema. */
-    public const SCHEMA_VERSION = 10;
+    public const SCHEMA_VERSION = 11;
 
     /** Time to wait for a locked database. */
     private const BUSY_TIMEOUT_SECONDS = 15;
@@ -675,6 +675,14 @@ final class Db
                      ON coffee_events (user_id, client_event_id) WHERE client_event_id IS NOT NULL'
                 );
             },
+            11 => static function (PDO $pdo): void {
+                // Optional password login for administrators (see Passwords).
+                // NULL means "no password set", which is the state every
+                // existing row keeps: the column only ever becomes non-NULL
+                // when an admin deliberately sets one.
+                self::ensureColumn($pdo, 'users', 'password_hash', 'TEXT');
+                self::ensureColumn($pdo, 'users', 'password_set_at', 'INTEGER NOT NULL DEFAULT 0');
+            },
         ];
     }
 
@@ -839,6 +847,11 @@ final class Db
                     }
                 }
             },
+            11 => static function (PDO $pdo): void {
+                // See the comment in sqliteSteps().
+                self::ensureColumn($pdo, 'users', 'password_hash', 'VARCHAR(255)');
+                self::ensureColumn($pdo, 'users', 'password_set_at', 'BIGINT NOT NULL DEFAULT 0');
+            },
         ];
     }
 
@@ -892,7 +905,7 @@ final class Db
     private static function schemaLooksComplete(PDO $pdo): bool
     {
         $userColumns = self::columns($pdo, 'users');
-        foreach (['coffees', 'paid_cents', 'name_encrypted', 'name_hash', 'user_handle', 'tab_cents', 'is_admin'] as $column) {
+        foreach (['coffees', 'paid_cents', 'name_encrypted', 'name_hash', 'user_handle', 'tab_cents', 'is_admin', 'password_hash'] as $column) {
             if (!in_array($column, $userColumns, true)) {
                 return false;
             }
@@ -1032,6 +1045,8 @@ final class Db
                     'is_admin' => 'TINYINT NOT NULL DEFAULT 0',
                     'remind_requested_at' => 'BIGINT NOT NULL DEFAULT 0',
                     'reminded_month' => 'VARCHAR(7)',
+                    'password_hash' => 'VARCHAR(255)',
+                    'password_set_at' => 'BIGINT NOT NULL DEFAULT 0',
                 ],
                 'credentials' => [
                     'user_id' => 'BIGINT NOT NULL DEFAULT 0',
@@ -1095,6 +1110,8 @@ final class Db
                 'is_admin' => 'INTEGER NOT NULL DEFAULT 0',
                 'remind_requested_at' => 'INTEGER NOT NULL DEFAULT 0',
                 'reminded_month' => 'TEXT',
+                'password_hash' => 'TEXT',
+                'password_set_at' => 'INTEGER NOT NULL DEFAULT 0',
             ],
             'credentials' => [
                 'user_id' => 'INTEGER NOT NULL DEFAULT 0',

@@ -16,9 +16,12 @@ use Throwable;
  * built-in server, php-fpm and Apache all serve requests from several
  * processes that share nothing else.
  *
- * The window is deliberately coarse (one row per caller per endpoint group,
- * reset when the window rolls over): the goal is to make online guessing
- * hopeless, not to meter traffic precisely.
+ * The window is deliberately coarse (one row per counter, reset when the window
+ * rolls over): the goal is to make online guessing hopeless, not to meter
+ * traffic precisely. A counter is keyed by the endpoint group plus either the
+ * caller (allow()) or an arbitrary subject such as an account (allowFor()) --
+ * the password login uses both, since neither alone bounds guessing from a
+ * pool of addresses against one account.
  */
 final class RateLimit
 {
@@ -30,6 +33,25 @@ final class RateLimit
 
     /** Attempts per window for device linking. */
     public const LINK_MAX = 20;
+
+    /**
+     * Attempts per window for the administrator password login, per caller.
+     * Much tighter than LOGIN_MAX: a passkey assertion cannot be guessed at
+     * all, a password can.
+     */
+    public const PASSWORD_MAX = 10;
+
+    /**
+     * Attempts per window for the administrator password login, per account
+     * and across all callers — so guessing from a pool of addresses is
+     * throttled too, not just from one.
+     *
+     * The trade-off is that anyone can burn this counter and keep the admin
+     * from signing in by password for the rest of the window. That is a
+     * nuisance rather than a lockout: the passkey path has its own counter and
+     * stays available, and the window self-heals after WINDOW seconds.
+     */
+    public const PASSWORD_ACCOUNT_MAX = 20;
 
     /** Length of one window: 10 minutes. */
     public const WINDOW = 600;
@@ -43,13 +65,35 @@ final class RateLimit
      */
     public static function allow(string $name, int $max, int $windowSeconds = self::WINDOW): bool
     {
+        return self::hit(self::bucket($name), $max, $windowSeconds);
+    }
+
+    /**
+     * Registers one attempt against a counter keyed by the endpoint group and
+     * an arbitrary subject INSTEAD of the client address — a per-account
+     * counter, which is what makes guessing from a pool of addresses as
+     * expensive as guessing from one.
+     *
+     * The subject is hashed like the address is, so nothing identifying is
+     * stored in the table.
+     */
+    public static function allowFor(
+        string $name,
+        string $subject,
+        int $max,
+        int $windowSeconds = self::WINDOW
+    ): bool {
+        return self::hit(hash('sha256', $name . "\x1f" . $subject), $max, $windowSeconds);
+    }
+
+    private static function hit(string $bucket, int $max, int $windowSeconds): bool
+    {
         // The test control surface exists precisely to drive these flows in a
         // loop; it already requires testMode plus a shared token.
         if (Config::testMode()) {
             return true;
         }
 
-        $bucket = self::bucket($name);
         $now = Clock::now();
 
         try {
@@ -106,6 +150,18 @@ final class RateLimit
     public static function enforce(string $name, int $max, int $windowSeconds = self::WINDOW): void
     {
         if (!self::allow($name, $max, $windowSeconds)) {
+            Http::error('rate_limited', 429);
+        }
+    }
+
+    /** enforce() against a per-subject counter; see allowFor(). */
+    public static function enforceFor(
+        string $name,
+        string $subject,
+        int $max,
+        int $windowSeconds = self::WINDOW
+    ): void {
+        if (!self::allowFor($name, $subject, $max, $windowSeconds)) {
             Http::error('rate_limited', 429);
         }
     }

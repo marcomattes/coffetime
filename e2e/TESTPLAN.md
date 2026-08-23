@@ -171,6 +171,11 @@ authenticator (CDP) — nothing in the app is mocked.
    the URL (no re-booking on reload).
 4. `/?book=1` while signed out shows the NFC hint; after signing in, the
    pending coffee is booked automatically (counter 1).
+5. The install card stays hidden without an install path, appears once
+   `beforeinstallprompt` fires, and stays dismissed across a reload.
+6. Pull to refresh: a downward swipe triggers a second `/api/me` in a
+   standalone launch (`navigator.standalone` injected) and none in a browser
+   tab, where the browser's own gesture owns it.
 
 ### 11. `reminders.spec.ts` (main instance)
 
@@ -192,6 +197,29 @@ authenticator (CDP) — nothing in the app is mocked.
    the default headless browser (chrome-headless-shell) has no Notifications
    API, so `Notification.permission` reads 'denied' there even after
    `grantPermissions()`.
+
+### 12. `password-login.spec.ts` (main instance)
+
+Administrator password sign-in and invitation links. The password cases attach
+**no** virtual authenticator to the page that signs in — a spec that quietly had
+one available would not prove the feature works where passkeys are blocked.
+
+1. Admin sets a password in the admin view, then signs in with name + password
+   in a fresh browser context with no session and no authenticator; the
+   password field is cleared afterwards.
+2. Wrong password → `Wrong name or password.`, still on the auth view — and an
+   account that does not exist answers identically (no account oracle).
+3. A non-admin never sees the password card (it lives inside `view-admin`).
+4. "Remove password" closes the path again: the same password no longer signs
+   in.
+5. A mismatched repeat field is refused client-side, before any request.
+6. A password below the server-published minimum (12) is refused client-side.
+7. `/?invite=CODE` prefills `invite-input`, shows `invite-link-hint`, and
+   leaves `location.search` empty.
+8. Registration from an invite link succeeds without typing the code.
+9. An out-of-bounds `?invite=` value is dropped rather than prefilled.
+10. `/?invite=CODE&book=1` still books: stripping the invite parameter must
+    preserve the others for `checkPendingBook()`.
 
 ## Conventions for implementers
 

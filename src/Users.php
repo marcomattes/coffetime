@@ -42,6 +42,22 @@ final class Users
     }
 
     /**
+     * Looks a user up by the same fingerprint idForNameHash() uses, but
+     * returns the whole row. Password login needs it: with no username in the
+     * schema, the HMAC of the entered name is the only handle on the account.
+     *
+     * @return array<string, mixed>|null
+     */
+    public static function findByNameHash(string $nameHash): ?array
+    {
+        if ($nameHash === '') {
+            return null;
+        }
+
+        return Db::fetchRow('SELECT * FROM users WHERE name_hash = ?', [$nameHash]);
+    }
+
+    /**
      * Creates a user. The cleartext name is never stored – only the sealed
      * ciphertext and the HMAC.
      *
@@ -542,6 +558,31 @@ final class Users
         $value = $row['reminded_month'] ?? '';
 
         return is_string($value) ? $value : '';
+    }
+
+    /**
+     * Stores or removes the optional administrator password (see Passwords).
+     * A null hash clears it together with its timestamp, which is exactly what
+     * "remove password" has to mean: the account falls back to passkey-only.
+     */
+    public static function setPasswordHash(string $id, ?string $hash): void
+    {
+        Db::transaction(static function (PDO $pdo) use ($id, $hash): void {
+            $pdo->prepare('UPDATE users SET password_hash = ?, password_set_at = ? WHERE id = ?')
+                ->execute([$hash, $hash === null ? 0 : Clock::now(), (int) $id]);
+        });
+    }
+
+    /**
+     * Replaces the stored hash without touching password_set_at: the password
+     * itself did not change, only the cost or algorithm it is stored under.
+     */
+    public static function rehashPassword(string $id, string $hash): void
+    {
+        Db::transaction(static function (PDO $pdo) use ($id, $hash): void {
+            $pdo->prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+                ->execute([$hash, (int) $id]);
+        });
     }
 
     /** Queues an admin reminder; a second one replaces the first. */

@@ -12,7 +12,14 @@
             this.code = code;
         }
     }
-    const state = { me: null, users: [], pendingBook: false, adminKey: null, setupPublicKey: null };
+    const state = {
+        me: null,
+        users: [],
+        pendingBook: false,
+        adminKey: null,
+        setupPublicKey: null,
+        passwordMinLength: 12
+    };
     function byId(id) {
         return document.getElementById(id);
     }
@@ -250,6 +257,131 @@
             await refresh();
         }
     }
+    /* ------------------------------------------------------- Installation -- */
+    /*
+     * Whether the app runs from the home screen rather than in a browser tab.
+     * iOS answers `navigator.standalone`; everything else has the display-mode
+     * media query.
+     */
+    function isStandalone() {
+        const legacy = navigator.standalone;
+        if (legacy === true) {
+            return true;
+        }
+        try {
+            return window.matchMedia('(display-mode: standalone)').matches;
+        }
+        catch (e) {
+            return false;
+        }
+    }
+    /* iPadOS reports itself as a Mac, but a Mac has no touch screen. */
+    function isIos() {
+        const ua = navigator.userAgent;
+        return /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+    }
+    const INSTALL_DISMISSED_KEY = 'installDismissed';
+    /* Chromium fires beforeinstallprompt; the deferred event is the only way
+       to open the install dialog later, from a real user gesture. */
+    let installPrompt = null;
+    function installDismissed() {
+        try {
+            return window.localStorage.getItem(INSTALL_DISMISSED_KEY) === '1';
+        }
+        catch (e) {
+            return false;
+        }
+    }
+    function rememberInstallDismissed(dismissed) {
+        try {
+            if (dismissed) {
+                window.localStorage.setItem(INSTALL_DISMISSED_KEY, '1');
+            }
+            else {
+                window.localStorage.removeItem(INSTALL_DISMISSED_KEY);
+            }
+        }
+        catch (e) {
+            /* Storage unavailable – the card then reappears on the next start. */
+        }
+    }
+    /*
+     * The card explains what installing buys the user and how to do it. On
+     * Chromium that is one button; iOS has no install API at all, so the only
+     * thing that works there is describing the Share-sheet steps.
+     */
+    function updateInstallUi() {
+        const card = el('install-card');
+        const steps = el('install-steps');
+        const button = el('btn-install');
+        if (!card || !steps || !button) {
+            return;
+        }
+        const hide = () => {
+            card.hidden = true;
+            steps.hidden = true;
+            button.hidden = true;
+        };
+        if (isStandalone() || installDismissed()) {
+            hide();
+            return;
+        }
+        if (installPrompt !== null) {
+            card.hidden = false;
+            steps.hidden = true;
+            button.hidden = false;
+            text(el('install-text'), 'Install Coffee Time to book from your home screen, get reminders and use it offline.');
+            return;
+        }
+        if (isIos()) {
+            card.hidden = false;
+            steps.hidden = false;
+            button.hidden = true;
+            text(el('install-text'), 'Reminders and the full-screen app need Coffee Time on your home screen. On iPhone and iPad that takes three taps:');
+            return;
+        }
+        hide();
+    }
+    function showInstallHelp() {
+        rememberInstallDismissed(false);
+        updateInstallUi();
+        const card = el('install-card');
+        if (card && !card.hidden && typeof card.scrollIntoView === 'function') {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+    async function runInstallPrompt() {
+        const prompt = installPrompt;
+        if (prompt === null) {
+            return;
+        }
+        // The event can be used exactly once, whatever the user chooses.
+        installPrompt = null;
+        try {
+            await prompt.prompt();
+            await prompt.userChoice;
+        }
+        catch (e) {
+            /* Dialog refused by the browser – the card falls back to hidden. */
+        }
+        updateInstallUi();
+    }
+    function initInstall() {
+        window.addEventListener('beforeinstallprompt', (event) => {
+            // Keeping the default would show the browser's own mini-infobar on top
+            // of our card.
+            event.preventDefault();
+            installPrompt = event;
+            updateInstallUi();
+        });
+        window.addEventListener('appinstalled', () => {
+            installPrompt = null;
+            rememberInstallDismissed(false);
+            updateInstallUi();
+            updateReminderUi();
+        });
+        updateInstallUi();
+    }
     /* ---------------------------------------------------------- Reminders -- */
     /*
      * Local month-end and admin payment reminders. The actual check-and-show
@@ -294,11 +426,26 @@
     function updateReminderUi(backgroundChecks) {
         const status = el('notify-status');
         const button = el('btn-notify-enable');
+        const help = el('btn-notify-install');
         if (!status || !button) {
             return;
         }
+        if (help) {
+            help.hidden = true;
+        }
         if (!notificationsSupported()) {
             button.hidden = true;
+            // iOS exposes no Notification API at all in a browser tab: the very
+            // same device supports reminders once the app sits on the home screen.
+            // Saying "not supported" there would be plain wrong, so point at the
+            // one step that actually fixes it.
+            if (isIos() && !isStandalone()) {
+                if (help) {
+                    help.hidden = false;
+                }
+                text(status, 'Reminders work once Coffee Time is on your home screen — iOS only allows them for installed apps.');
+                return;
+            }
             text(status, 'This browser does not support notifications.');
             return;
         }
@@ -311,7 +458,9 @@
         }
         else if (permission === 'denied') {
             button.hidden = true;
-            text(status, 'Notifications are blocked for this site in the browser settings.');
+            // Installed on iOS the switch lives in the system settings, not in a
+            // browser -- so name neither of them specifically.
+            text(status, 'Notifications are blocked — allow them for Coffee Time in your browser or device settings.');
         }
         else {
             button.hidden = false;
@@ -498,6 +647,25 @@
         }
         if (inviteInput && settings && typeof settings.invite === 'string') {
             inviteInput.value = settings.invite;
+        }
+        if (settings && typeof settings.passwordMinLength === 'number' && settings.passwordMinLength > 0) {
+            state.passwordMinLength = settings.passwordMinLength;
+        }
+        renderAdminPasswordState(settings ? settings.passwordSet === true : false, settings ? settings.passwordSetAt : 0);
+    }
+    /* The password is never readable back from the server – only whether one
+       exists, and since when. */
+    function renderAdminPasswordState(isSet, setAt) {
+        const stateNode = el('admin-password-state');
+        const removeButton = el('btn-admin-password-remove');
+        const since = typeof setAt === 'number' && setAt > 0
+            ? ' (set ' + new Date(setAt * 1000).toLocaleDateString() + ')'
+            : '';
+        text(stateNode, isSet
+            ? 'A password is set' + since + '. Saving a new one replaces it.'
+            : 'No password set. Passkey sign-in only.');
+        if (removeButton) {
+            removeButton.hidden = !isSet;
         }
     }
     function renderAdmin(users) {
@@ -963,6 +1131,47 @@
         }
         busy(button, false);
     }
+    /*
+     * Password sign-in. Administrators only, and only for the case WebAuthn
+     * cannot cover: a managed workstation whose policy blocks authenticators.
+     * The passkey button above stays the primary path for everyone else.
+     */
+    async function loginWithPassword() {
+        const button = el('btn-login-password');
+        const errorNode = el('auth-error');
+        text(errorNode, '');
+        const firstName = el('pw-firstname-input').value.trim();
+        const lastName = el('pw-lastname-input').value.trim();
+        const passwordInput = el('pw-password-input');
+        const password = passwordInput.value;
+        if (!firstName || !lastName || !password) {
+            text(errorNode, 'Enter your name and password.');
+            return;
+        }
+        busy(button, true);
+        try {
+            await api('/api/login/password', { firstName: firstName, lastName: lastName, password: password });
+            // Cleared on success as well as on failure: the field must not keep the
+            // password around on a shared kitchen device.
+            passwordInput.value = '';
+            await refresh();
+        }
+        catch (error) {
+            passwordInput.value = '';
+            if (error instanceof ApiError && error.status === 401) {
+                // Deliberately one message for every rejection – the server does not
+                // distinguish "no such account" from "wrong password" either.
+                text(errorNode, 'Wrong name or password.');
+            }
+            else if (error instanceof ApiError && error.status === 429) {
+                text(errorNode, 'Too many attempts. Try again in a few minutes.');
+            }
+            else {
+                fail(errorNode, error);
+            }
+        }
+        busy(button, false);
+    }
     async function linkDevice() {
         const button = el('btn-link-device');
         const errorNode = el('auth-error');
@@ -1065,6 +1274,57 @@
         }
         catch (error) {
             text(status, error instanceof ApiError ? error.code : 'unknown_error');
+        }
+        busy(button, false);
+    }
+    async function saveAdminPassword() {
+        const button = el('btn-admin-password');
+        const statusNode = el('admin-password-status');
+        const passwordInput = el('admin-password-input');
+        const repeatInput = el('admin-password-repeat');
+        text(statusNode, '');
+        const password = passwordInput.value;
+        const minimum = state.passwordMinLength;
+        if (password.length < minimum) {
+            text(statusNode, 'Use at least ' + minimum + ' characters.');
+            return;
+        }
+        // The repeat field is not security, it is a typo guard: getting locked out
+        // of a password you cannot read back is a bad way to find out.
+        if (password !== repeatInput.value) {
+            text(statusNode, 'The two entries do not match.');
+            return;
+        }
+        busy(button, true);
+        try {
+            const data = await api('/api/admin/password', { password: password });
+            passwordInput.value = '';
+            repeatInput.value = '';
+            renderAdminPasswordState(data.passwordSet === true, data.passwordSetAt);
+            text(statusNode, 'Password saved. Your passkeys keep working.');
+        }
+        catch (error) {
+            fail(statusNode, error);
+        }
+        busy(button, false);
+    }
+    async function removeAdminPassword() {
+        const button = el('btn-admin-password-remove');
+        const statusNode = el('admin-password-status');
+        text(statusNode, '');
+        if (!window.confirm('Remove the password? Afterwards this account signs in with passkeys only.')) {
+            return;
+        }
+        busy(button, true);
+        try {
+            const data = await api('/api/admin/password', { remove: true });
+            el('admin-password-input').value = '';
+            el('admin-password-repeat').value = '';
+            renderAdminPasswordState(data.passwordSet === true, data.passwordSetAt);
+            text(statusNode, 'Password removed.');
+        }
+        catch (error) {
+            fail(statusNode, error);
         }
         busy(button, false);
     }
@@ -1186,6 +1446,42 @@
         void node.offsetWidth;
         node.classList.add('bump');
     }
+    /* --------------------------------------------------- Invitation link -- */
+    /*
+     * "/?invite=CODE" prefills the invite field, so an invitation can be a
+     * single link instead of a code someone has to copy by hand. The code is the
+     * same shared invite as before -- the link is a convenience, not a second
+     * credential, and it is only as secret as wherever it was pasted.
+     *
+     * The parameter is stripped from the URL right away so it does not linger in
+     * the address bar, in history or in a bookmark. Other parameters survive:
+     * an invite link is removed here, and a "?book=1" alongside it still has to
+     * reach checkPendingBook().
+     */
+    function checkInviteLink() {
+        const params = new URLSearchParams(window.location.search);
+        const invite = params.get('invite');
+        if (invite === null) {
+            return;
+        }
+        params.delete('invite');
+        const rest = params.toString();
+        window.history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : ''));
+        const code = invite.trim();
+        // Same bounds the server enforces; a link carrying nonsense just opens the
+        // app with an empty field instead of prefilling it with nonsense.
+        if (code.length < 4 || code.length > 64) {
+            return;
+        }
+        const input = el('invite-input');
+        if (input) {
+            input.value = code;
+        }
+        const hint = el('invite-link-hint');
+        if (hint) {
+            hint.hidden = false;
+        }
+    }
     /* ------------------------------------------------- Shortcut / NFC tag -- */
     /*
      * "/?book=1" immediately books a coffee. It is shared by the app shortcut
@@ -1230,6 +1526,103 @@
         state.pendingBook = false;
         addCoffee();
     }
+    /* -------------------------------------------------- Pull to refresh --- */
+    /*
+     * Installed on the home screen there is no browser chrome and therefore no
+     * reload button, so the standard gesture has to be provided by the page.
+     * Only there: a browser tab already has both a reload button and its own
+     * pull-to-refresh, and a second one on top of it would fight the first.
+     */
+    const PULL_TRIGGER = 72; // px of travel that arms the refresh
+    const PULL_MAX = 110;
+    const PULL_RESISTANCE = 0.5;
+    function initPullToRefresh() {
+        const indicator = el('pull-indicator');
+        const wrap = document.querySelector('.wrap');
+        if (!indicator || !wrap || !isStandalone()) {
+            return;
+        }
+        let startY = 0;
+        let distance = 0;
+        let tracking = false;
+        let refreshing = false;
+        function paint(offset, animate) {
+            const transition = animate ? 'transform 0.25s ease, opacity 0.25s ease' : '';
+            indicator.style.transition = transition;
+            indicator.style.transform = 'translateY(' + offset + 'px)';
+            indicator.style.opacity = String(Math.min(1, offset / PULL_TRIGGER));
+            wrap.style.transition = animate ? 'transform 0.25s ease' : '';
+            wrap.style.transform = offset > 0 ? 'translateY(' + offset + 'px)' : '';
+        }
+        function reset() {
+            tracking = false;
+            distance = 0;
+            paint(0, true);
+        }
+        /* The setup wizard has no session yet – refresh() would sign the visitor
+           out of a flow they are in the middle of. */
+        function allowed() {
+            const setup = el('view-setup');
+            // `hidden` is boolean | "until-found" – any truthy value means hidden.
+            return !refreshing && (setup === null || Boolean(setup.hidden));
+        }
+        async function run() {
+            refreshing = true;
+            indicator.classList.add('is-busy');
+            paint(PULL_TRIGGER, true);
+            try {
+                await refresh();
+                await flushQueue();
+            }
+            finally {
+                refreshing = false;
+                indicator.classList.remove('is-busy');
+                reset();
+            }
+        }
+        document.addEventListener('touchstart', (event) => {
+            // Pinches and two-finger scrolls are not a pull.
+            if (event.touches.length !== 1 || window.scrollY > 0 || !allowed()) {
+                tracking = false;
+                return;
+            }
+            startY = event.touches[0].clientY;
+            distance = 0;
+            tracking = true;
+        }, { passive: true });
+        document.addEventListener('touchmove', (event) => {
+            if (!tracking) {
+                return;
+            }
+            const delta = event.touches[0].clientY - startY;
+            if (delta <= 0 || window.scrollY > 0) {
+                // Turned into an ordinary scroll – hand the gesture back.
+                if (distance > 0) {
+                    reset();
+                }
+                tracking = false;
+                return;
+            }
+            distance = Math.min(PULL_MAX, delta * PULL_RESISTANCE);
+            if (event.cancelable) {
+                event.preventDefault();
+            }
+            paint(distance, false);
+        }, { passive: false });
+        function release() {
+            if (!tracking) {
+                return;
+            }
+            tracking = false;
+            if (distance >= PULL_TRIGGER && allowed()) {
+                run();
+                return;
+            }
+            reset();
+        }
+        document.addEventListener('touchend', release, { passive: true });
+        document.addEventListener('touchcancel', release, { passive: true });
+    }
     /* ---------------------------------------------------------- Start ----- */
     function registerServiceWorker() {
         if ('serviceWorker' in navigator) {
@@ -1241,6 +1634,14 @@
     function ready() {
         el('btn-register').addEventListener('click', register);
         el('btn-login').addEventListener('click', login);
+        el('btn-login-password').addEventListener('click', loginWithPassword);
+        // A login form is expected to submit on Enter; these inputs are not inside
+        // a <form>, so the key has to be handled explicitly.
+        el('pw-password-input').addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                loginWithPassword();
+            }
+        });
         el('btn-link-device').addEventListener('click', linkDevice);
         el('btn-link-code').addEventListener('click', linkCode);
         el('btn-setup-generate').addEventListener('click', generateSetupKey);
@@ -1249,12 +1650,25 @@
         el('btn-undo').addEventListener('click', undoCoffee);
         el('btn-logout').addEventListener('click', logout);
         el('btn-notify-enable').addEventListener('click', enableReminders);
+        el('btn-notify-install').addEventListener('click', showInstallHelp);
+        el('btn-install').addEventListener('click', runInstallPrompt);
+        el('btn-install-dismiss').addEventListener('click', () => {
+            rememberInstallDismissed(true);
+            updateInstallUi();
+        });
         el('private-key-input').addEventListener('change', selectPrivateKey);
         el('btn-admin-csv').addEventListener('click', exportAdminCsv);
         el('btn-admin-settings').addEventListener('click', saveAdminSettings);
+        el('btn-admin-password').addEventListener('click', saveAdminPassword);
+        el('btn-admin-password-remove').addEventListener('click', removeAdminPassword);
+        // Before checkPendingBook(): that one rewrites the URL without any query
+        // string at all, which would take an "?invite=" alongside it with it.
+        checkInviteLink();
         checkPendingBook();
         registerServiceWorker();
+        initInstall();
         initReminders();
+        initPullToRefresh();
         updateQueueHint();
         window.addEventListener('online', () => {
             flushQueue();

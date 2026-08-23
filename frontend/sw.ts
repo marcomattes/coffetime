@@ -3,7 +3,7 @@
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 
-const CACHE = 'coffeetime-v5';
+const CACHE = 'coffeetime-v6';
 const SHELL = [
   '/',
   '/style.css',

@@ -23,15 +23,21 @@ final class Frontend
 <meta name="theme-color" content="#17120e" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- "default" (not black-translucent): iOS then reserves the status bar area
+     and picks a legible colour for the clock instead of drawing the page
+     underneath the notch. The safe-area padding in style.css covers the
+     home indicator and, in landscape, the rounded corners. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Coffee Time">
 <title>Coffee Time</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
-<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<div class="safe-top" aria-hidden="true"></div>
+<div id="pull-indicator" data-testid="pull-indicator" class="pull" aria-hidden="true"><span class="pull-spinner"></span></div>
 <main class="wrap">
 
   <section id="view-setup" data-testid="view-setup" hidden>
@@ -69,6 +75,28 @@ final class Frontend
       <h2>Sign in</h2>
       <p class="hint">Your device will select the matching passkey.</p>
       <button type="button" id="btn-login" data-testid="btn-login" class="btn btn-primary">Sign in with passkey</button>
+
+      <details id="password-login" data-testid="password-login" class="fold">
+        <summary>Passkeys blocked on this computer?</summary>
+        <p class="hint">Administrators can set a password in the admin area and sign in with it here.
+          Everyone else signs in with a passkey.</p>
+        <div class="field">
+          <label for="pw-firstname-input">First name</label>
+          <input type="text" id="pw-firstname-input" data-testid="pw-firstname-input"
+                 autocomplete="given-name" maxlength="48" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pw-lastname-input">Last name</label>
+          <input type="text" id="pw-lastname-input" data-testid="pw-lastname-input"
+                 autocomplete="family-name" maxlength="48" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pw-password-input">Password</label>
+          <input type="password" id="pw-password-input" data-testid="pw-password-input"
+                 autocomplete="current-password" maxlength="200">
+        </div>
+        <button type="button" id="btn-login-password" data-testid="btn-login-password" class="btn">Sign in with password</button>
+      </details>
     </div>
 
     <div class="card">
@@ -88,6 +116,7 @@ final class Frontend
         <input type="text" id="invite-input" data-testid="invite-input"
                autocomplete="off" spellcheck="false">
       </div>
+      <p id="invite-link-hint" data-testid="invite-link-hint" class="hint" hidden>Invite code taken from your link.</p>
       <button type="button" id="btn-register" data-testid="btn-register" class="btn">Create passkey</button>
       <p class="hint">Your name is encrypted and is never stored as plaintext.</p>
     </div>
@@ -108,6 +137,18 @@ final class Frontend
   </section>
 
   <section id="view-app" data-testid="view-app" hidden>
+    <div class="card" id="install-card" data-testid="install-card" hidden>
+      <h2>Add to Home Screen</h2>
+      <p id="install-text" data-testid="install-text" class="hint"></p>
+      <ol id="install-steps" class="install-steps" hidden>
+        <li>Tap <strong>Share</strong> in the Safari toolbar (the square with the arrow).</li>
+        <li>Scroll down and choose <strong>Add to Home Screen</strong>.</li>
+        <li>Confirm with <strong>Add</strong>, then open Coffee Time from the Home Screen.</li>
+      </ol>
+      <button type="button" id="btn-install" data-testid="btn-install" class="btn btn-primary" hidden>Add to Home Screen</button>
+      <button type="button" id="btn-install-dismiss" data-testid="btn-install-dismiss" class="btn btn-quiet">Not now</button>
+    </div>
+
     <div class="card tally">
       <p class="tally-label">My coffees</p>
       <p id="counter" data-testid="counter" class="tally-count">0</p>
@@ -157,6 +198,7 @@ final class Frontend
       <h2>Reminders</h2>
       <p id="notify-status" data-testid="notify-status" class="hint" role="status"></p>
       <button type="button" id="btn-notify-enable" data-testid="btn-notify-enable" class="btn btn-quiet" hidden>Enable reminders</button>
+      <button type="button" id="btn-notify-install" data-testid="btn-notify-install" class="btn btn-quiet" hidden>Show me how</button>
     </div>
 
     <div class="card">
@@ -189,6 +231,26 @@ final class Frontend
         <button type="button" id="btn-admin-settings" data-testid="btn-admin-settings" class="btn settings-btn">Save settings</button>
       </div>
       <p id="admin-settings-status" data-testid="admin-settings-status" class="hint" role="status"></p>
+    </div>
+
+    <div class="card">
+      <h2>Password sign-in</h2>
+      <p class="hint">A password for <em>your own</em> admin account, for computers where passkeys are
+        blocked. Passkeys keep working; this is an addition, not a replacement.</p>
+      <p id="admin-password-state" data-testid="admin-password-state" class="hint" role="status"></p>
+      <div class="field">
+        <label for="admin-password-input">New password</label>
+        <input type="password" id="admin-password-input" data-testid="admin-password-input"
+               autocomplete="new-password" maxlength="200">
+      </div>
+      <div class="field">
+        <label for="admin-password-repeat">Repeat password</label>
+        <input type="password" id="admin-password-repeat" data-testid="admin-password-repeat"
+               autocomplete="new-password" maxlength="200">
+      </div>
+      <button type="button" id="btn-admin-password" data-testid="btn-admin-password" class="btn">Save password</button>
+      <button type="button" id="btn-admin-password-remove" data-testid="btn-admin-password-remove" class="btn btn-quiet" hidden>Remove password</button>
+      <p id="admin-password-status" data-testid="admin-password-status" class="error" role="alert"></p>
     </div>
 
     <div class="card">
