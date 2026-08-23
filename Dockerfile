@@ -16,6 +16,11 @@ RUN composer install \
     --optimize-autoloader
 
 # --- Stage 2: runtime image ---------------------------------------------
+# Runs as root (the php:apache default): Apache's master process needs root
+# to bind port 80 and manage worker processes, and drops privileges to
+# www-data for the workers -- and thus for the PHP app itself -- on its own
+# (see /etc/apache2/envvars). The writable data/ directory below is chowned
+# to www-data accordingly.
 FROM php:8.2-apache AS app
 
 # pdo_sqlite is not compiled into the default php:apache image; build it
@@ -23,9 +28,8 @@ FROM php:8.2-apache AS app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libsqlite3-dev curl \
     && docker-php-ext-install pdo_sqlite \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN a2enmod rewrite
+    && rm -rf /var/lib/apt/lists/* \
+    && a2enmod rewrite
 
 # Serve public/ as the document root (front controller: public/index.php)
 # and allow the app's own .htaccess to apply its rewrite rules.
@@ -42,14 +46,14 @@ RUN { \
         echo '    ErrorLog ${APACHE_LOG_DIR}/error.log'; \
         echo '    CustomLog ${APACHE_LOG_DIR}/access.log combined'; \
         echo '</VirtualHost>'; \
-    } > /etc/apache2/sites-available/000-default.conf
-
-# The first-run setup token is written to the error log on generation, and a
-# container operator is expected to read it with `docker compose logs`. That
-# only works if PHP's log goes to stderr rather than into the container's
-# filesystem, which is not the default for the apache SAPI.
-RUN printf 'error_log = /dev/stderr\nlog_errors = On\n' \
-    > /usr/local/etc/php/conf.d/zz-log-to-stderr.ini
+    } > /etc/apache2/sites-available/000-default.conf \
+    && \
+    # The first-run setup token is written to the error log on generation, and a
+    # container operator is expected to read it with `docker compose logs`. That
+    # only works if PHP's log goes to stderr rather than into the container's
+    # filesystem, which is not the default for the apache SAPI.
+    printf 'error_log = /dev/stderr\nlog_errors = On\n' \
+        > /usr/local/etc/php/conf.d/zz-log-to-stderr.ini
 
 WORKDIR /var/www/html
 
@@ -78,14 +82,16 @@ ARG BUILD_AT="0"
 RUN if [ -n "${BUILD_COMMIT}" ]; then \
         printf '{"version":"%s","builtAt":%s}\n' "${BUILD_COMMIT}" "${BUILD_AT}" \
             > /var/www/html/src/build.json; \
-    fi
-
-# Default dbPath (see src/Config.php) is "<app root>/data/coffee.sqlite",
-# which resolves to /var/www/html/data here, so no config.php is needed for
-# the database to persist correctly. The directory also holds the first-run
-# setup token. It sits outside the document root (public/), so the .htaccess
-# Db::pdo() writes is belt-and-braces here rather than the actual guard.
-RUN mkdir -p /var/www/html/data \
+    fi \
+    && \
+    # Default dbPath (see src/Config.php) is "<app root>/data/coffee.sqlite",
+    # which resolves to /var/www/html/data here, so no config.php is needed for
+    # the database to persist correctly. The directory also holds the first-run
+    # setup token. It sits outside the document root (public/), so the .htaccess
+    # Db::pdo() writes is belt-and-braces here rather than the actual guard.
+    # Owned by www-data, the user Apache's worker processes -- and so the PHP
+    # app -- actually run as (see the runtime-image comment up top).
+    mkdir -p /var/www/html/data \
     && chown -R www-data:www-data /var/www/html/data
 
 VOLUME /var/www/html/data
