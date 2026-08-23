@@ -103,6 +103,14 @@ Work preparing the project for its open-source release.
   URLs to copy. The registration tag is exactly as secret as the invite code it
   carries; the booking tag is not a credential and books for whoever is signed
   in on the phone that taps it.
+- Manifest screenshots, so Chromium shows the full install dialog with a
+  preview instead of the narrow mini-infobar. Regenerated reproducibly by
+  `scripts/make-screenshots.mjs`, which boots a throwaway instance, fills it
+  through the same `/api/test/*` surface the e2e suite uses, and photographs
+  it at both form factors.
+- A footer crediting the author, linking to mattes.dev. Opened in a new tab:
+  an in-page navigation would leave the manifest scope and replace the
+  installed app with a browser view.
 
 ### Changed
 

@@ -584,6 +584,34 @@ input {
   margin: 0 0 4px;
 }
 
+/* The only link in the app, so `a` is styled here rather than globally.
+   .wrap already reserves the bottom safe-area inset; the footer sits below it
+   and needs its own, or it lands under the home indicator. */
+.footer {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 calc(12px + env(safe-area-inset-right, 0px))
+    calc(16px + env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px));
+  text-align: center;
+}
+
+.footer p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.footer a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.footer a:hover,
+.footer a:focus-visible {
+  text-decoration-thickness: 2px;
+}
+
 @media (min-width: 700px) {
   .wrap {
     padding: calc(24px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px))

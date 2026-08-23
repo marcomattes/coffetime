@@ -296,6 +296,11 @@ final class Frontend
   </section>
 
 </main>
+<!-- Opened in a new tab on purpose: in the installed app an in-page navigation
+     would leave the manifest scope and replace the PWA with a browser view. -->
+<footer class="footer">
+  <p>&copy; <a href="https://mattes.dev" target="_blank" rel="noopener noreferrer">Marco Mattes</a></p>
+</footer>
 <script src="/app.js"></script>
 </body>
 </html>

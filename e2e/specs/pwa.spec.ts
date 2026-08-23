@@ -10,6 +10,16 @@ import { test, expect } from '../helpers/fixtures';
 import { addVirtualAuthenticator, registerUserViaUi } from '../helpers/webauthn';
 import { INVITE, MAIN_URL } from '../helpers/env';
 
+/**
+ * Width and height straight out of a PNG's IHDR chunk: two big-endian uint32s
+ * at byte 16, right after the 8-byte signature and the chunk header. Saves
+ * pulling in an image library just to check two numbers.
+ */
+function pngSize(png: Uint8Array): { width: number; height: number } {
+  const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
 /** Chromium's own install event, as the page sees it. */
 function dispatchInstallPrompt(page: import('@playwright/test').Page): Promise<void> {
   return page.evaluate(() => {
@@ -59,6 +69,40 @@ test.describe('pwa', () => {
     await page.goto('/');
     const href = await page.locator('link[rel="manifest"]').getAttribute('href');
     expect(href).toBe('/manifest.webmanifest');
+  });
+
+  /**
+   * Chromium needs both a 192px and a 512px icon before it offers to install,
+   * and it drops any screenshot whose declared `sizes` disagree with the file
+   * or whose longer side exceeds 2.3x its shorter one. All three are silent
+   * failures in the browser, so they are asserted here instead.
+   */
+  test('the manifest meets the installability criteria and its screenshots resolve', async ({ request }) => {
+    const manifest = await (await request.get('/manifest.webmanifest')).json();
+
+    expect(manifest.name || manifest.short_name).toBeTruthy();
+    expect(manifest.start_url).toBeTruthy();
+    expect(manifest.display || manifest.display_override).toBeTruthy();
+    expect(manifest.prefer_related_applications ?? false).toBe(false);
+
+    const installable = (manifest.icons as Array<{ sizes: string; purpose?: string }>).filter(
+      (icon) => (icon.purpose ?? 'any').split(/\s+/).includes('any')
+    );
+    expect(installable.map((icon) => icon.sizes)).toEqual(
+      expect.arrayContaining(['192x192', '512x512'])
+    );
+
+    const screenshots = manifest.screenshots as Array<{ src: string; sizes: string; form_factor: string }>;
+    expect(screenshots.map((shot) => shot.form_factor)).toEqual(
+      expect.arrayContaining(['narrow', 'wide'])
+    );
+    for (const shot of screenshots) {
+      const response = await request.get(shot.src);
+      expect(response.status(), shot.src).toBe(200);
+      const { width, height } = pngSize(await response.body());
+      expect(`${width}x${height}`, `${shot.src} declared sizes`).toBe(shot.sizes);
+      expect(Math.max(width, height) / Math.min(width, height), shot.src).toBeLessThanOrEqual(2.3);
+    }
   });
 
   test('the service worker registers and activates on load', async ({ page }) => {
