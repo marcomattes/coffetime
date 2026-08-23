@@ -57,23 +57,55 @@ final class SetupToken
             return trim($existing);
         }
 
-        $token = bin2hex(random_bytes(16));
+        return self::createToken($path);
+    }
+
+    /**
+     * Creates and persists a fresh token, handling the concurrent-first-request
+     * race: if another request wins link()'s exclusive create first, this one
+     * reads back whatever that request wrote instead of generating its own.
+     * The token is written in full to a private temp file and only then
+     * published under the real name, so nothing ever observes the
+     * destination created-but-empty. Returns '' when the file can be
+     * neither created nor read back.
+     */
+    private static function createToken(string $path): string
+    {
         $dir = dirname($path);
         if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
             return '';
         }
-        // Exclusive create: two concurrent first requests must not each write
-        // their own token, or the one the operator reads may not be the one
-        // the next request compares against.
-        $handle = @fopen($path, 'x');
-        if ($handle === false) {
+
+        // Write the token to a privately-named temp file in the same
+        // directory first, then publish it with link(). link() is atomic
+        // and -- like the fopen($path, 'x') it replaces -- fails if the
+        // destination already exists, so two concurrent first requests
+        // still can't each install their own token: the exclusive-create
+        // guarantee above holds. Unlike fopen('x') followed by a separate
+        // fwrite(), the destination filename only comes into existence once
+        // the token is already complete on disk, so a reader of $path can
+        // never see it created-but-empty -- only absent or whole.
+        $tmpPath = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        $token = bin2hex(random_bytes(16));
+        $content = $token . "\n";
+        $handle = @fopen($tmpPath, 'x');
+        $published = false;
+        if ($handle !== false) {
+            $written = @fwrite($handle, $content);
+            @fclose($handle);
+            @chmod($tmpPath, 0600);
+            // Only publish a temp file that holds the complete token -- a
+            // short write (e.g. a full disk) must not link a truncated file
+            // into place.
+            $published = $written === strlen($content) && @link($tmpPath, $path);
+            @unlink($tmpPath);
+        }
+
+        if (!$published) {
             $raced = @file_get_contents($path);
 
             return is_string($raced) && trim($raced) !== '' ? trim($raced) : '';
         }
-        @fwrite($handle, $token . "\n");
-        @fclose($handle);
-        @chmod($path, 0600);
 
         error_log(
             '[coffee] first-run setup token: ' . $token

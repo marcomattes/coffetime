@@ -40,10 +40,22 @@ function removeSetupDb(): void {
 /**
  * The setup token as the operator would obtain it: read off the deployment's
  * filesystem. The server writes it on the first setup/status or setup/init,
- * so the wizard page has to have been loaded before this is called.
+ * so the wizard page has to have been loaded before this is called -- every
+ * caller must first await `view-setup` becoming visible (see
+ * `finishSetupViaUi`), which only happens after that request has completed
+ * and the token has been published atomically.
+ *
+ * Throws loudly on empty content instead of returning '': the token file is
+ * now published atomically (SetupToken::createToken() writes it to a temp
+ * file and link()s it into place), so a reader should never observe it
+ * created-but-empty. If this throws, that guarantee broke.
  */
 function readSetupToken(): string {
-  return fs.readFileSync(SETUP_TOKEN_PATH, 'utf8').trim();
+  const token = fs.readFileSync(SETUP_TOKEN_PATH, 'utf8').trim();
+  if (token === '') {
+    throw new Error(`setup token file at ${SETUP_TOKEN_PATH} was empty`);
+  }
+  return token;
 }
 
 /** Drives the wizard to completion via the real UI, including the key download. */
@@ -97,6 +109,7 @@ test.describe('setup wizard', () => {
 
   test('an invalid price is rejected client-side with no request', async ({ page }) => {
     await page.goto('/');
+    await expect(page.getByTestId('view-setup')).toBeVisible();
 
     let setupInitRequests = 0;
     page.on('request', (req) => {
@@ -121,6 +134,7 @@ test.describe('setup wizard', () => {
 
   test('a too-short invite is rejected client-side with no request', async ({ page }) => {
     await page.goto('/');
+    await expect(page.getByTestId('view-setup')).toBeVisible();
 
     let setupInitRequests = 0;
     page.on('request', (req) => {
