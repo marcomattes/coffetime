@@ -596,17 +596,44 @@ final class Api
         Http::json([
             'coffees' => Users::coffees($updated),
             'balanceCents' => Users::balanceCents($updated),
+            'undoableSeconds' => self::undoableSeconds($updated),
         ]);
     }
 
     /** @param array<string, mixed> $user */
     private static function coffeeUndo(array $user): never
     {
+        // Nothing booked at all has always answered 200 with the unchanged
+        // state – a client whose counter is stale is not an error. A booking
+        // that exists but has outlived its grace window is the other case: the
+        // server will not do what was asked, and saying so is the only way the
+        // app can explain why the counter did not move.
+        if (Users::coffees($user) > 0 && Users::undoableSeconds((string) $user['id']) === 0) {
+            Http::error('undo_expired', 409);
+        }
+
         $updated = Users::undoCoffee((string) $user['id']);
         Http::json([
             'coffees' => Users::coffees($updated),
             'balanceCents' => Users::balanceCents($updated),
+            'undoableSeconds' => self::undoableSeconds($updated),
         ]);
+    }
+
+    /**
+     * How long the caller may still press undo. Kept in one place because the
+     * counter and the window have to agree: an account at zero has nothing to
+     * take back, whatever events happen to be lying around.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function undoableSeconds(array $user): int
+    {
+        if (Users::coffees($user) <= 0) {
+            return 0;
+        }
+
+        return Users::undoableSeconds((string) ($user['id'] ?? ''));
     }
 
     /** @param array<string, mixed> $user */
@@ -1163,6 +1190,7 @@ final class Api
             'priceCents' => Config::priceCents(),
             'streakDays' => Users::streakDays($id),
             'credentials' => Credentials::countForUser($id),
+            'undoableSeconds' => self::undoableSeconds($user),
         ];
     }
 

@@ -24,6 +24,12 @@ return [
     // every later request; edit this only to set the initial/fallback value.
     'invite' => 'BEANS-2026',
 
+    // How long a freshly booked coffee can still be taken back, in seconds.
+    // Undo is there for the mis-tap, not for editing the tab down: past this
+    // window the booking stands and the app hides the undo button. Clamped to
+    // 30 .. 86400; anything else falls back to the default of 300.
+    'undoWindowSeconds' => 300,
+
     // User IDs (as strings) with administrator privileges.
     'admins' => [],
 

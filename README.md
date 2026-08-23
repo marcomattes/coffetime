@@ -30,12 +30,12 @@ Built to run anywhere PHP runs: no framework, no Node runtime in production, SQL
 - Rankings are anonymous; each user sees only their own totals and history.
 
 **Bookkeeping that holds up**
-- Server-authoritative counter with undo, balances, streaks, and a personal 28-day history with chart.
+- Server-authoritative counter with a time-boxed undo (default 5 minutes — enough for a mis-tap, not enough to edit the tab), balances, streaks, and a personal 28-day history with chart.
 - Every booking freezes the price at booking time — later price changes never reprice existing coffees.
 - Admin payments settle tabs; an offline CLI (with optional XLSX export) covers accounting.
 
 **Offline-capable PWA**
-- Installable app with shortcuts, NFC links, and app badges. An in-app card offers the browser's install prompt, or the Share-sheet steps on iOS, which has no install API.
+- Installable app with shortcuts, NFC links, and an app badge that flags a waiting reminder and clears itself the moment the app is opened. An in-app card offers the browser's install prompt, or the Share-sheet steps on iOS, which has no install API.
 - NFC tags written from the admin area: the booking link and the registration link go onto a sticker straight from the app on Chrome for Android (Web NFC); every other browser still shows both URLs to copy.
 - Built for the installed app, not just the tab: safe-area-aware layout so nothing hides behind a notch or home indicator, and pull to refresh where there is no reload button.
 - Offline booking queue: coffees booked without a connection are queued on the device and retried with an idempotent event ID — never double-counted.
@@ -83,10 +83,11 @@ If `config.php` already sets `adminPublicKey`, the setup wizard is skipped. Once
 
 `config.php` returns an array. Important settings are `priceCents`, `invite`, `admins` (user IDs as strings), `rpId`, `origin`, `dbPath` (or `db`, see [Database](#database)), `adminPublicKey`, and the secret `namePepper`. Keep the SQLite database and all private keys outside `public/`.
 
-Two optional settings matter for real deployments:
+Three optional settings matter for real deployments:
 
 - **`trustProxy`** (default `false`) — set it only when a reverse proxy sets the `X-Forwarded-*` headers itself. A TLS-terminating proxy otherwise looks like plain HTTP to PHP, which downgrades a *derived* origin to `http://` and drops the session cookie's `Secure` flag. Pinning `origin` and `rpId` explicitly is still the more robust fix.
 - **`dayOffsetMinutes`** (default `0`) — the day boundary for streaks, the history chart and the month-end reminder, in minutes east of UTC. `0` keeps days ending at UTC midnight; set it to your office's standard offset (Berlin winter = `60`) so a late-evening coffee counts for the day it was actually had. A fixed offset does not follow daylight saving time.
+- **`undoWindowSeconds`** (default `300`, clamped to `30 .. 86400`) — how long a booking can still be taken back. Undo is meant for the mis-tap; past the window the booking stands, the app hides the button, and the endpoint answers `409 undo_expired`. Raise it if your kitchen wants more slack, but do not expect it to be a correction tool for yesterday — that is what the admin screen is for.
 
 `namePepper` must be a real random secret — generate one with `php -r 'echo bin2hex(random_bytes(32)), "\n";'`. The example placeholder is refused at runtime, because `name_hash` is a *keyed fingerprint* of a guessable value (see [Security and privacy](#security-and-privacy)).
 

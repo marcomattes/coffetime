@@ -13,6 +13,11 @@ namespace Coffee;
  */
 final class Config
 {
+    /** Grace period for undoing a booking; see undoWindowSeconds(). */
+    public const UNDO_WINDOW_DEFAULT = 300;
+    public const UNDO_WINDOW_MIN = 30;
+    public const UNDO_WINDOW_MAX = 86400;
+
     /** @var array<string, mixed>|null */
     private static ?array $values = null;
 
@@ -107,6 +112,29 @@ final class Config
         $value = self::get('priceCents', 0);
 
         return is_numeric($value) ? (int) $value : 0;
+    }
+
+    /**
+     * Grace period in seconds during which a freshly booked coffee can still
+     * be taken back.
+     *
+     * Undo exists for the mis-tap and the double tap, not for editing the tab
+     * down: without a bound, anyone could walk their own counter back to zero
+     * one press at a time. Values outside a sane range (or a non-numeric one)
+     * fall back to the default rather than quietly removing the limit again.
+     */
+    public static function undoWindowSeconds(): int
+    {
+        $value = self::get('undoWindowSeconds', self::UNDO_WINDOW_DEFAULT);
+        if (!is_numeric($value)) {
+            return self::UNDO_WINDOW_DEFAULT;
+        }
+        $seconds = (int) $value;
+        if ($seconds < self::UNDO_WINDOW_MIN || $seconds > self::UNDO_WINDOW_MAX) {
+            return self::UNDO_WINDOW_DEFAULT;
+        }
+
+        return $seconds;
     }
 
     public static function invite(): string

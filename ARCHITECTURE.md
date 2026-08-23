@@ -73,6 +73,8 @@ The frontend is authored in TypeScript (`frontend/app.ts`, `frontend/sw.ts`) and
 
 Payment reminders are local notifications, not Web Push — there is no push server, no VAPID keys, and no subscription stored anywhere. The server only answers `GET /api/reminders` for the signed-in session: a month-end entry (due on the last day of a month, caught up for at most 7 days into the next one, and only while `balanceCents > 0`) and an admin-requested entry (`POST /api/admin/remind` stamps `users.remind_requested_at`). The service worker checks on a page poke at every app start and via periodic background sync where available, shows the notifications, and then confirms via `POST /api/reminders/ack` exactly what it showed: the month lands in `users.reminded_month`, and the admin request is cleared only if its timestamp still matches (a newer request queued between read and ack survives). Reading is never consuming, so a device that fails to display consumes nothing, and the server-side markers make each reminder appear at most once across all of a user's devices.
 
+The app-icon badge is tied to those notifications and to nothing else: the worker sets it when it actually shows a reminder (and skips it when a window of the app is already visible, since a reminder that arrives on screen has been seen), and the page clears it — along with any notification still sitting in the notification centre — whenever the app comes to the front. It is a "there is something for you" flag, never a running total. It used to badge the outstanding balance instead, which on iOS meant a count that by definition never cleared itself and that the user had no way to get rid of.
+
 ## Database layer
 
 MySQL/MariaDB migrations additionally take a `GET_LOCK` advisory lock, since its DDL cannot run inside a transaction and concurrent cold starts would otherwise race each other through the steps. Index creation is best-effort and only logged on failure (legacy data can violate a uniqueness constraint), so `migrate()` re-checks the uniqueness-critical indexes on every request and retries the safety net if one is missing — otherwise a single failed attempt would leave name or credential uniqueness silently unenforced forever.
@@ -81,14 +83,19 @@ MySQL/MariaDB migrations additionally take a `GET_LOCK` advisory lock, since its
 
 ## Accepted trade-offs
 
-Two behaviors look like bugs but are deliberate, and are called out here so they are not "fixed" by accident:
+One behavior looks like a bug but is deliberate, and is called out here so it is not "fixed" by accident:
 
-- **Undo is unbounded in time and count.** `POST /api/coffee/undo` removes the most recent booking whenever it is called, however old. This is an honor-system tab among colleagues, not an audit ledger, and a correction hours later is a legitimate use. Anyone can only ever undo their *own* bookings, and the counter floors at zero.
 - **`name_taken` reveals that a name is registered.** Preventing duplicate registrations requires answering "is this name already taken", which necessarily confirms membership to whoever holds an invite code. The exposure is bounded by rate limiting rather than removed, since the alternative — accepting silent duplicates — is worse for a shared tab.
+
+## Undo window
+
+`POST /api/coffee/undo` takes back the most recent booking, but only while it is younger than `Config::undoWindowSeconds()` (default 300, configurable in `config.php`, clamped to 30 .. 86400). Undo exists for the mis-tap and the double tap; without a bound it is also a way for anyone to walk their own counter back to zero one press at a time, which is what it was being used for. Repeated undo inside the window is fine and intended — three quick taps are three quick undos.
+
+The window is decided by the same transaction that removes the event, so concurrent presses from two devices can never take back more than the bookings that are there. `Users::undoableSeconds()` reports the remaining time (relative, not an absolute timestamp: a phone with a skewed clock would misread the latter), which rides along on `/api/me` and both coffee endpoints. The app uses it to show the undo button at all and to take it away again on a timer; a request that arrives late is answered `409 undo_expired`. An account at zero coffees keeps the older contract and answers `200` with unchanged state — a stale client is not an error. A pre-schema-v5 row with no event carries no date, cannot be told apart from last month's coffee, and therefore is not undoable at all.
 
 ## Price freezing
 
-Each coffee booking reads the current price once and freezes it twice: into `coffee_events.price_cents` for that event, and added into the user's running `users.tab_cents`. A later price change only affects bookings made after it; undo reverses the specific event's frozen price (falling back to the current price only for pre-price-tracking legacy rows with no event). `balanceCents` is `tab_cents - paid_cents`, both driven by frozen per-event prices and admin payments, never recomputed from the live price.
+Each coffee booking reads the current price once and freezes it twice: into `coffee_events.price_cents` for that event, and added into the user's running `users.tab_cents`. A later price change only affects bookings made after it; undo reverses the specific event's frozen price. `balanceCents` is `tab_cents - paid_cents`, both driven by frozen per-event prices and admin payments, never recomputed from the live price.
 
 ## Runtime settings
 

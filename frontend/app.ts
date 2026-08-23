@@ -13,6 +13,10 @@
     priceCents: number;
     streakDays?: number;
     credentials?: number;
+    /* Seconds the last booking can still be taken back for; 0 = nothing to
+       undo. Relative rather than absolute on purpose: a phone whose clock is
+       minutes off would misread a server timestamp. */
+    undoableSeconds?: number;
   }
 
   interface DistributionEntry {
@@ -76,6 +80,7 @@
   interface CoffeeResponse {
     coffees: number;
     balanceCents: number;
+    undoableSeconds?: number;
   }
 
   interface AdminPaymentResponse {
@@ -634,8 +639,49 @@
     busy(button, false);
   }
 
+  /*
+   * A reminder that has been delivered stays in the notification centre until
+   * something closes it, and the app icon keeps its badge for exactly as long
+   * -- on iOS that count sat there with nothing in the app able to clear it.
+   * Opening the app *is* the acknowledgement, so both are dropped whenever it
+   * comes to the front. The badge is set by the service worker when it shows
+   * a reminder (see sw.ts); it is a "there is something for you" flag, never a
+   * running total, which is why clearing it here cannot lose information.
+   */
+  function clearReminderBadge(): void {
+    if ('clearAppBadge' in navigator) {
+      try {
+        (navigator as any).clearAppBadge().catch(() => {});
+      } catch (e) {
+        /* The badging API is a nice-to-have, not a requirement. */
+      }
+    }
+    if (!('serviceWorker' in navigator)) {
+      return;
+    }
+    navigator.serviceWorker.ready
+      .then((registration) => {
+        if (typeof registration.getNotifications !== 'function') {
+          return [] as Notification[];
+        }
+        return registration.getNotifications();
+      })
+      .then((shown) => {
+        shown.forEach((entry) => {
+          entry.close();
+        });
+      })
+      .catch(() => { /* No worker, or the browser withholds the list. */ });
+  }
+
   function initReminders(): void {
     updateReminderUi();
+    clearReminderBadge();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        clearReminderBadge();
+      }
+    });
     if (notificationsSupported() && Notification.permission === 'granted') {
       // Re-register on every start: the registration is idempotent and a
       // reinstalled app or cleared site data would otherwise lose it.
@@ -677,23 +723,33 @@
       text(el('device-count'), credentials + (credentials === 1 ? ' passkey' : ' passkeys'));
     }
 
-    updateBadge(me.balanceCents);
+    renderUndo(me.undoableSeconds);
   }
 
-  /* App icon badge: outstanding balance, rounded to whole euros. Purely cosmetic. */
-  function updateBadge(balanceCents: unknown): void {
-    if (!('setAppBadge' in navigator)) {
+  let undoTimer: number | null = null;
+
+  /*
+   * The undo button only exists while the server would still honour it. It is
+   * a way back out of a mis-tap, not an editor for the tab, so it takes itself
+   * away when the grace window runs out -- without that timer it would sit
+   * there looking available and answer `undo_expired` when pressed.
+   */
+  function renderUndo(seconds: unknown): void {
+    const button = el<HTMLButtonElement>('btn-undo');
+    if (!button) {
       return;
     }
-    const amount = Math.round((typeof balanceCents === 'number' ? balanceCents : 0) / 100);
-    try {
-      if (amount > 0) {
-        (navigator as any).setAppBadge(amount).catch(() => {});
-      } else if ('clearAppBadge' in navigator) {
-        (navigator as any).clearAppBadge().catch(() => {});
-      }
-    } catch (e) {
-      /* The badging API is a nice-to-have, not a requirement. */
+    if (undoTimer !== null) {
+      window.clearTimeout(undoTimer);
+      undoTimer = null;
+    }
+    const left = typeof seconds === 'number' && isFinite(seconds) ? Math.floor(seconds) : 0;
+    button.hidden = left <= 0;
+    if (left > 0) {
+      undoTimer = window.setTimeout(() => {
+        undoTimer = null;
+        renderUndo(0);
+      }, left * 1000);
     }
   }
 
@@ -1554,6 +1610,7 @@
   async function addCoffee(): Promise<void> {
     const button = el<HTMLButtonElement>('btn-add');
     const eventId = newEventId();
+    text(el('app-error'), '');
     busy(button, true);
     try {
       try {
@@ -1563,7 +1620,8 @@
           admin: state.me ? state.me.admin : false,
           coffees: data.coffees,
           balanceCents: data.balanceCents,
-          priceCents: state.me ? state.me.priceCents : 0
+          priceCents: state.me ? state.me.priceCents : 0,
+          undoableSeconds: data.undoableSeconds
         });
         vibrate([18, 40, 18]);
         bump(el('counter'));
@@ -1599,6 +1657,7 @@
 
   async function undoCoffee(): Promise<void> {
     const button = el<HTMLButtonElement>('btn-undo');
+    text(el('app-error'), '');
     busy(button, true);
     try {
       const data = await api<CoffeeResponse>('/api/coffee/undo', {});
@@ -1607,12 +1666,18 @@
         admin: state.me ? state.me.admin : false,
         coffees: data.coffees,
         balanceCents: data.balanceCents,
-        priceCents: state.me ? state.me.priceCents : 0
+        priceCents: state.me ? state.me.priceCents : 0,
+        undoableSeconds: data.undoableSeconds
       });
       await refresh();
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         show('auth');
+      } else if (error instanceof ApiError && error.code === 'undo_expired') {
+        // The window ran out between the button being drawn and being
+        // pressed. refresh() takes the button away; say why it went.
+        text(el('app-error'), 'That coffee has been on the tab too long to take back.');
+        await refresh();
       } else {
         fail(el('app-error'), error);
       }
@@ -1644,9 +1709,7 @@
     if (!serverEnded) {
       text(el('auth-error'), 'Signed out on this device. You were offline, so the session ends on the server at the next connection.');
     }
-    if ('clearAppBadge' in navigator) {
-      (navigator as any).clearAppBadge().catch(() => {});
-    }
+    clearReminderBadge();
   }
 
   /* ------------------------------------------------------- Feedback ----- */
@@ -1913,6 +1976,11 @@
   const PULL_TRIGGER = 72; // px of travel that arms the refresh
   const PULL_MAX = 110;
   const PULL_RESISTANCE = 0.5;
+  /* Raw finger travel before the gesture counts as a pull at all. Below it the
+     page keeps the touch: a scroll often starts with a pixel or two in the
+     wrong direction, and claiming those cancels the scroll for the whole
+     gesture -- the finger has to be lifted and put down again. */
+  const PULL_SLOP = 12;
 
   function initPullToRefresh(): void {
     const indicator = el('pull-indicator');
@@ -1922,9 +1990,21 @@
     }
 
     let startY = 0;
+    let startX = 0;
     let distance = 0;
-    let tracking = false;
+    /* Three states rather than a flag: a gesture that turned out to be a
+       scroll (or a sideways swipe) must stay out of the way until the finger
+       comes up, not re-arm on the next move that happens to point down. */
+    let phase: 'idle' | 'watching' | 'pulling' = 'idle';
     let refreshing = false;
+
+    /* Whichever element the engine ended up making the scroller: an
+       `overflow` on `html`/`body` can move it, and then window.scrollY alone
+       is not the number that decides whether we are at the top. */
+    function scrollTop(): number {
+      const scroller = document.scrollingElement || document.documentElement;
+      return Math.max(window.scrollY || 0, scroller ? scroller.scrollTop : 0);
+    }
 
     function paint(offset: number, animate: boolean): void {
       const transition = animate ? 'transform 0.25s ease, opacity 0.25s ease' : '';
@@ -1936,7 +2016,7 @@
     }
 
     function reset(): void {
-      tracking = false;
+      phase = 'idle';
       distance = 0;
       paint(0, true);
     }
@@ -1965,29 +2045,43 @@
 
     document.addEventListener('touchstart', (event) => {
       // Pinches and two-finger scrolls are not a pull.
-      if (event.touches.length !== 1 || window.scrollY > 0 || !allowed()) {
-        tracking = false;
+      if (event.touches.length !== 1 || scrollTop() > 0 || !allowed()) {
+        phase = 'idle';
         return;
       }
       startY = event.touches[0].clientY;
+      startX = event.touches[0].clientX;
       distance = 0;
-      tracking = true;
+      phase = 'watching';
     }, { passive: true });
 
     document.addEventListener('touchmove', (event) => {
-      if (!tracking) {
+      if (phase === 'idle' || event.touches.length !== 1) {
         return;
       }
-      const delta = event.touches[0].clientY - startY;
-      if (delta <= 0 || window.scrollY > 0) {
-        // Turned into an ordinary scroll – hand the gesture back.
-        if (distance > 0) {
-          reset();
+      const deltaY = event.touches[0].clientY - startY;
+      const deltaX = event.touches[0].clientX - startX;
+
+      if (phase === 'watching') {
+        // Anything but a deliberate downward drag from the very top belongs
+        // to the page. Deciding once, and only after PULL_SLOP, is what keeps
+        // an ordinary scroll from being swallowed.
+        if (Math.abs(deltaY) < PULL_SLOP && Math.abs(deltaX) < PULL_SLOP) {
+          return;
         }
-        tracking = false;
+        if (deltaY < PULL_SLOP || Math.abs(deltaX) > Math.abs(deltaY) || scrollTop() > 0) {
+          phase = 'idle';
+          return;
+        }
+        phase = 'pulling';
+      }
+
+      if (deltaY <= 0 || scrollTop() > 0) {
+        // Pulled back up past the start – give the gesture back to the page.
+        reset();
         return;
       }
-      distance = Math.min(PULL_MAX, delta * PULL_RESISTANCE);
+      distance = Math.min(PULL_MAX, (deltaY - PULL_SLOP) * PULL_RESISTANCE);
       if (event.cancelable) {
         event.preventDefault();
       }
@@ -1995,10 +2089,11 @@
     }, { passive: false });
 
     function release(): void {
-      if (!tracking) {
+      if (phase !== 'pulling') {
+        phase = 'idle';
         return;
       }
-      tracking = false;
+      phase = 'idle';
       if (distance >= PULL_TRIGGER && allowed()) {
         run();
         return;

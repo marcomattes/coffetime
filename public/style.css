@@ -31,12 +31,24 @@
   box-sizing: border-box;
 }
 
+/*
+ * The root only, never `body` as well. A hidden axis computes the other one to
+ * `auto`, so `overflow-x: hidden` on the body turns it into a scroll container
+ * of its own -- and a scroll container that cannot scroll swallows the gesture
+ * instead of handing it up to the viewport. Together with the
+ * `overscroll-behavior-y: contain` further down, that left the installed app
+ * on Android unable to scroll at all. The root's value propagates to the
+ * viewport, which is what actually keeps the page from moving sideways.
+ */
+html {
+  overflow-x: hidden;
+}
+
 html,
 body {
   margin: 0;
   padding: 0;
   max-width: 100%;
-  overflow-x: hidden;
 }
 
 body {
@@ -526,15 +538,22 @@ input {
  * own reload, and its rubber-band overscroll must keep working there.
  */
 @media (display-mode: standalone) {
-  html,
-  body {
+  /* Root only, for the reason spelled out next to `overflow-x` above. */
+  html {
     overscroll-behavior-y: contain;
   }
 }
 
+/*
+ * Parked one spinner-height above the top edge (and behind the opaque
+ * `.safe-top` bar), so the same translation that pushes `.wrap` down brings
+ * the spinner into the gap the pull opens. Anchored at the top edge instead,
+ * it travelled *with* the content and sat on the first card the whole way
+ * down -- which is what it used to do.
+ */
 .pull {
   position: fixed;
-  top: env(safe-area-inset-top, 0px);
+  top: calc(env(safe-area-inset-top, 0px) - 40px);
   left: 0;
   right: 0;
   z-index: 15;

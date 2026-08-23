@@ -128,6 +128,43 @@ check('POST /api/coffee updates balanceCents accordingly', ($r['json']['balanceC
 $r = $client->post('/api/coffee/undo');
 check('POST /api/coffee/undo decrements the counter back', ($r['json']['coffees'] ?? null) === 2);
 
+// ----------------------------------------------------------- undo window ---
+
+// Undo only takes back a mis-tap, so the endpoint reports how long it is
+// still willing to, and refuses once that time has passed.
+$r = $client->post('/api/coffee');
+check('a fresh booking reports a positive undo window', ($r['json']['undoableSeconds'] ?? 0) > 0);
+$r = $client->get('/api/me');
+check('/api/me carries the same undo window', ($r['json']['undoableSeconds'] ?? 0) > 0);
+// Mirrors Config::UNDO_WINDOW_DEFAULT -- this suite talks to a running
+// server over HTTP and does not load the application's classes.
+$undoWindow = 300;
+check(
+    'the undo window never exceeds the configured grace period',
+    ($r['json']['undoableSeconds'] ?? 0) <= $undoWindow
+);
+
+// Jump past the window rather than waiting it out. The session survives: it
+// idles out after 30 days, not minutes.
+$r = $client->post(
+    '/api/test/clock',
+    ['offsetSeconds' => $undoWindow + 60],
+    $testHeaders
+);
+check('test/clock jumps past the undo window', $r['status'] === 200);
+$r = $client->get('/api/me');
+check('past the window /api/me reports nothing to undo', ($r['json']['undoableSeconds'] ?? null) === 0);
+$r = $client->post('/api/coffee/undo');
+check('undo past the window is refused with 409', $r['status'] === 409);
+check('undo past the window reports undo_expired', ($r['json']['error'] ?? null) === 'undo_expired');
+$r = $client->get('/api/me');
+check('the refused undo left the counter alone', ($r['json']['coffees'] ?? null) === 3);
+check('the refused undo left the balance alone', ($r['json']['balanceCents'] ?? null) === 3 * 150);
+
+$client->post('/api/test/clock', ['offsetSeconds' => 0], $testHeaders);
+$r = $client->post('/api/coffee/undo');
+check('with the clock restored the same booking is undoable again', ($r['json']['coffees'] ?? null) === 2);
+
 // Book one coffee for the history check below.
 $r = $client->post('/api/coffee');
 check('booking again before the history check increments to 3', ($r['json']['coffees'] ?? null) === 3);

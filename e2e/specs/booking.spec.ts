@@ -72,14 +72,21 @@ test.describe('booking', () => {
     expect(server?.balanceCents).toBe(150);
   });
 
-  test('undo at zero is a no-op', async ({ page, testApi }) => {
+  test('undo at zero is offered by neither the app nor the API', async ({ page, testApi }) => {
     const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester' }]);
     await testApi.loginAs(page, u.id);
     await page.goto('/');
     await expect(page.getByTestId('view-app')).toBeVisible();
     await expect(page.getByTestId('counter')).toHaveText('0');
 
-    await page.getByTestId('btn-undo').click();
+    // With nothing booked the button is not there to press at all.
+    await expect(page.getByTestId('btn-undo')).toBeHidden();
+
+    // A client that calls the endpoint regardless still gets the no-op it
+    // always got -- a stale counter is not an error.
+    const response = await page.request.post('/api/coffee/undo');
+    expect(response.status()).toBe(200);
+    expect((await response.json()).coffees).toBe(0);
 
     // #app-error has no data-testid; it's the only element with this id.
     await expect(page.getByTestId('counter')).toHaveText('0');
@@ -90,6 +97,35 @@ test.describe('booking', () => {
     const server = state.users.find((candidate) => candidate.id === u.id);
     expect(server?.coffees).toBe(0);
     expect(server?.balanceCents).toBe(0);
+  });
+
+  test('undo disappears once the booking has outlived its grace window', async ({ page, testApi }) => {
+    const [u] = await testApi.seed([{ firstName: 'Coffee', lastName: 'Tester' }]);
+    await testApi.loginAs(page, u.id);
+    await page.goto('/');
+    await expect(page.getByTestId('view-app')).toBeVisible();
+
+    await page.getByTestId('btn-add').click();
+    await expect(page.getByTestId('counter')).toHaveText('1');
+    await expect(page.getByTestId('btn-undo')).toBeVisible();
+
+    // Config::UNDO_WINDOW_DEFAULT is 300s; jump well past it rather than wait.
+    await testApi.clock(3600);
+    await page.reload();
+    await expect(page.getByTestId('view-app')).toBeVisible();
+    await expect(page.getByTestId('counter')).toHaveText('1');
+    await expect(page.getByTestId('btn-undo')).toBeHidden();
+
+    // The window is enforced on the server, not just hidden in the UI: this
+    // is the whole point -- a reload must not hand the counter back.
+    const response = await page.request.post('/api/coffee/undo');
+    expect(response.status()).toBe(409);
+    expect((await response.json()).error).toBe('undo_expired');
+
+    const state = await testApi.state();
+    const server = state.users.find((candidate) => candidate.id === u.id);
+    expect(server?.coffees).toBe(1);
+    expect(server?.balanceCents).toBe(150);
   });
 
   test('price freeze: an in-flight price change never re-prices past bookings', async ({ page, testApi }) => {

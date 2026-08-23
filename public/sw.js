@@ -1,7 +1,7 @@
 /* Coffee Time service worker: cache the static shell, never the API. */
 'use strict';
 const sw = self;
-const CACHE = 'coffeetime-v6';
+const CACHE = 'coffeetime-v7';
 const SHELL = [
     '/',
     '/style.css',
@@ -52,6 +52,39 @@ sw.addEventListener('fetch', (event) => {
         return cached || network;
     }));
 });
+/*
+ * The badge is a flag, not a count: "a reminder is waiting for you". The page
+ * drops it again the moment the app comes to the front (see clearReminderBadge
+ * in app.ts), which is the only way a badge on iOS ever goes away -- the app
+ * used to badge the outstanding balance instead, which by definition never
+ * cleared itself and left users with a number they could do nothing about.
+ */
+function badge(count) {
+    const workerNavigator = sw.navigator;
+    if (!workerNavigator || typeof workerNavigator.setAppBadge !== 'function') {
+        return;
+    }
+    try {
+        const result = workerNavigator.setAppBadge(count);
+        if (result && typeof result.catch === 'function') {
+            result.catch(() => { });
+        }
+    }
+    catch (e) {
+        /* Badging is a nice-to-have; a browser without it loses nothing else. */
+    }
+}
+/* A reminder that arrives while the app is already on screen has been seen by
+   definition -- badging it would only leave a mark to clear afterwards. */
+async function appIsVisible() {
+    try {
+        const clients = await sw.clients.matchAll({ type: 'window' });
+        return clients.some((client) => client.visibilityState === 'visible');
+    }
+    catch (e) {
+        return false;
+    }
+}
 function euros(cents) {
     const value = typeof cents === 'number' && isFinite(cents) ? cents : 0;
     const sign = value < 0 ? '-' : '';
@@ -78,6 +111,7 @@ async function checkReminders() {
         return;
     }
     const ack = {};
+    let shown = 0;
     const monthEnd = data && data.monthEnd;
     if (monthEnd && typeof monthEnd.month === 'string') {
         await sw.registration.showNotification('Coffee Time', {
@@ -87,6 +121,7 @@ async function checkReminders() {
             icon: '/icons/icon-192.png'
         });
         ack.month = monthEnd.month;
+        shown++;
     }
     const admin = data && data.admin;
     if (admin && typeof admin.requestedAt === 'number') {
@@ -97,9 +132,13 @@ async function checkReminders() {
             icon: '/icons/icon-192.png'
         });
         ack.adminRequestedAt = admin.requestedAt;
+        shown++;
     }
-    if (ack.month === undefined && ack.adminRequestedAt === undefined) {
+    if (shown === 0) {
         return;
+    }
+    if (!await appIsVisible()) {
+        badge(shown);
     }
     try {
         await fetch('/api/reminders/ack', {
@@ -130,6 +169,7 @@ sw.addEventListener('periodicsync', (event) => {
 });
 sw.addEventListener('notificationclick', (event) => {
     event.notification.close();
+    badge(0);
     event.waitUntil(sw.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
         for (const client of clients) {
             if ('focus' in client) {

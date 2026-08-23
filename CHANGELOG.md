@@ -34,6 +34,23 @@ Work preparing the project for its open-source release.
 
 ### Fixed
 
+- The installed app could not be scrolled on Android. `overscroll-behavior-y:
+  contain` was set on `body` as well as `html`, and `body { overflow-x: hidden }`
+  had already turned the body into a scroll container of its own — a scroll
+  container that cannot scroll and refuses to pass the gesture on. Both
+  properties now live on the root element only.
+- Pull to refresh drew its spinner on top of the first card instead of in the
+  gap the pull opens: the indicator and the content were translated by the same
+  amount, so the spinner travelled along with what it was supposed to sit above.
+- Pull to refresh no longer claims a gesture before it is clearly a downward
+  pull from the very top. A scroll that started with a pixel or two in the wrong
+  direction used to be cancelled for its whole duration.
+- The iOS app-icon badge could not be cleared. It showed the outstanding
+  balance, so it stayed for as long as anything was owed and looked like an
+  unread count nobody could dismiss. The badge is now set by the service worker
+  when it shows a payment reminder, and the app clears it — together with any
+  notification still in the notification centre — whenever it comes to the
+  front.
 - Registration writes the user and its first passkey in one transaction. A
   failure in between left a user who could never sign in while permanently
   reserving the name — and, for the first user, the admin flag.
@@ -114,6 +131,15 @@ Work preparing the project for its open-source release.
 
 ### Changed
 
+- **Undo is now bounded in time.** `POST /api/coffee/undo` only takes back a
+  booking younger than `undoWindowSeconds` (new `config.php` key, default 300,
+  clamped to 30 .. 86400); an older one is answered `409 undo_expired`. Undo
+  without a bound let anyone walk their own counter back to zero one press at a
+  time, reload included. `/api/me` and both coffee endpoints report the
+  remaining `undoableSeconds`, and the app shows the undo button only while it
+  is real, hiding it again on a timer. A pre-schema-v5 row with no event carries
+  no date and is no longer undoable at all. This reverses a documented
+  "accepted trade-off" in `ARCHITECTURE.md`.
 - Translated code comments and identifiers to English across the backend
   (`Api`, `Users`), frontend, end-to-end tests, and support classes.
 - Rewrote `README.md` and restructured `ARCHITECTURE.md` for an external

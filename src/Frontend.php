@@ -157,7 +157,8 @@ final class Frontend
       <button type="button" id="btn-add" data-testid="btn-add" class="btn btn-add">
         <span aria-hidden="true">&#9749;</span> Take a coffee
       </button>
-      <button type="button" id="btn-undo" data-testid="btn-undo" class="btn btn-quiet">Undo last coffee</button>
+      <!-- Shown by app.ts only while the server would still accept it. -->
+      <button type="button" id="btn-undo" data-testid="btn-undo" class="btn btn-quiet" hidden>Undo last coffee</button>
     </div>
 
     <div class="card grid">

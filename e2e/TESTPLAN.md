@@ -88,11 +88,16 @@ authenticator (CDP) — nothing in the app is mocked.
    "Today" and "All coffees" show 1; `/api/test/state` confirms one coffee.
 2. Three bookings aggregate (counter 3, balance 4.50 €).
 3. Undo reverts counter and balance; server state confirms.
-4. Undo at zero is a no-op: counter stays 0, balance stays 0.00 €, no error.
-5. Price freeze: book at 150, admin changes the price to 200 (via settings
+4. Undo at zero is offered by neither side: the button is hidden, and a client
+   that posts anyway still gets the historical `200` no-op, no error shown.
+5. Undo grace window: book once (button visible), shift the clock an hour with
+   `/api/test/clock`, reload → the button is gone and `POST /api/coffee/undo`
+   answers `409 undo_expired` with the counter and balance untouched. The
+   server side is the point: a reload must not hand the counter back.
+6. Price freeze: book at 150, admin changes the price to 200 (via settings
    API), book again → balance 3.50 €; undo removes the *last* event → balance
    1.50 € (the frozen 200 is refunded, not the current price twice).
-6. A seeded starting balance (`paidCents`) is reflected: coffees 4 × 150 with
+7. A seeded starting balance (`paidCents`) is reflected: coffees 4 × 150 with
    300 paid → outstanding 3.00 €.
 
 ### 5. `stats.spec.ts` (main instance)

@@ -251,37 +251,73 @@ final class Users
     }
 
     /**
+     * Seconds for which the most recent booking can still be taken back: the
+     * grace window minus that booking's age, and 0 once there is nothing left
+     * to undo. Relative rather than absolute, so a client with a skewed clock
+     * cannot misread it.
+     *
+     * A row from before schema v5 carries no event and therefore no date. It
+     * cannot be told apart from last month's coffee, so it counts as not
+     * undoable – leaving the tab alone is the safer of the two mistakes.
+     */
+    public static function undoableSeconds(string $id): int
+    {
+        $event = Db::fetchRow(
+            'SELECT created_at FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+            [(int) $id]
+        );
+        if ($event === null || !isset($event['created_at']) || !is_numeric($event['created_at'])) {
+            return 0;
+        }
+
+        $left = (int) $event['created_at'] + Config::undoWindowSeconds() - Clock::now();
+
+        return $left > 0 ? $left : 0;
+    }
+
+    /**
      * Undoes the last booking – both the counter and the price booked for it.
      * The price comes from the most recently booked event, not from the current
      * configuration: only that keeps an intervening price change free of
-     * retroactive effect. If the event is missing (legacy data from before
-     * schema v5), the currently configured price is deducted instead.
+     * retroactive effect.
+     *
+     * Only a booking inside the grace window (Config::undoWindowSeconds) can be
+     * taken back; anything older stands, as does a legacy row that has no event
+     * to date. The window is checked inside the transaction that removes the
+     * event, so two devices pressing undo at the same moment can never take
+     * back more than what is actually there.
      *
      * @return array<string, mixed>
      */
     public static function undoCoffee(string $id): array
     {
         $fallbackPrice = Config::priceCents();
+        $window = Config::undoWindowSeconds();
 
-        return Db::transaction(static function (PDO $pdo) use ($id, $fallbackPrice): array {
+        return Db::transaction(static function (PDO $pdo) use ($id, $fallbackPrice, $window): array {
+            // Take back the most recently booked event, not an arbitrary one –
+            // and read its age and price before deleting it.
+            $event = Db::fetchRow(
+                'SELECT id, price_cents, created_at FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+                [(int) $id],
+                $pdo
+            );
+            if ($event === null || !isset($event['created_at']) || !is_numeric($event['created_at'])) {
+                return self::rowInTransaction($pdo, $id);
+            }
+            if ((int) $event['created_at'] + $window <= Clock::now()) {
+                return self::rowInTransaction($pdo, $id);
+            }
+
             // Stops at zero, never goes negative.
             $statement = $pdo->prepare('UPDATE users SET coffees = coffees - 1 WHERE id = ? AND coffees > 0');
             $statement->execute([(int) $id]);
             if ($statement->rowCount() > 0) {
-                // Take back the most recently booked event, not an arbitrary
-                // one – and read its price before deleting it.
-                $event = Db::fetchRow(
-                    'SELECT id, price_cents FROM coffee_events WHERE user_id = ? ORDER BY id DESC LIMIT 1',
-                    [(int) $id],
-                    $pdo
-                );
-                $refund = $event !== null && isset($event['price_cents']) && is_numeric($event['price_cents'])
+                $refund = isset($event['price_cents']) && is_numeric($event['price_cents'])
                     ? (int) $event['price_cents']
                     : $fallbackPrice;
 
-                if ($event !== null) {
-                    $pdo->prepare('DELETE FROM coffee_events WHERE id = ?')->execute([$event['id']]);
-                }
+                $pdo->prepare('DELETE FROM coffee_events WHERE id = ?')->execute([$event['id']]);
 
                 // Portable instead of MAX(0, ...), as in addPayment: never negative.
                 $pdo->prepare(

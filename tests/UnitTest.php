@@ -269,6 +269,45 @@ check('undoCoffee on a user at zero coffees stays at zero', Users::coffees($upda
 $updated = Users::undoCoffee((string) $bob['id']);
 check('undoCoffee never goes negative even when called repeatedly', Users::coffees($updated) === 0);
 
+// ------------------------------------------------------------ undo window ---
+
+// Undo is a way out of a mis-tap, not an editor for the tab: a booking that
+// has outlived Config::undoWindowSeconds() stands, however often undo is
+// called. The clock is moved instead of the row so the check exercises the
+// same Clock::now() the endpoint uses.
+$windowUser = Users::create('cipher-window', 'hash-window', 'handle-window');
+$windowId = (string) $windowUser['id'];
+Users::addCoffee($windowId);
+Users::addCoffee($windowId);
+check('a fresh booking is undoable', Users::undoableSeconds($windowId) > 0);
+check(
+    'the reported window never exceeds the configured one',
+    Users::undoableSeconds($windowId) <= Config::undoWindowSeconds()
+);
+
+Clock::setOffset(Config::undoWindowSeconds() + 1);
+check('once the window has passed nothing is undoable', Users::undoableSeconds($windowId) === 0);
+$updated = Users::undoCoffee($windowId);
+check('undo past the window leaves the counter alone', Users::coffees($updated) === 2);
+check('undo past the window leaves the tab alone', Users::tabCents($updated) === 2 * Config::priceCents());
+check(
+    'undo past the window keeps both coffee_events rows',
+    (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $windowId]) === 2
+);
+$updated = Users::undoCoffee($windowId);
+check('repeating undo past the window changes nothing either', Users::coffees($updated) === 2);
+
+// Back inside the window, the same two bookings can be taken back again --
+// a double tap is exactly what undo is for.
+Clock::setOffset(0);
+check('the booking is undoable again once the clock is back', Users::undoableSeconds($windowId) > 0);
+$updated = Users::undoCoffee($windowId);
+check('undo inside the window removes one booking', Users::coffees($updated) === 1);
+$updated = Users::undoCoffee($windowId);
+check('a second undo inside the window removes the other one', Users::coffees($updated) === 0);
+check('undoing both bookings clears the tab', Users::tabCents($updated) === 0);
+check('with nothing booked there is nothing left to undo', Users::undoableSeconds($windowId) === 0);
+
 // undo removes only the latest event, not an arbitrary one.
 Users::addCoffee((string) $carol['id']);
 Users::addCoffee((string) $carol['id']);
@@ -393,8 +432,9 @@ check('undo after a price change refunds the last booking\'s own price', Users::
 check('undo after a price change leaves the coffee count at 2', Users::coffees($updated) === 2);
 
 // Legacy user: coffees and a tab, but no coffee_events rows at all (as a
-// pre-v5 database would have). Undo must fall back to the current
-// configured price and still floor at zero.
+// pre-v5 database would have). There is no event to date, so the grace
+// window cannot tell a mis-tap from last month's coffee -- the booking
+// stands rather than being silently refunded.
 $legacyId = Db::transaction(static function (PDO $pdo): string {
     $statement = $pdo->prepare(
         'INSERT INTO users (name, name_encrypted, name_hash, user_handle, coffees, paid_cents, tab_cents, created_at)
@@ -408,10 +448,11 @@ check(
     'the manually inserted legacy user has no coffee_events rows',
     (int) Db::fetchValue('SELECT COUNT(*) FROM coffee_events WHERE user_id = ?', [(int) $legacyId]) === 0
 );
+check('a legacy user without events reports nothing to undo', Users::undoableSeconds($legacyId) === 0);
 $updated = Users::undoCoffee($legacyId);
 check(
-    'undo on a legacy user without events falls back to the current price and floors at zero',
-    Users::tabCents($updated) === 0 && Users::coffees($updated) === 0
+    'undo on a legacy user without events leaves counter and tab untouched',
+    Users::tabCents($updated) === 150 && Users::coffees($updated) === 1
 );
 
 // ----------------------------------------------------------------- stats ---
