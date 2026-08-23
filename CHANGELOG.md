@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Work preparing the project for its open-source release.
+Nothing yet.
+
+## [0.9.0] - 2026-08-23
+
+First tagged release, and the point the project became installable without
+cloning it: the work below prepared it for its open-source release, and a
+container image is published from this tag onwards.
 
 ### Security
 
@@ -71,7 +77,6 @@ Work preparing the project for its open-source release.
 - The README described a `config.php` baked into the image that pinned `origin`
   to `http://localhost:8123`. No such file was ever written; the origin is
   derived from the request, which is what lets one image serve any host.
-
 - The installed app could not be scrolled on Android. `overscroll-behavior-y:
   contain` was set on `body` as well as `html`, and `body { overflow-x: hidden }`
   had already turned the body into a scroll container of its own — a scroll
@@ -183,8 +188,6 @@ Work preparing the project for its open-source release.
   an in-page navigation would leave the manifest scope and replace the
   installed app with a browser view.
 
-### Added
-
 - **Admin navigation**: settings and the user list are pages of their own
   instead of cards stacked under the counter. The same nav is a left sidebar
   from 900px and a tab row below it — no drawer, so no overlay, no focus trap
@@ -221,14 +224,11 @@ Work preparing the project for its open-source release.
   audience; expanded contributor documentation.
 - Hardened CI ahead of the public release.
 
-## [1.0.0] - TBD
+### Baseline feature set
 
-Nothing has been tagged or released yet. This entry describes the complete
-feature set assembled for the first release, not a point-in-time diff.
-Pre-1.0 development history is not itemized here; see the git log for how
-each feature was built up.
-
-### Added
+Everything this first release ships, as a feature inventory rather than a
+point-in-time diff. Development history before this tag is not itemized; see
+the git log for how each feature was built up.
 
 #### Authentication & accounts
 

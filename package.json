@@ -1,7 +1,7 @@
 {
   "name": "coffee-time-frontend",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.9.0",
   "description": "TypeScript sources for the Coffee Time PWA frontend (compiled to public/app.js and public/sw.js).",
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.sw.json",
