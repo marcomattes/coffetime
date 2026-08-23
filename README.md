@@ -270,3 +270,5 @@ For MySQL/MariaDB use `mysqldump --single-transaction`.
 ## Contributing and license
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Coffee Time is released under the [MIT License](LICENSE).
+
+Built by [Marco Mattes](https://mattes.dev).
