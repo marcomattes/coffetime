@@ -825,6 +825,110 @@ Clock::setOffset(1200);
 check('RateLimit starts a fresh window after it elapses', RateLimit::allow('unit-probe', 3, 600) === true);
 Clock::setOffset(0);
 
+// ------------------------------------------- RateLimit: forwarded callers ---
+
+// X-Forwarded-For must be read from the RIGHT. A proxy only ever appends the
+// peer it saw, so anything already in the header arrived with the request and
+// belongs to the caller. Keying counters on the left-most entry let a caller
+// mint a fresh counter per request by changing one header -- which silently
+// un-throttled the invite code, the login and the admin password.
+Db::reset();
+$proxyConfig = write_test_config($workspace, [
+    'dbPath' => $workspace . '/data/rate-limit-proxy.sqlite',
+    'testMode' => false,
+    'trustProxy' => true,
+    'trustedProxyHops' => 1,
+]);
+putenv('COFFEE_CONFIG_PATH=' . $proxyConfig);
+Config::forget();
+Db::reset();
+Settings::reset();
+Db::pdo();
+
+// One proxy in front: REMOTE_ADDR is the proxy, the last XFF entry is what it
+// observed. The caller's forged prefix must not be able to change the counter.
+$_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.20';
+$forwardedAllowed = 0;
+for ($i = 0; $i < 5; $i++) {
+    if (RateLimit::allow('unit-fwd', 3, 600)) {
+        $forwardedAllowed++;
+    }
+}
+check('a forwarded caller is throttled like any other', $forwardedAllowed === 3);
+
+// The attack: prepend a different value on every attempt. Reading from the
+// right ignores it, so the counter stays exhausted.
+$exhausted = true;
+foreach (['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4'] as $spoofed) {
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = $spoofed . ', 198.51.100.20';
+    if (RateLimit::allow('unit-fwd', 3, 600)) {
+        $exhausted = false;
+    }
+}
+check('prepending a forged X-Forwarded-For entry does not mint a fresh counter', $exhausted);
+
+// A genuinely different client behind the same proxy still gets its own.
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.21';
+check('a different client behind the same proxy keeps its own counter', RateLimit::allow('unit-fwd', 3, 600) === true);
+
+// A header shorter than the configured hop count means fewer proxies than
+// configured; fall back to REMOTE_ADDR, the one value nobody can forge,
+// rather than to a caller-supplied entry.
+Db::reset();
+$hopsConfig = write_test_config($workspace, [
+    'dbPath' => $workspace . '/data/rate-limit-hops.sqlite',
+    'testMode' => false,
+    'trustProxy' => true,
+    'trustedProxyHops' => 2,
+]);
+putenv('COFFEE_CONFIG_PATH=' . $hopsConfig);
+Config::forget();
+Db::reset();
+Settings::reset();
+Db::pdo();
+
+$_SERVER['REMOTE_ADDR'] = '203.0.113.10';
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.30, 203.0.113.11';
+check('with two hops the second entry from the right is used', RateLimit::allow('unit-hops', 1, 600) === true);
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.30, 203.0.113.99';
+check('a changed proxy entry does not change that caller\'s counter', RateLimit::allow('unit-hops', 1, 600) === false);
+
+// Only one entry, but two hops configured: too short, so REMOTE_ADDR wins.
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.31';
+check('a too-short header falls back to REMOTE_ADDR', RateLimit::allow('unit-hops', 1, 600) === true);
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.32';
+check('the fallback keys on REMOTE_ADDR, not on the forged entry', RateLimit::allow('unit-hops', 1, 600) === false);
+
+// trustProxy off: the header is ignored entirely.
+Db::reset();
+$noProxyConfig = write_test_config($workspace, [
+    'dbPath' => $workspace . '/data/rate-limit-noproxy.sqlite',
+    'testMode' => false,
+    'trustProxy' => false,
+]);
+putenv('COFFEE_CONFIG_PATH=' . $noProxyConfig);
+Config::forget();
+Db::reset();
+Settings::reset();
+Db::pdo();
+
+$_SERVER['REMOTE_ADDR'] = '203.0.113.12';
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.40';
+check('without trustProxy the header is ignored', RateLimit::allow('unit-noproxy', 1, 600) === true);
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.41';
+check('without trustProxy a changed header cannot reset the counter', RateLimit::allow('unit-noproxy', 1, 600) === false);
+
+unset($_SERVER['HTTP_X_FORWARDED_FOR']);
+
+// Restore the plain rate-limit config for anything that follows.
+putenv('COFFEE_CONFIG_PATH=' . $rateConfig);
+Config::forget();
+Db::reset();
+Settings::reset();
+Db::pdo();
+$_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+
 check(
     'RateLimit never stores a bare client address',
     Db::fetchRow('SELECT 1 AS found FROM rate_limits WHERE bucket LIKE ?', ['%198.51.100%']) === null

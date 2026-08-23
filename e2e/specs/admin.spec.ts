@@ -202,6 +202,76 @@ test.describe('admin', () => {
     expect(state.users.find((u) => u.id === user.id)?.paidCents).toBe(0);
   });
 
+  test('deleting an account removes it here and server-side, and names the open balance first', async ({ page, testApi }) => {
+    const [admin, leaving] = await testApi.seed([
+      { firstName: 'Ad', lastName: 'Min' },
+      { firstName: 'Leaving', lastName: 'Person', coffees: 2 },
+    ]);
+    await testApi.loginAs(page, admin.id);
+    await page.goto('/');
+    await openAdminPage(page, 'users');
+
+    const messages: string[] = [];
+    page.on('dialog', (dialog) => {
+      messages.push(dialog.message());
+      void dialog.accept();
+    });
+
+    await adminRow(page, leaving.id).getByTestId('admin-delete-btn').click();
+
+    await expect(adminRow(page, leaving.id)).toHaveCount(0);
+    await expect(page.getByTestId('admin-row')).toHaveCount(1);
+
+    // The server does not refuse a delete over unpaid coffees, so the prompt is
+    // the only place the money is put in front of the person deciding.
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('cannot be undone');
+    expect(messages[0]).toContain('An open balance of ' + (2 * PRICE_CENTS / 100).toFixed(2) + ' €');
+
+    const state = await testApi.state();
+    expect(state.users.find((u) => u.id === leaving.id)).toBeUndefined();
+    expect(state.users.find((u) => u.id === admin.id)).toBeDefined();
+  });
+
+  test('dismissing the delete confirmation changes nothing', async ({ page, testApi }) => {
+    const [admin, user] = await testApi.seed([
+      { firstName: 'Ad', lastName: 'Min' },
+      { firstName: 'Normal', lastName: 'User', coffees: 2 },
+    ]);
+    await testApi.loginAs(page, admin.id);
+    await page.goto('/');
+    await openAdminPage(page, 'users');
+
+    let deleteRequestSeen = false;
+    page.on('request', (req) => {
+      if (req.url().includes('/api/admin/user/delete')) {
+        deleteRequestSeen = true;
+      }
+    });
+    page.on('dialog', (dialog) => void dialog.dismiss());
+
+    await adminRow(page, user.id).getByTestId('admin-delete-btn').click();
+
+    await expect(adminRow(page, user.id)).toHaveCount(1);
+    expect(deleteRequestSeen).toBe(false);
+    expect((await testApi.state()).users.find((u) => u.id === user.id)).toBeDefined();
+  });
+
+  test('the admin cannot delete the account they are signed in with', async ({ page, testApi }) => {
+    const [admin, user] = await testApi.seed([
+      { firstName: 'Ad', lastName: 'Min' },
+      { firstName: 'Normal', lastName: 'User' },
+    ]);
+    await testApi.loginAs(page, admin.id);
+    await page.goto('/');
+    await openAdminPage(page, 'users');
+
+    // Their only administrator deleting themselves would lock the installation
+    // out for good, so the button is not offered rather than answering 400.
+    await expect(adminRow(page, admin.id).getByTestId('admin-delete-btn')).toBeDisabled();
+    await expect(adminRow(page, user.id).getByTestId('admin-delete-btn')).toBeEnabled();
+  });
+
   test('settings: saving a new price and invite takes effect and is restored afterwards', async ({ page, testApi, browser }) => {
     const [admin] = await testApi.seed([{ firstName: 'Ad', lastName: 'Min' }]);
     await testApi.loginAs(page, admin.id);

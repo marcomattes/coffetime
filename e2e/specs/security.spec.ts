@@ -26,6 +26,7 @@ const PROTECTED_ENDPOINTS: Array<{ path: string; method: 'GET' | 'POST' }> = [
   { path: '/api/admin/payment', method: 'POST' },
   { path: '/api/admin/remind', method: 'POST' },
   { path: '/api/admin/link-code', method: 'POST' },
+  { path: '/api/admin/user/delete', method: 'POST' },
   { path: '/api/admin/settings', method: 'GET' },
   { path: '/api/admin/settings/update', method: 'POST' },
 ];
@@ -84,9 +85,60 @@ test.describe('security', () => {
       const remindRes = await ctx.post('/api/admin/remind', { data: { userId: admin.id } });
       expect(remindRes.status()).toBe(403);
       expect((await remindRes.json()).error).toBe('forbidden');
+
+      // The one irreversible admin action: prove the refusal actually left the
+      // account standing, not just that the response said 403.
+      const deleteRes = await ctx.post('/api/admin/user/delete', { data: { userId: admin.id } });
+      expect(deleteRes.status()).toBe(403);
+      expect((await deleteRes.json()).error).toBe('forbidden');
+      const stateRes = await ctx.get('/api/test/state', { headers: { 'X-Test-Token': TEST_TOKEN } });
+      expect((await stateRes.json()).users.some((u: { id: string }) => u.id === admin.id)).toBe(true);
     } finally {
       await ctx.dispose();
     }
+  });
+
+  /*
+   * "?book=1" auto-booked whenever document.referrer was empty, which a
+   * foreign page produces at will with referrerpolicy="no-referrer". The
+   * session cookie is SameSite=Lax and rides along on a top-level navigation,
+   * so any page could charge a coffee to whoever was signed in. Only the
+   * installed app books unasked now; a browser tab has to be tapped.
+   */
+  test('a cross-site no-referrer navigation to /?book=1 asks instead of booking', async ({ page, testApi }) => {
+    const [user] = await testApi.seed([{ firstName: 'Vic', lastName: 'Tim' }]);
+    await testApi.loginAs(page, user.id);
+
+    const attacker = 'http://drive-by.invalid/';
+    await page.route(attacker, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: `<!doctype html><meta name="referrer" content="no-referrer">
+               <a id="go" rel="noreferrer" referrerpolicy="no-referrer"
+                  href="${MAIN_URL}/?book=1">go</a>
+               <script>document.getElementById('go').click()</script>`,
+      }),
+    );
+
+    await page.goto(attacker);
+    await page.waitForURL((u) => u.origin === new URL(MAIN_URL).origin);
+
+    // The referrer really is empty -- the guard this replaces would have booked.
+    expect(await page.evaluate(() => document.referrer)).toBe('');
+    await expect(page.getByTestId('book-confirm')).toBeVisible();
+    expect((await testApi.state()).users.find((u) => u.id === user.id)?.coffees).toBe(0);
+  });
+
+  test('confirming the prompt books, so the tag and shortcut flow still works', async ({ page, testApi }) => {
+    const [user] = await testApi.seed([{ firstName: 'Tag', lastName: 'User' }]);
+    await testApi.loginAs(page, user.id);
+
+    await page.goto('/?book=1');
+    await page.getByTestId('btn-book-confirm').click();
+
+    await expect(page.getByTestId('counter')).toHaveText('1');
+    expect((await testApi.state()).users.find((u) => u.id === user.id)?.coffees).toBe(1);
   });
 
   test('/api/test/* is 404 without a token and with a wrong token', async ({ request }) => {

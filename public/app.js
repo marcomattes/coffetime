@@ -16,6 +16,7 @@
         me: null,
         users: [],
         pendingBook: false,
+        offerBook: false,
         adminKey: null,
         setupPublicKey: null,
         passwordMinLength: 12,
@@ -923,10 +924,26 @@
             remindButton.addEventListener('click', () => {
                 sendReminder(user, remindButton, remindStatus);
             });
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.className = 'btn btn-quiet row-payment-btn row-delete-btn';
+            deleteButton.textContent = 'Delete';
+            deleteButton.setAttribute('data-testid', 'admin-delete-btn');
+            // Deleting your own account would leave an installation with a single
+            // administrator locked out, so the server refuses it – say so here
+            // rather than offering a button that only ever answers with an error.
+            deleteButton.disabled = state.me !== null && user.id === state.me.id;
+            deleteButton.title = deleteButton.disabled
+                ? 'You cannot delete the account you are signed in with.'
+                : 'Delete this account for good';
+            deleteButton.addEventListener('click', () => {
+                deleteUser(user, deleteButton, remindStatus);
+            });
             form.appendChild(input);
             form.appendChild(payButton);
             form.appendChild(recoveryButton);
             form.appendChild(remindButton);
+            form.appendChild(deleteButton);
             row.appendChild(head);
             row.appendChild(cipher);
             row.appendChild(form);
@@ -947,6 +964,32 @@
             node.hidden = false;
         }
         busy(button, false);
+    }
+    /**
+     * Removes an account for good. The confirmation spells out what leaves with
+     * it, and names the outstanding balance when there is one: the server does
+     * not block a delete over unpaid coffees, so this prompt is the only place
+     * where the money is put in front of the person deciding.
+     */
+    async function deleteUser(user, button, node) {
+        const label = user.decryptedName || 'account ' + user.id;
+        let question = 'Delete ' + label + ' for good? Passkeys, bookings and the counter go with it, and this cannot be undone.';
+        if (user.balanceCents > 0) {
+            question += '\n\nAn open balance of ' + money(user.balanceCents) + ' is written off with the account.';
+        }
+        if (!window.confirm(question)) {
+            return;
+        }
+        busy(button, true);
+        try {
+            await api('/api/admin/user/delete', { userId: user.id });
+            renderAdmin(state.users.filter((entry) => entry.id !== user.id));
+        }
+        catch (error) {
+            text(node, error instanceof ApiError ? error.code : 'unknown_error');
+            node.hidden = false;
+            busy(button, false);
+        }
     }
     async function sendReminder(user, button, node) {
         busy(button, true);
@@ -1433,6 +1476,11 @@
     async function initSetup() {
         const button = el('btn-setup-init');
         const status = el('setup-status');
+        const setupToken = el('setup-token').value.trim();
+        if (!setupToken) {
+            text(status, 'Enter the setup token shown in the server log.');
+            return;
+        }
         const priceValue = parseFloat(el('setup-price').value);
         if (!isFinite(priceValue) || priceValue <= 0 || priceValue > 1000) {
             text(status, 'invalid_price');
@@ -1451,7 +1499,12 @@
         }
         busy(button, true);
         try {
-            await api('/api/setup/init', { adminPublicKey: state.setupPublicKey, priceCents: priceCents, invite: invite });
+            await api('/api/setup/init', {
+                setupToken: setupToken,
+                adminPublicKey: state.setupPublicKey,
+                priceCents: priceCents,
+                invite: invite
+            });
             text(status, 'Setup complete — register the first account below; it becomes the administrator.');
             show('auth');
         }
@@ -1681,8 +1734,21 @@
     }
     /* ------------------------------------------------- Shortcut / NFC tag -- */
     /*
-     * "/?book=1" immediately books a coffee. It is shared by the app shortcut
-     * and NFC tags, and is removed immediately to prevent duplicate bookings.
+     * "/?book=1" is the app shortcut and what an NFC tag carries. Only the
+     * installed app books on sight; everywhere else it asks first.
+     *
+     * This used to trust an EMPTY document.referrer as "came from a tag or the
+     * shortcut". That is backwards: a foreign page decides its own referrer, and
+     * `referrerpolicy="no-referrer"` makes it empty for free. Since the session
+     * cookie is SameSite=Lax it rides along on a top-level navigation, so any
+     * page could charge a coffee to whoever happened to be signed in -- no click
+     * on our side required, and repeatable per navigation.
+     *
+     * Display mode is a property of how the app was launched rather than
+     * something the caller sends, so it cannot be spoofed by a remote page. The
+     * shortcut always runs standalone and keeps its one-action promise; a tag
+     * that lands in a browser tab costs one tap, which a remote attacker has no
+     * way to supply.
      */
     function checkPendingBook() {
         const params = new URLSearchParams(window.location.search);
@@ -1690,38 +1756,59 @@
             return;
         }
         window.history.replaceState(null, '', window.location.pathname);
-        // The session cookie is SameSite=Lax, so a plain top-level link from any
-        // site would carry it and book a coffee with a single click. An NFC tag
-        // or the installed app's shortcut opens with no referrer, and a link
-        // inside the app is same-origin -- only those book without being asked.
-        // Anything arriving from another site just opens the app.
-        if (!openedWithoutForeignReferrer()) {
-            return;
+        if (isInstalledApp()) {
+            state.pendingBook = true;
         }
-        state.pendingBook = true;
+        else {
+            state.offerBook = true;
+        }
         const hint = el('nfc-hint');
         if (hint) {
             hint.hidden = false;
         }
     }
-    function openedWithoutForeignReferrer() {
-        const referrer = document.referrer;
-        if (!referrer) {
+    /*
+     * Whether this is the installed app rather than a browser tab. The iOS
+     * property is checked too: Safari only learned the display-mode media query
+     * late, and a home-screen app there still reports navigator.standalone.
+     */
+    function isInstalledApp() {
+        const standalone = navigator.standalone;
+        if (standalone === true) {
             return true;
         }
         try {
-            return new URL(referrer).origin === window.location.origin;
+            return ['standalone', 'minimal-ui', 'fullscreen']
+                .some((mode) => window.matchMedia('(display-mode: ' + mode + ')').matches);
         }
         catch (e) {
             return false;
         }
     }
     function consumePendingBook() {
-        if (!state.pendingBook) {
+        if (state.pendingBook) {
+            state.pendingBook = false;
+            addCoffee();
             return;
         }
-        state.pendingBook = false;
-        addCoffee();
+        if (!state.offerBook) {
+            return;
+        }
+        state.offerBook = false;
+        const card = el('book-confirm');
+        if (card) {
+            card.hidden = false;
+        }
+        const confirm = el('btn-book-confirm');
+        if (confirm) {
+            confirm.focus();
+        }
+    }
+    function dismissBookConfirm() {
+        const card = el('book-confirm');
+        if (card) {
+            card.hidden = true;
+        }
     }
     /* Written tags are held against the phone by hand -- long enough to line the
        antennas up, short enough that a forgotten write does not keep both
@@ -2057,6 +2144,11 @@
         el('btn-setup-generate').addEventListener('click', generateSetupKey);
         el('btn-setup-init').addEventListener('click', initSetup);
         el('btn-add').addEventListener('click', addCoffee);
+        el('btn-book-confirm').addEventListener('click', () => {
+            dismissBookConfirm();
+            addCoffee();
+        });
+        el('btn-book-dismiss').addEventListener('click', dismissBookConfirm);
         el('btn-undo').addEventListener('click', undoCoffee);
         el('btn-logout').addEventListener('click', logout);
         el('btn-notify-enable').addEventListener('click', enableReminders);

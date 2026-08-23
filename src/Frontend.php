@@ -56,6 +56,18 @@ final class Frontend
       <p class="hint">This runs once. A key pair is generated in this browser: the public
         key is sent to the server, the private key stays on this device and is required to
         decrypt names later.</p>
+      <!-- Setup is unauthenticated by necessity -- no account exists yet -- and
+           it fixes the RSA key every name is sealed to. The token proves the
+           operator can read the deployment's filesystem, which is what stops a
+           stranger from claiming a freshly uploaded instance. -->
+      <div class="field">
+        <label for="setup-token">Setup token</label>
+        <input type="text" id="setup-token" data-testid="setup-token"
+               autocomplete="off" spellcheck="false">
+        <p class="hint" id="setup-token-hint" data-testid="setup-token-hint">Printed in the
+          server log on first start, and stored in <code>setup-token.txt</code> next to the
+          database (<code>data/</code> by default). The log line names the exact path.</p>
+      </div>
       <div class="field">
         <label for="setup-price">Price per coffee (&euro;)</label>
         <input type="number" id="setup-price" data-testid="setup-price"
@@ -76,7 +88,7 @@ final class Frontend
   <section id="view-auth" data-testid="view-auth" hidden>
     <h1 class="brand"><span aria-hidden="true">&#9749;</span> Coffee Time</h1>
     <p class="lead">Sign in with a passkey &ndash; no username or password.</p>
-    <p id="nfc-hint" class="hint" hidden>Coffee tag detected &ndash; it will be booked after sign-in.</p>
+    <p id="nfc-hint" class="hint" hidden>Coffee tag detected &ndash; sign in and it will ask to book it.</p>
 
     <div class="card">
       <h2>Sign in</h2>
@@ -157,6 +169,19 @@ final class Frontend
     </nav>
 
     <div id="page-coffee" data-testid="page-coffee" class="page">
+      <!-- "?book=1" arriving anywhere but the installed app asks before it
+           books. A foreign page can navigate a signed-in browser here and the
+           session cookie is SameSite=Lax, so anything that books without being
+           asked books for whoever clicked a link. See checkPendingBook(). -->
+      <div class="card" id="book-confirm" data-testid="book-confirm" hidden>
+        <h2>Book a coffee?</h2>
+        <p class="hint">Opened from a coffee tag or a link. Confirm to add it to your tab.</p>
+        <button type="button" id="btn-book-confirm" data-testid="btn-book-confirm" class="btn btn-primary">
+          <span aria-hidden="true">&#9749;</span> Yes, book it
+        </button>
+        <button type="button" id="btn-book-dismiss" data-testid="btn-book-dismiss" class="btn btn-quiet">Not now</button>
+      </div>
+
       <div class="card" id="install-card" data-testid="install-card" hidden>
         <h2>Add to Home Screen</h2>
         <p id="install-text" data-testid="install-text" class="hint"></p>

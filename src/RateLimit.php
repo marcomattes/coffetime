@@ -35,6 +35,14 @@ final class RateLimit
     public const LINK_MAX = 20;
 
     /**
+     * Wrong setup tokens per window. Far tighter than the surrounding
+     * register bucket: the setup token is a one-time bootstrap secret whose
+     * whole job is to keep a stranger from claiming a fresh installation, and
+     * there is no legitimate reason to get it wrong more than a few times.
+     */
+    public const SETUP_TOKEN_MAX = 5;
+
+    /**
      * Attempts per window for the administrator password login, per caller.
      * Much tighter than LOGIN_MAX: a passkey assertion cannot be guessed at
      * all, a password can.
@@ -175,15 +183,35 @@ final class RateLimit
         return hash('sha256', $name . "\x1f" . self::clientAddress());
     }
 
+    /**
+     * The address every per-caller counter is keyed by.
+     *
+     * `X-Forwarded-For` is read from the RIGHT, never from the left. The
+     * left-most entry is the one the *client* sent: a proxy only ever appends
+     * the peer it saw, so anything already in the header arrived with the
+     * request and is attacker-controlled. Keying on it meant a caller could
+     * hand out a fresh counter to itself on every request — one changed header
+     * value per attempt and the invite code, the login and the admin password
+     * were no longer throttled at all.
+     *
+     * Counting from the right instead: with `trustedProxyHops` = 1 (one proxy
+     * in front of the app) the last entry is what that proxy observed, which is
+     * the real peer. Each further trusted hop moves one position left. A header
+     * shorter than the configured hop count means fewer proxies than
+     * configured, so REMOTE_ADDR — the only value nobody can forge — is used.
+     */
     private static function clientAddress(): string
     {
         if (Config::trustProxy()) {
             $forwarded = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
             if (is_string($forwarded) && $forwarded !== '') {
-                // Left-most entry is the original client; the rest are proxies.
-                $first = trim(explode(',', $forwarded, 2)[0]);
-                if ($first !== '') {
-                    return $first;
+                $parts = array_values(array_filter(
+                    array_map('trim', explode(',', $forwarded)),
+                    static fn (string $part): bool => $part !== ''
+                ));
+                $index = count($parts) - Config::trustedProxyHops();
+                if ($index >= 0 && isset($parts[$index])) {
+                    return $parts[$index];
                 }
             }
         }

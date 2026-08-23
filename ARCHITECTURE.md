@@ -6,7 +6,7 @@ Coffee Time uses a front controller in `public/index.php`, application classes u
 
 WebAuthn registrations require discoverable credentials and user verification. Login uses an empty allow-list, allowing the authenticator to choose the account. Ceremony challenges are single-use and sessions store only SHA-256 hashes of opaque tokens.
 
-Registration writes the user row and its first passkey in **one** transaction (`Users::createWithCredential()`). Split across two, a failure in between would leave a user whose `name_hash` reserves the name forever while no credential can sign in as it — and for the very first user, the `is_admin` flag would be stranded on an unusable account with the setup wizard already closed.
+Registration writes the user row and its first passkey in **one** transaction (`Users::createWithCredential()`). Split across two, a failure in between would leave a user whose `name_hash` reserves the name while no credential can sign in as it — only an administrator could clear that out, and only since [deleting an account](#deleting-an-account) exists — and for the very first user, the `is_admin` flag would be stranded on an unusable account with the setup wizard already closed.
 
 Sessions renew on use but also carry a hard ceiling (`Sessions::ABSOLUTE_LIFETIME`, 180 days) on top of the 30-day idle window, so a stolen token cannot stay valid indefinitely by being used. Completing an **admin-issued** recovery link revokes that account's other sessions (`Sessions::destroyForUser()`), which is what makes lost-device recovery actually end the lost device's access; a self-issued link (adding a second device of one's own) deliberately leaves them alone.
 
@@ -30,9 +30,11 @@ A leaked admin password does **not** leak the roster: names are RSA-sealed and t
 
 The unauthenticated endpoints — registration, login, device linking and setup — are rate limited per caller and endpoint group (`RateLimit`, fixed window in the `rate_limits` table). The invite code can be as short as four characters, and `name_taken` reveals whether a given real name is registered; both are only safe behind a throttle. Counters are keyed by a hash of the endpoint group and client address, so no bare IP is stored, and the limiter fails open if the database is briefly unavailable.
 
+Where that address comes from decides whether any of it works. With `trustProxy` on, `X-Forwarded-For` is read from the **right**, `trustedProxyHops` entries in — never from the left. A proxy only ever *appends* the peer it saw, so anything already in the header arrived with the request and is the caller's to choose. Keying on the left-most entry, as this did, meant one changed header value per request bought a fresh counter: the invite code, the login and the admin password were throttled in name only. Only `PASSWORD_ACCOUNT_MAX` was unaffected, because it keys on the account's `name_hash` rather than on an address. A header shorter than the configured hop count means fewer proxies than configured, so `REMOTE_ADDR` — the one value no caller can forge — is used instead.
+
 ## Request and response hardening
 
-The application shell is served with a `Content-Security-Policy` that allows only same-origin script and style (it has no inline script or style of its own) and denies framing outright, plus `X-Frame-Options: DENY`. Framing matters here because every state-changing control — "Take a coffee", "Record payment" — lives on that one document, and the session cookie is `SameSite=Lax`. For the same reason `/?book=1` only books automatically when the app was opened without a foreign referrer (an NFC tag or the app shortcut open with none); arriving from another site just opens the app. Request bodies are bounded (`Http::MAX_BODY_BYTES`) and answered with `413` rather than being buffered until `memory_limit` turns them into a `500`.
+The application shell is served with a `Content-Security-Policy` that allows only same-origin script and style (it has no inline script or style of its own) and denies framing outright, plus `X-Frame-Options: DENY`. Framing matters here because every state-changing control — "Take a coffee", "Record payment" — lives on that one document, and the session cookie is `SameSite=Lax`. For the same reason `/?book=1` only books on sight in the **installed app**; in a browser tab it shows a confirmation instead (see [The booking shortcut](#the-booking-shortcut)). Request bodies are bounded (`Http::MAX_BODY_BYTES`) and answered with `413` rather than being buffered until `memory_limit` turns them into a `500`.
 
 ## Invitation links
 
@@ -45,6 +47,28 @@ The strip preserves any other query parameters, because `checkPendingBook()` run
 The admin view shows both tag links in full — `/?book=1` for the sticker on the machine, `/?invite=CODE` for the one that hands out accounts — and, where Web NFC exists (Chrome on Android, secure context, from a user gesture), writes either of them to a blank tag as a single NDEF `url` record. `NDEFReader` is feature-detected and the buttons stay hidden without it, so the card degrades to two URLs anyone can copy into a tag-writing app or a QR code. Each write is bounded by an `AbortController` (`NFC_WRITE_TIMEOUT_MS`) so a tag that never arrives releases the buttons again, and the `DOMException` names Web NFC reports are mapped individually: whether NFC is switched off, the tag is locked or too small, or it simply moved away mid-write are different things to do next, not one generic failure.
 
 The registration link is built from the invite code the server last confirmed, never from the settings input above it, so an unsaved edit cannot end up on a tag the server would reject; the code is cleared on sign-out, since a kitchen device is shared. A tag is only a link and carries no credential of its own: the booking tag books for whoever is signed in on the phone that taps it, and it only books automatically because a tag opens the app with no referrer (see above). The registration tag is exactly as secret as the invite code printed on it, and rotating that code invalidates every tag carrying the old one.
+
+## The booking shortcut
+
+`/?book=1` is what the app shortcut launches and what an NFC tag on the machine carries. It books without asking **only when the app is running installed** (`display-mode: standalone`/`minimal-ui`/`fullscreen`, or `navigator.standalone` on iOS, which learned the media query late). A browser tab gets a confirmation card instead.
+
+This used to key off `document.referrer` being empty, reasoning that a tag or a shortcut opens with none. That is backwards: the referrer belongs to whoever navigates, and `referrerpolicy="no-referrer"` empties it for free. Since the session cookie is `SameSite=Lax` it rides along on a top-level navigation, so any page on the internet could charge a coffee to whoever happened to be signed in — no click required on our side, and one more per navigation. The empty referrer was being read as proof of a trusted launch when it was only proof that someone asked for it to be empty.
+
+Display mode is a property of *how the app was launched*, not something the caller transmits, so a remote page cannot assert it. The shortcut always runs installed and keeps its one-action promise; a tag that lands in a browser tab costs one tap, which is a thing no remote attacker can supply. The residual case is narrow and worth naming: a victim who has the app installed *and* has enabled OS link handling can have an attacker's link open the installed app, where it would book. Making the confirmation unconditional closes that too, at the cost of the shortcut — the guard lives in one function (`checkPendingBook()`) if that trade looks different to you later.
+
+## First-run setup token
+
+`POST /api/setup/init` cannot require a session: it runs before any account exists. It also decides the two things an installation can never take back — the RSA public key every name is sealed to, and the invite code. Together that meant whoever reached a freshly uploaded instance first *owned* it: one request installs their key, the account they register next is flagged admin by the [first-user rule](#first-user-admin), and every colleague who signs up afterwards has their name encrypted to a key the operator does not hold. The operator would see only `already_initialized` — easy to read as "I must have done this earlier".
+
+`SetupToken` closes the window without breaking the wizard's whole reason for existing, which is that no file has to be edited by hand. The server generates the token itself on the first `setup/status` or `setup/init`, writes it to `setup-token.txt` next to the database, and logs it once; the wizard asks for it. Being able to *read* it stands in for authentication — that requires filesystem access to the deployment, which the operator has and a remote caller does not. It is the shape Jupyter and GitLab use for their own first-run secrets.
+
+Three details carry weight:
+
+- **The token is never served over HTTP**, and neither is its path. Serving either would defeat the point, and an absolute path hands an unauthenticated caller the server's directory layout for nothing. The log line written on generation carries the exact path for the operator.
+- **It is checked before the payload is validated**, so a caller without it cannot use the endpoint to probe which keys or invite codes would be accepted. Wrong tokens have their own tight counter (`RateLimit::SETUP_TOKEN_MAX`, 5 per window).
+- **It is created with `fopen($path, 'x')`**, not a plain write: two concurrent first requests must not each generate their own, or the token the operator reads is not the one the next request compares against.
+
+If the file can be neither read nor created the endpoint answers `500 setup_token_unavailable` and logs the path, rather than waving setup through. A completed setup deletes it — from then on `needsSetup()` closes the wizard and the file would just be a secret lying in a web-served tree. `setupToken` in `config.php` overrides the file for scripted deployments, and is read from `config.php` only: taking it from the settings table would let the wizard authorize the very request that first writes those settings.
 
 ## Name privacy
 
@@ -122,6 +146,17 @@ A `settings` table holds runtime-configurable values (`priceCents`, `invite`, `p
 ## Device linking and recovery codes
 
 Link codes (`link_codes`) exist for two flows: a signed-in device linking a new device to itself (15 min TTL), and an admin issuing a recovery code for a user who lost every device (60 min TTL). Only `sha256(code)` is ever stored, never the plaintext. The WebAuthn ceremony around consumption is split into `peek()` (read-only, used when building registration options — an aborted attempt must not burn the code) and `consume()` (called only after attestation verifies and the credential ID is confirmed free), so a failed or retried attempt leaves the code usable. A second code issued for the same user invalidates the first.
+
+## Deleting an account
+
+`Users::delete()` removes the row together with its credentials, sessions, coffee events and link codes in one transaction — a hard delete, not a tombstone. A tombstone would defeat the point: it would keep the RSA-sealed name on the server, and it would keep the `name_hash` occupying the unique index, which is the constraint that made this feature necessary. Until it existed, registering reserved a name **forever**; the name of a colleague who had left could never be used again, by them or by a namesake who joined later. Releasing that reservation is what deleting buys, and it is also the honest answer to "can you remove my data" for an app whose whole name handling is built around not holding more than it must.
+
+The bookings leave with the row, so the installation-wide totals in `stats()` fall by that user's share. Holding them steady would mean keeping an anonymous remainder row, which is a user under another name — the totals are a leaderboard, not an accounting ledger, and the frozen prices that *are* a ledger live on the events that go away with their owner.
+
+Two deliberate asymmetries in what the endpoint refuses:
+
+- **An open balance does not block it.** The moment an admin most needs to remove an account is when its owner left owing for a month of coffee, and a delete that refuses exactly then is a delete that does not work. The balance is instead spelled out in the confirmation dialog, since `POST /api/admin/user/delete` will not put it in front of anyone by itself.
+- **Deleting your own account is refused** (`cannot_delete_self`, 400). `is_admin` is only ever handed to the very first user of a fresh database and there is no path to promote a second one, so an installation whose sole administrator deletes themselves is locked out with no way back. The admin list disables the button on the signed-in row rather than offering one that only answers with an error.
 
 ## First-user admin
 

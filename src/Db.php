@@ -83,12 +83,17 @@ final class Db
         $path = Config::dbPath();
 
         $dir = dirname($path);
-        if (!is_dir($dir)) {
-            if (!@mkdir($dir, 0775, true) && !is_dir($dir)) {
-                throw new RuntimeException('Cannot create database directory');
-            }
-            // Safety net for hosting where the directory ends up inside the
-            // document tree. Without Apache the file does no harm.
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new RuntimeException('Cannot create database directory');
+        }
+        // Safety net for hosting where the directory ends up inside the
+        // document tree. Written whenever it is missing, not only when this
+        // call created the directory: an FTP client or a restored backup can
+        // put data/ in place without it, and this directory holds both the
+        // database and the first-run setup token. Without Apache the file does
+        // no harm -- and on nginx it does nothing, so the document root still
+        // has to point at public/.
+        if (!is_file($dir . '/.htaccess')) {
             @file_put_contents(
                 $dir . '/.htaccess',
                 "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n"

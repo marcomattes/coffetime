@@ -112,25 +112,49 @@ test.describe('pwa', () => {
     ).resolves.toBeUndefined();
   });
 
-  test('/?book=1 while signed in books exactly one coffee and cleans the URL', async ({ page, testApi }) => {
+  /*
+   * In a browser tab "?book=1" asks before it books. It used to book on sight
+   * whenever document.referrer was empty, which any foreign page can arrange
+   * -- see security.spec.ts. Only the installed app books unasked now, and
+   * Chromium here is a plain tab.
+   */
+  test('/?book=1 while signed in asks first, then books exactly once and cleans the URL', async ({ page, testApi }) => {
     const [user] = await testApi.seed([{ firstName: 'Book', lastName: 'Er' }]);
     await testApi.loginAs(page, user.id);
 
     await page.goto('/?book=1');
-    await expect(page.getByTestId('counter')).toHaveText('1');
+    await expect(page.getByTestId('book-confirm')).toBeVisible();
+    await expect(page.getByTestId('counter')).toHaveText('0');
     await expect(page).toHaveURL(`${MAIN_URL}/`);
+
+    await page.getByTestId('btn-book-confirm').click();
+    await expect(page.getByTestId('counter')).toHaveText('1');
+    await expect(page.getByTestId('book-confirm')).toBeHidden();
 
     const state = await testApi.state();
     expect(state.users.find((u) => u.id === user.id)?.coffees).toBe(1);
 
-    // Reloading must not re-book (the "book=1" param was stripped already).
+    // Reloading must not re-book or re-ask (the "book=1" param was stripped).
     await page.reload();
     await expect(page.getByTestId('counter')).toHaveText('1');
+    await expect(page.getByTestId('book-confirm')).toBeHidden();
     const stateAfterReload = await testApi.state();
     expect(stateAfterReload.users.find((u) => u.id === user.id)?.coffees).toBe(1);
   });
 
-  test('/?book=1 while signed out shows the NFC hint and books once signed in', async ({ page, testApi }) => {
+  test('declining the prompt books nothing', async ({ page, testApi }) => {
+    const [user] = await testApi.seed([{ firstName: 'Not', lastName: 'Now' }]);
+    await testApi.loginAs(page, user.id);
+
+    await page.goto('/?book=1');
+    await page.getByTestId('btn-book-dismiss').click();
+
+    await expect(page.getByTestId('book-confirm')).toBeHidden();
+    await expect(page.getByTestId('counter')).toHaveText('0');
+    expect((await testApi.state()).users.find((u) => u.id === user.id)?.coffees).toBe(0);
+  });
+
+  test('/?book=1 while signed out shows the NFC hint and asks once signed in', async ({ page, testApi }) => {
     const authenticator = await addVirtualAuthenticator(page);
     try {
       await registerUserViaUi(page, { firstName: 'Book', lastName: 'Later', invite: INVITE });
@@ -147,6 +171,12 @@ test.describe('pwa', () => {
 
       await page.getByTestId('btn-login').click();
       await expect(page.getByTestId('view-app')).toBeVisible();
+
+      // The tag survives the sign-in, and still asks rather than booking.
+      await expect(page.getByTestId('book-confirm')).toBeVisible();
+      await expect(page.getByTestId('counter')).toHaveText('0');
+
+      await page.getByTestId('btn-book-confirm').click();
       await expect(page.getByTestId('counter')).toHaveText('1');
 
       const state = await testApi.state();

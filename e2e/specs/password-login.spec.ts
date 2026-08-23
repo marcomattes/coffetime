@@ -218,8 +218,11 @@ test.describe('invite link', () => {
     await page.goto(`/?invite=${encodeURIComponent(INVITE)}&book=1`);
 
     // checkInviteLink() strips only its own parameter; checkPendingBook() must
-    // still see book=1 and book the coffee.
+    // still see book=1 -- which in a browser tab means offering the booking
+    // rather than performing it.
     await expect(page.getByTestId('view-app')).toBeVisible();
+    await expect(page.getByTestId('book-confirm')).toBeVisible();
+    await page.getByTestId('btn-book-confirm').click();
     await expect(page.getByTestId('counter')).toHaveText('1');
     expect(new URL(page.url()).search).toBe('');
   });

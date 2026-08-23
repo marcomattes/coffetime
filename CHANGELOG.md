@@ -11,6 +11,32 @@ Work preparing the project for its open-source release.
 
 ### Security
 
+- The first-run setup wizard now requires a setup token. `POST /api/setup/init`
+  cannot require a session — it runs before any account exists — and it fixes
+  the RSA key every name is sealed to, so whoever reached a freshly uploaded
+  instance first could claim it: install their own key, become administrator
+  via the first-user rule, and have every colleague's name encrypted to a key
+  the operator does not hold. The server generates the token on first contact,
+  writes it next to the database and logs it once; being able to read it stands
+  in for authentication. It is never served over HTTP, is checked before the
+  payload is validated, and is deleted once setup completes.
+- `/?book=1` no longer books unasked in a browser tab. It keyed off an empty
+  `document.referrer` as proof of an NFC tag or app shortcut, but a foreign page
+  controls its own referrer (`referrerpolicy="no-referrer"`) and the session
+  cookie is `SameSite=Lax`, so any page could charge a coffee to whoever was
+  signed in — repeatable, and with no interaction on the victim's side. Only the
+  installed app books on sight now; a browser tab asks first. The app shortcut
+  keeps its one-action behaviour.
+- `X-Forwarded-For` is read from the right (`trustedProxyHops`, default 1)
+  instead of the left. A proxy only appends, so the left-most entry is the
+  caller's own — with `trustProxy` on, one changed header value per request
+  bought a fresh rate-limit counter and the invite code, the login and the
+  admin password were throttled in name only.
+- `data/.htaccess` ships with the release bundle, and `Db` writes one whenever
+  it is missing rather than only when it creates the directory. The directory
+  is gitignored, so the deny rule existed in no source tree and reached no
+  server; it now holds the setup token as well as the database.
+
 - The offline booking queue is now bound to the account that created it and is
   cleared on sign-out. On a shared device, queued coffees could previously be
   flushed under whoever signed in next and charged to their tab.
@@ -85,6 +111,16 @@ Work preparing the project for its open-source release.
 
 ### Added
 
+- Administrators can delete an account (`POST /api/admin/user/delete`, Delete
+  button in the user list). It is a hard delete — the row, its passkeys,
+  sessions, bookings and any pending link code go together in one transaction.
+  That releases the `name_hash`, which until now reserved a name forever: the
+  name of someone who had left the company could never be registered again, by
+  them or by a namesake. An open balance does not block the delete (the account
+  you most need to remove is the one whose owner left owing money), but the
+  confirmation names the amount being written off. Deleting the account you are
+  signed in with is refused, since an installation whose only administrator
+  removes themselves has no way back in.
 - Community health files for external contributors: `CODE_OF_CONDUCT.md`,
   `SECURITY.md`, this `CHANGELOG.md`.
 - `trustProxy` config option so a TLS-terminating reverse proxy's

@@ -773,6 +773,101 @@ $r = $client->post('/api/coffee', ['eventId' => str_repeat('a', 300000)]);
 check('an oversized request body is refused with 413', $r['status'] === 413);
 check('an oversized request body reports payload_too_large', ($r['json']['error'] ?? null) === 'payload_too_large');
 
+// ---------------------------------------------------------- user deletion ---
+
+// A throwaway account carrying coffees, a session and an open balance, so the
+// delete has something to take with it.
+$r = $client->post('/api/test/seed', [
+    'users' => [['firstName' => 'Leaving', 'lastName' => 'Person', 'coffees' => 3, 'paidCents' => 0]],
+], $testHeaders);
+check('seeding the throwaway account for the delete tests succeeds', $r['status'] === 200);
+$leavingId = $r['json']['users'][0]['id'] ?? null;
+check('the throwaway account was created', is_string($leavingId) && $leavingId !== '');
+
+$r = $client->post('/api/test/login', ['userId' => $leavingId], $testHeaders);
+check('the throwaway account can sign in before the delete', $r['status'] === 200);
+$leavingCookie = $client->cookie('coffee_session');
+check('the throwaway account holds a session cookie', $leavingCookie !== null);
+
+$r = $client->post('/api/admin/user/delete', ['userId' => $adminId]);
+check('POST /api/admin/user/delete as a non-admin is 403', $r['status'] === 403);
+check('a non-admin delete reports forbidden', ($r['json']['error'] ?? null) === 'forbidden');
+
+$r = $client->post('/api/test/login', ['userId' => $adminId], $testHeaders);
+check('test/login as the admin for the delete tests succeeds', $r['status'] === 200);
+
+$r = $client->post('/api/admin/user/delete', ['userId' => '999999']);
+check('admin/user/delete for an unknown user is 404', $r['status'] === 404);
+check('admin/user/delete for an unknown user reports unknown_user', ($r['json']['error'] ?? null) === 'unknown_user');
+
+$r = $client->post('/api/admin/user/delete', ['userId' => 'not-an-id']);
+check('admin/user/delete with a malformed id is 404', $r['status'] === 404);
+
+// An installation whose only admin deletes themselves has no way back in.
+$r = $client->post('/api/admin/user/delete', ['userId' => $adminId]);
+check('an admin cannot delete their own account', $r['status'] === 400);
+check('self-deletion reports cannot_delete_self', ($r['json']['error'] ?? null) === 'cannot_delete_self');
+$r = $client->get('/api/test/state', $testHeaders);
+$idsAfterSelfDelete = array_column($r['json']['users'] ?? [], 'id');
+check('the refused self-deletion left the admin account in place', in_array($adminId, $idsAfterSelfDelete, true));
+
+$r = $client->get('/api/test/state', $testHeaders);
+$credentialsBefore = $r['json']['credentials'] ?? null;
+$sessionsBefore = $r['json']['sessions'] ?? null;
+$leavingRow = null;
+foreach ($r['json']['users'] ?? [] as $row) {
+    if (($row['id'] ?? null) === $leavingId) {
+        $leavingRow = $row;
+    }
+}
+check('the throwaway account is listed before the delete', is_array($leavingRow));
+// 3 coffees at the price in force at this point, nothing paid.
+check('the throwaway account carries an open balance', is_int($leavingRow['balanceCents'] ?? null) && $leavingRow['balanceCents'] > 0);
+
+// An open balance is deliberately not a blocker: someone who left owing money
+// is exactly the account an admin needs to be able to remove.
+$r = $client->post('/api/admin/user/delete', ['userId' => $leavingId]);
+check('admin/user/delete removes an account with an open balance', $r['status'] === 200 && ($r['json']['ok'] ?? false) === true);
+
+$r = $client->get('/api/test/state', $testHeaders);
+$idsAfterDelete = array_column($r['json']['users'] ?? [], 'id');
+check('the deleted account is gone from the roster', !in_array($leavingId, $idsAfterDelete, true));
+check('the other accounts survived the delete', in_array($adminId, $idsAfterDelete, true) && in_array($normalId, $idsAfterDelete, true));
+check('the deleted account took its session with it', ($r['json']['sessions'] ?? null) === $sessionsBefore - 1);
+check('no credential was orphaned by the delete', ($r['json']['credentials'] ?? null) === $credentialsBefore);
+
+$r = $client->post('/api/admin/user/delete', ['userId' => $leavingId]);
+check('deleting the same account twice is 404', $r['status'] === 404);
+check('the second delete reports unknown_user', ($r['json']['error'] ?? null) === 'unknown_user');
+
+// The session cookie of the deleted account must not still open a door.
+$client->setCookie('coffee_session', (string) $leavingCookie);
+$r = $client->get('/api/me');
+check('the deleted account\'s session cookie no longer authenticates', $r['status'] === 401);
+$client->clearCookies();
+
+// The point of a hard delete: the name_hash is released, so the name can be
+// registered again instead of being reserved forever.
+$r = $client->post('/api/test/seed', [
+    'users' => [['firstName' => 'Leaving', 'lastName' => 'Person', 'coffees' => 0, 'paidCents' => 0]],
+], $testHeaders);
+check('the deleted account\'s name is free to register again', $r['status'] === 200);
+$reusedId = $r['json']['users'][0]['id'] ?? null;
+check('re-registering the freed name creates a new account', is_string($reusedId) && $reusedId !== $leavingId);
+$r = $client->get('/api/test/state', $testHeaders);
+$reusedRow = null;
+foreach ($r['json']['users'] ?? [] as $row) {
+    if (($row['id'] ?? null) === $reusedId) {
+        $reusedRow = $row;
+    }
+}
+check('the re-registered account starts from zero, not from the deleted tab', ($reusedRow['coffees'] ?? null) === 0 && ($reusedRow['balanceCents'] ?? null) === 0);
+
+$r = $client->post('/api/test/login', ['userId' => $adminId], $testHeaders);
+check('test/login as the admin after the delete tests succeeds', $r['status'] === 200);
+$r = $client->post('/api/admin/user/delete', ['userId' => $reusedId]);
+check('cleaning up the re-registered account succeeds', $r['status'] === 200);
+
 // ------------------------------------------------------ decryption roundtrip ---
 
 check('the admin user\'s encrypted name was captured earlier', $adminEncryptedName !== null);
@@ -824,9 +919,56 @@ $r = $setupClient->get('/api/setup/status');
 check('GET /api/setup/status on a fresh deployment is 200', $r['status'] === 200);
 check('setup/status reports needsSetup true before init', ($r['json']['needsSetup'] ?? null) === true);
 check('setup/status reports the default priceCents before init', ($r['json']['priceCents'] ?? null) === 150);
+check('setup/status reports the setup token is ready', ($r['json']['setupTokenReady'] ?? null) === true);
+check('setup/status never serves the token itself', !array_key_exists('setupToken', $r['json']));
+check('setup/status never serves the token file path', !array_key_exists('setupTokenPath', $r['json']));
+
+// ------------------------------------------------------ setup token gate ---
+
+// Being able to read the token off the deployment stands in for
+// authentication here: setup/init cannot require a session (no account exists
+// yet) and it fixes the RSA key every name is sealed to, so without this gate
+// whoever reached a freshly uploaded instance first would own it.
+$wizardTokenPath = $setupWorkspace . '/data/setup-token.txt';
+check('the setup token file was generated', is_file($wizardTokenPath));
+$wizardToken = trim((string) @file_get_contents($wizardTokenPath));
+check('the generated setup token is a 32-character hex secret', preg_match('/^[0-9a-f]{32}$/', $wizardToken) === 1);
+$wizardTokenPerms = is_file($wizardTokenPath) ? (fileperms($wizardTokenPath) & 0777) : -1;
+check('the setup token file is not group- or world-readable', $wizardTokenPerms !== -1 && ($wizardTokenPerms & 0044) === 0);
+
+$r = $setupClient->post('/api/setup/init', [
+    'adminPublicKey' => $setupKeys['public'],
+    'priceCents' => 200,
+    'invite' => 'SETUP-INVITE',
+]);
+check('setup/init without a setup token is 403', $r['status'] === 403);
+check('setup/init without a token reports invalid_setup_token', ($r['json']['error'] ?? null) === 'invalid_setup_token');
+
+$r = $setupClient->post('/api/setup/init', [
+    'setupToken' => str_repeat('0', 32),
+    'adminPublicKey' => $setupKeys['public'],
+    'priceCents' => 200,
+    'invite' => 'SETUP-INVITE',
+]);
+check('setup/init with a wrong setup token is 403', $r['status'] === 403);
+check('setup/init with a wrong token reports invalid_setup_token', ($r['json']['error'] ?? null) === 'invalid_setup_token');
+check(
+    'a rejected token leaves the installation unclaimed',
+    ($setupClient->get('/api/setup/status')['json']['needsSetup'] ?? null) === true
+);
+
+// The token is checked before the payload, so a caller without it cannot use
+// the endpoint to probe which keys or invite codes would be accepted.
+$r = $setupClient->post('/api/setup/init', [
+    'adminPublicKey' => 'not-a-valid-pem-key',
+    'priceCents' => 0,
+    'invite' => 'abc',
+]);
+check('a tokenless request is refused before its payload is validated', ($r['json']['error'] ?? null) === 'invalid_setup_token');
 
 // Bad input is rejected before a successful init is ever attempted.
 $r = $setupClient->post('/api/setup/init', [
+    'setupToken' => $wizardToken,
     'adminPublicKey' => 'not-a-valid-pem-key',
     'priceCents' => 200,
     'invite' => 'SETUP-INVITE',
@@ -835,6 +977,7 @@ check('setup/init with a garbage public key is 400', $r['status'] === 400);
 check('setup/init with a garbage public key reports invalid_key', ($r['json']['error'] ?? null) === 'invalid_key');
 
 $r = $setupClient->post('/api/setup/init', [
+    'setupToken' => $wizardToken,
     'adminPublicKey' => $setupKeys['public'],
     'priceCents' => 0,
     'invite' => 'SETUP-INVITE',
@@ -843,6 +986,7 @@ check('setup/init with priceCents 0 is 400', $r['status'] === 400);
 check('setup/init with priceCents 0 reports invalid_price', ($r['json']['error'] ?? null) === 'invalid_price');
 
 $r = $setupClient->post('/api/setup/init', [
+    'setupToken' => $wizardToken,
     'adminPublicKey' => $setupKeys['public'],
     'priceCents' => 200,
     'invite' => 'abc',
@@ -853,6 +997,7 @@ check('setup/init with a too-short invite reports invalid_invite', ($r['json']['
 check('setup/status still reports needsSetup true after only rejected attempts', ($setupClient->get('/api/setup/status')['json']['needsSetup'] ?? null) === true);
 
 $r = $setupClient->post('/api/setup/init', [
+    'setupToken' => $wizardToken,
     'adminPublicKey' => $setupKeys['public'],
     'priceCents' => 200,
     'invite' => 'SETUP-INVITE',
@@ -861,9 +1006,15 @@ check('setup/init with valid data succeeds', $r['status'] === 200 && ($r['json']
 
 $r = $setupClient->get('/api/setup/status');
 check('setup/status reports needsSetup false after a successful init', ($r['json']['needsSetup'] ?? null) === false);
+// is_file() is served from PHP's stat cache, and this path was already
+// stat-ed above -- without dropping the cache the check would pass on a stale
+// "it exists" and fail on a stale "it does not".
+clearstatcache(true, $wizardTokenPath);
+check('the setup token file is removed once setup has completed', !is_file($wizardTokenPath));
 check('setup/status reports the price chosen during init', ($r['json']['priceCents'] ?? null) === 200);
 
 $r = $setupClient->post('/api/setup/init', [
+    'setupToken' => $wizardToken,
     'adminPublicKey' => $setupKeys['public'],
     'priceCents' => 200,
     'invite' => 'SETUP-INVITE',

@@ -397,6 +397,13 @@ input {
   white-space: nowrap;
 }
 
+/* The one irreversible action in the row – it should not look like the three
+   reversible ones standing next to it. Colour only, no fill: a red block would
+   pull the eye to it before the balance it sits under. */
+.row-delete-btn:not(:disabled) {
+  color: var(--danger);
+}
+
 #admin-totals {
   font-variant-numeric: tabular-nums;
 }

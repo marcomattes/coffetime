@@ -45,6 +45,7 @@ Built to run anywhere PHP runs: no framework, no Node runtime in production, SQL
 - Local payment reminders without a push server: an opt-in month-end notification while the tab is open, plus an admin "Remind" button. No VAPID keys, no subscriptions, no third party.
 
 **Operations**
+- Deleting an account for good, from the user list: the row, its passkeys, sessions and bookings go together, which also frees the name for registration again. An open tab does not block it, but the confirmation says how much is being written off.
 - First-run setup wizard: the admin keypair is generated in the browser, the private key is only offered for download, and price/invite code are stored without touching `config.php`.
 - In-app admin settings for price and invite code at runtime.
 - SQLite by default, optional MySQL/MariaDB; automatic, additive migrations on both.
@@ -59,13 +60,15 @@ PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8123 -t public
 
 Open <http://localhost:8123> and follow the setup wizard: it generates the admin RSA keypair in your browser, has you download the private key, and asks for a price and invite code. The first account you register afterwards becomes administrator. No manual `config.php` editing is required to get started.
 
+The wizard asks for a **setup token** first. The server prints it to the error log on first contact and stores it in `setup-token.txt` next to the database (`data/` by default) — read it from either. Setup is unauthenticated by necessity and fixes the RSA key every name is sealed to, so without this anyone who reached a freshly uploaded instance before you could claim it. See [First-run setup token](ARCHITECTURE.md#first-run-setup-token).
+
 ### Docker
 
 ```bash
 docker compose up --build
 ```
 
-Open <http://localhost:8123> and follow the setup wizard as above. The SQLite database persists in the `coffee-data` named volume. The image bakes in a one-line `config.php` that only pins `origin` to `http://localhost:8123` (so WebAuthn matches the published port); everything else, including `adminPublicKey`, is left unset so the wizard still runs on first use. To use a fixed configuration instead, bind-mount your own `config.php` over `/var/www/html/config.php` (see the commented-out example in `compose.yaml`).
+Open <http://localhost:8123> and follow the setup wizard as above; read the setup token with `docker compose logs | grep 'setup token'`. The SQLite database persists in the `coffee-data` named volume. The image bakes in a one-line `config.php` that only pins `origin` to `http://localhost:8123` (so WebAuthn matches the published port); everything else, including `adminPublicKey`, is left unset so the wizard still runs on first use. To use a fixed configuration instead, bind-mount your own `config.php` over `/var/www/html/config.php` (see the commented-out example in `compose.yaml`).
 
 Once you deploy beyond localhost, set `rpId` to the host without a port and `origin` to the complete origin. Production WebAuthn deployments require HTTPS.
 
@@ -88,6 +91,8 @@ If `config.php` already sets `adminPublicKey`, the setup wizard is skipped. Once
 
 Three optional settings matter for real deployments:
 
+- **`trustedProxyHops`** (default `1`) — how many proxies sit in front of the app. `X-Forwarded-For` is read this many entries from the *right*, because a proxy only appends: anything already in the header came from the caller. Setting it higher than your real chain selects a caller-supplied entry again and un-throttles every per-caller rate limit. Only consulted when `trustProxy` is on.
+- **`setupToken`** (default empty) — pins the first-run setup token instead of letting the server generate one. Only useful for scripted deployments; read from `config.php` only.
 - **`trustProxy`** (default `false`) — set it only when a reverse proxy sets the `X-Forwarded-*` headers itself. A TLS-terminating proxy otherwise looks like plain HTTP to PHP, which downgrades a *derived* origin to `http://` and drops the session cookie's `Secure` flag. Pinning `origin` and `rpId` explicitly is still the more robust fix.
 - **`dayOffsetMinutes`** (default `0`) — the day boundary for streaks, the history chart and the month-end reminder, in minutes east of UTC. `0` keeps days ending at UTC midnight; set it to your office's standard offset (Berlin winter = `60`) so a late-evening coffee counts for the day it was actually had. A fixed offset does not follow daylight saving time.
 - **`undoWindowSeconds`** (default `300`, clamped to `30 .. 86400`) — how long a booking can still be taken back. Undo is meant for the mis-tap; past the window the booking stands, the app hides the button, and the endpoint answers `409 undo_expired`. Raise it if your kitchen wants more slack, but do not expect it to be a correction tool for yesterday — that is what the admin screen is for.
@@ -98,7 +103,7 @@ The public key must be a PEM-encoded RSA key of at least 4096 bits. New cipherte
 
 ### Settings precedence
 
-`priceCents`, `invite`, `paypalHandle`, `adminPublicKey`, and `namePepper` can each be set two ways: in `config.php`, or at runtime through the app (the setup wizard, or the admin settings screen for price, invite and the PayPal handle). Whichever a database `settings` row exists for wins over `config.php`; if no row exists, the `config.php` value (or built-in default) applies. Connection and bootstrap values — `rpId`, `origin`, `dbPath`/`db`, `admins`, `testMode`, `testToken` — are read from `config.php` only.
+`priceCents`, `invite`, `paypalHandle`, `adminPublicKey`, and `namePepper` can each be set two ways: in `config.php`, or at runtime through the app (the setup wizard, or the admin settings screen for price, invite and the PayPal handle). Whichever a database `settings` row exists for wins over `config.php`; if no row exists, the `config.php` value (or built-in default) applies. Connection and bootstrap values — `rpId`, `origin`, `dbPath`/`db`, `admins`, `testMode`, `testToken`, `setupToken`, `trustProxy`, `trustedProxyHops` — are read from `config.php` only. `setupToken` in particular: it gates the very request that first writes those settings, so reading it from the database would let the wizard authorize itself.
 
 ### Database
 
@@ -122,7 +127,7 @@ The CLI takes each account's balance from the stored `tab_cents`, which sums eve
 
 ## Administration
 
-Add the account ID to `admins` (or rely on the first-registered-user rule), sign in, and select `admin-private.pem` in the Administration section. JavaScript imports it as a non-extractable Web Crypto key and decrypts API ciphertexts in memory. No request containing the key or plaintext names is ever made. From the same screen an administrator can book a payment against a user's tab and export the decrypted roster as CSV, both without the key leaving the browser.
+Add the account ID to `admins` (or rely on the first-registered-user rule), sign in, and select `admin-private.pem` in the Administration section. JavaScript imports it as a non-extractable Web Crypto key and decrypts API ciphertexts in memory. No request containing the key or plaintext names is ever made. From the same screen an administrator can book a payment against a user's tab, export the decrypted roster as CSV — both without the key leaving the browser — and delete an account outright, which is also the only way a name becomes available for registration again.
 
 For a fully offline database export (SQLite only):
 
@@ -221,7 +226,7 @@ Names are protected two different ways, and only one of them is unconditional:
 - `name_encrypted` is sealed with the admin's RSA public key. The private half never touches the server, so a stolen database cannot be decrypted. This holds regardless of configuration.
 - `name_hash` is `HMAC-SHA256(namePepper, name)`, used only to reject duplicate registrations. It is a *deterministic fingerprint of a guessable value*: anyone holding both a database copy and the pepper can recover every registered name by hashing candidates from, say, a staff list.
 
-So the two must not live in the same place. Setting `namePepper` in `config.php` keeps it out of database dumps. **The setup wizard has nowhere else to store it and writes it into the `settings` table**, which is convenient but means a database backup carries the key to its own fingerprints. If that matters for your deployment, configure `namePepper` in `config.php` before the first registration. Encrypted names stay safe either way.
+So the two must not live in the same place. Setting `namePepper` in `config.php` keeps it out of database dumps. **The setup wizard has nowhere else to store it and writes it into the `settings` table**, which is convenient but means a database backup carries the key to its own fingerprints. If that matters for your deployment, configure `namePepper` in `config.php` before the first registration — and note that a hardened deployment is likely opening that file anyway, for `origin`, `rpId` and possibly `setupToken`. Encrypted names stay safe either way.
 
 Neither `adminPublicKey` nor `namePepper` can be rotated afterwards — see [Key rotation](ARCHITECTURE.md#key-rotation).
 

@@ -163,6 +163,41 @@ final class Users
     }
 
     /**
+     * Removes a user and everything hanging off them, in one transaction.
+     *
+     * Deliberately a hard delete. A tombstone would keep the sealed name and
+     * keep reserving the name_hash, and that reservation is the reason this
+     * method exists: without it the name of someone who left the company can
+     * never be registered again, by them or by a namesake. Removing the row
+     * is what gives the name back.
+     *
+     * The bookings go with it, so the installation-wide totals in stats()
+     * drop by that user's share. Keeping them stable would mean keeping an
+     * anonymous remainder row, which is just a user under another name.
+     *
+     * @return bool false when the row was already gone
+     */
+    public static function delete(string $id): bool
+    {
+        return Db::transaction(static function (PDO $pdo) use ($id): bool {
+            $userId = (int) $id;
+            if (Db::fetchValue('SELECT id FROM users WHERE id = ?', [$userId], $pdo) === null) {
+                return false;
+            }
+
+            // Sessions first: every one of them is a way back into the account
+            // that is about to stop existing.
+            $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$userId]);
+            $pdo->prepare('DELETE FROM credentials WHERE user_id = ?')->execute([$userId]);
+            $pdo->prepare('DELETE FROM link_codes WHERE user_id = ?')->execute([$userId]);
+            $pdo->prepare('DELETE FROM coffee_events WHERE user_id = ?')->execute([$userId]);
+            $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$userId]);
+
+            return true;
+        });
+    }
+
+    /**
      * Books a coffee at the currently configured price. The price is read once
      * at the start and frozen both in tab_cents and on the event itself – later
      * price changes therefore never apply retroactively to coffees that have

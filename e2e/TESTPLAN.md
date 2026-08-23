@@ -58,6 +58,11 @@ authenticator (CDP) — nothing in the app is mocked.
    suite asserts exactly that guarantee (button stays disabled, zero
    `/api/setup/init` requests). The "Generate the key first." branch in
    `initSetup()` is unreachable defensive code.
+3b. Setup token: a missing token is caught client-side with no request; a wrong
+   one is refused with `invalid_setup_token` and leaves `needsSetup: true`. The
+   token file is generated on first contact (32 hex chars), `setup/status`
+   reports only `setupTokenReady` — never the token or its path — and the file
+   is deleted once setup completes.
 4. Finish setup (price 2.00 €, invite `WIZARD-INVITE`) switches to the auth
    view; `/api/setup/status` now reports `needsSetup: false`.
 5. A second `/api/setup/init` returns 409 `already_initialized`.
@@ -142,6 +147,10 @@ authenticator (CDP) — nothing in the app is mocked.
 3. Record payment (2.00 € against a user with a 3.00 € tab) reduces the row's
    outstanding to 1.00 €; server state shows `paidCents` 200. An invalid amount
    (0, negative) shows `invalid_amount` without a request.
+3b. Delete: removing a user with a 3.00 € tab drops the row here and the
+   account server-side; the confirmation names the balance being written off.
+   Dismissing the confirmation sends no request and leaves the account alone.
+   The signed-in admin's own row has the button disabled.
 4. Settings: saving price 2.50 € + invite `NEW-INVITE` shows the saved status;
    the app price stat updates; registration with the old invite now fails and
    with the new invite succeeds. (The spec restores the defaults afterwards.)
@@ -160,6 +169,12 @@ authenticator (CDP) — nothing in the app is mocked.
    decrypted names and per-user balances.
 9. XSS safety: a seeded name containing `<img src=x onerror=…>` renders as
    text after decryption — no `img` element appears in the admin rows.
+
+Booking-shortcut cases live in `pwa.spec.ts` and `security.spec.ts`: in a
+browser tab `?book=1` shows the confirmation card and books only on tap
+(declining books nothing), and a cross-site no-referrer navigation to it is
+refused — that one is the regression test for the drive-by the empty-referrer
+guard allowed.
 10. NFC tags: the card shows `/?book=1` and `/?invite=<saved code>` as full
    URLs; on desktop Chromium, which has no Web NFC, the write buttons stay
    hidden behind the "Chrome on Android" hint, and a non-admin never sees the
@@ -174,6 +189,8 @@ authenticator (CDP) — nothing in the app is mocked.
 1. Every session-protected endpoint (`/api/me`, `/api/coffee`,
    `/api/coffee/undo`, `/api/stats`, `/api/history`, `/api/logout`,
    `/api/link/code`, all `/api/admin/*`) returns 401 without a session.
+   A non-admin session gets 403 on every `/api/admin/*`, and the refused
+   `/api/admin/user/delete` leaves the target account in place.
    `/api/version` is deliberately not among them — the footer names the build
    on the sign-in screen too.
 2. Admin endpoints return 403 for a signed-in non-admin.
@@ -192,10 +209,12 @@ authenticator (CDP) — nothing in the app is mocked.
    links it.
 2. The service worker registers and activates on load
    (`navigator.serviceWorker.ready` resolves).
-3. `/?book=1` while signed in books exactly one coffee immediately and cleans
-   the URL (no re-booking on reload).
-4. `/?book=1` while signed out shows the NFC hint; after signing in, the
-   pending coffee is booked automatically (counter 1).
+3. `/?book=1` while signed in (a browser tab, so: not the installed app) shows
+   the confirmation card without booking and cleans the URL; the tap books
+   exactly one coffee, and neither books nor re-asks on reload. Declining books
+   nothing.
+4. `/?book=1` while signed out shows the NFC hint; after signing in the
+   confirmation card appears and the coffee is booked on the tap (counter 1).
 5. The install card stays hidden without an install path, appears once
    `beforeinstallprompt` fires, and stays dismissed across a reload.
 6. Build badge: the footer reports exactly what `GET /api/version` says and

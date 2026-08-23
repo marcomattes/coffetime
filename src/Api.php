@@ -67,6 +67,7 @@ final class Api
             '/api/admin/users' => ['GET', 'adminUsers'],
             '/api/admin/payment' => ['POST', 'adminPayment'],
             '/api/admin/remind' => ['POST', 'adminRemind'],
+            '/api/admin/user/delete' => ['POST', 'adminUserDelete'],
             '/api/admin/link-code' => ['POST', 'adminLinkCode'],
             '/api/admin/password' => ['POST', 'adminPassword'],
             '/api/link/code' => ['POST', 'linkCode'],
@@ -767,6 +768,41 @@ final class Api
     }
 
     /**
+     * Removes an account for good – row, passkeys, sessions, bookings and any
+     * pending link code.
+     *
+     * An outstanding balance does not block it. The moment you most want an
+     * account gone is when its owner has left owing money, and a delete that
+     * refuses exactly then is a delete that does not work. What the balance
+     * does earn is a spelled-out confirmation in the admin UI.
+     *
+     * Deleting yourself is refused, though: an installation whose only
+     * administrator removes their own account has no way back in, since the
+     * is_admin flag is only ever handed out to the very first user of a fresh
+     * database.
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function adminUserDelete(array $user): never
+    {
+        self::requireAdmin($user);
+
+        $body = Http::body();
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId)) {
+            Http::error('unknown_user', 404);
+        }
+        if ($userId === (string) ($user['id'] ?? '')) {
+            Http::error('cannot_delete_self', 400);
+        }
+        if (!Users::delete($userId)) {
+            Http::error('unknown_user', 404);
+        }
+
+        Http::json(['ok' => true]);
+    }
+
+    /**
      * Issues a single-use code with which an admin can attach a new device to
      * SOMEONE ELSE'S account – the lost-device case. Valid longer than a
      * self-issued code (ADMIN_TTL instead of SELF_TTL), because the code still
@@ -940,8 +976,20 @@ final class Api
 
     private static function setupStatus(): never
     {
+        $needsSetup = self::needsSetup();
+        // Generating the token here (not only in setupInit) means it is in the
+        // log and on disk by the time the operator has the wizard on screen.
+        // An attacker triggering this generates a secret they cannot read.
+        $tokenAvailable = $needsSetup ? SetupToken::ensure() !== '' : false;
+
         Http::json([
-            'needsSetup' => self::needsSetup(),
+            'needsSetup' => $needsSetup,
+            // Neither the token nor where it lives is served: being able to
+            // read it off the deployment is the whole proof it stands for,
+            // and an absolute path would hand an unauthenticated caller the
+            // server's directory layout for nothing. The log line written on
+            // generation carries the exact path for the operator.
+            'setupTokenReady' => $tokenAvailable,
             'priceCents' => Config::priceCents(),
         ]);
     }
@@ -961,6 +1009,22 @@ final class Api
         }
 
         $body = Http::body();
+
+        // Before every other check: this endpoint decides the RSA key that all
+        // names are sealed to and cannot be re-keyed afterwards, so whoever
+        // gets here first would own the installation. The token proves
+        // filesystem access to the deployment, which a remote caller has not.
+        if (SetupToken::ensure() === '') {
+            // Neither readable nor writable -- refuse rather than wave setup
+            // through, and name the file so the operator can create it.
+            error_log('[coffee] setup blocked: cannot read or create ' . SetupToken::path());
+            Http::error('setup_token_unavailable', 500);
+        }
+        $givenToken = Http::stringField($body, 'setupToken');
+        if ($givenToken === null || !SetupToken::verify(trim($givenToken))) {
+            RateLimit::enforce('setup_token', RateLimit::SETUP_TOKEN_MAX);
+            Http::error('invalid_setup_token', 403);
+        }
 
         $publicKey = Http::stringField($body, 'adminPublicKey');
         if ($publicKey === null || $publicKey === '') {
@@ -1007,6 +1071,9 @@ final class Api
         }
 
         Settings::setMany($pairs);
+        // needsSetup() closes the wizard from here on, so the file is now just
+        // a secret lying around in a web-served tree. Take it away.
+        SetupToken::clear();
 
         Http::json(['ok' => true]);
     }

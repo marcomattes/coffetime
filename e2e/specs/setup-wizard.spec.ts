@@ -10,6 +10,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Page } from '@playwright/test';
 
 import { test, expect } from '../helpers/fixtures';
@@ -17,9 +18,11 @@ import { addVirtualAuthenticator, registerUserViaUi } from '../helpers/webauthn'
 import { DB_SETUP_PATH, SETUP_URL } from '../helpers/env';
 import { TestApi } from '../helpers/test-api';
 
-function removeSetupDb(): void {
+const SETUP_TOKEN_PATH = path.join(path.dirname(DB_SETUP_PATH), 'setup-token.txt');
+
+function removeIfPresent(filePath: string): void {
   try {
-    fs.unlinkSync(DB_SETUP_PATH);
+    fs.unlinkSync(filePath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw err;
@@ -27,11 +30,28 @@ function removeSetupDb(): void {
   }
 }
 
+function removeSetupDb(): void {
+  removeIfPresent(DB_SETUP_PATH);
+  // A completed setup deletes the token file, so a run that starts from a
+  // fresh database must start from a fresh token too.
+  removeIfPresent(SETUP_TOKEN_PATH);
+}
+
+/**
+ * The setup token as the operator would obtain it: read off the deployment's
+ * filesystem. The server writes it on the first setup/status or setup/init,
+ * so the wizard page has to have been loaded before this is called.
+ */
+function readSetupToken(): string {
+  return fs.readFileSync(SETUP_TOKEN_PATH, 'utf8').trim();
+}
+
 /** Drives the wizard to completion via the real UI, including the key download. */
 async function finishSetupViaUi(page: Page, priceEuros: string, invite: string): Promise<void> {
   await page.goto('/');
   await expect(page.getByTestId('view-setup')).toBeVisible();
 
+  await page.getByTestId('setup-token').fill(readSetupToken());
   await page.getByTestId('setup-price').fill(priceEuros);
   await page.getByTestId('setup-invite').fill(invite);
 
@@ -85,6 +105,7 @@ test.describe('setup wizard', () => {
       }
     });
 
+    await page.getByTestId('setup-token').fill(readSetupToken());
     await page.getByTestId('setup-price').fill('0');
     await page.getByTestId('setup-invite').fill('WIZARD-INVITE');
 
@@ -108,6 +129,7 @@ test.describe('setup wizard', () => {
       }
     });
 
+    await page.getByTestId('setup-token').fill(readSetupToken());
     await page.getByTestId('setup-price').fill('2.00');
     await page.getByTestId('setup-invite').fill('abc'); // 3 chars, min is 4
 
@@ -119,6 +141,72 @@ test.describe('setup wizard', () => {
     await page.getByTestId('btn-setup-init').click();
     await expect(page.getByTestId('setup-status')).toHaveText('invalid_invite');
     expect(setupInitRequests).toBe(0);
+  });
+
+  test('a missing setup token is caught client-side with no request', async ({ page }) => {
+    await page.goto('/');
+
+    let setupInitRequests = 0;
+    page.on('request', (req) => {
+      if (req.url().includes('/api/setup/init')) {
+        setupInitRequests++;
+      }
+    });
+
+    await page.getByTestId('setup-price').fill('2.00');
+    await page.getByTestId('setup-invite').fill('WIZARD-INVITE');
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByTestId('btn-setup-generate').click();
+    await downloadPromise;
+
+    await page.getByTestId('btn-setup-init').click();
+    await expect(page.getByTestId('setup-status')).toContainText('setup token');
+    expect(setupInitRequests).toBe(0);
+  });
+
+  /*
+   * The gate itself. setup/init cannot require a session -- no account exists
+   * yet -- and it fixes the RSA key every name is sealed to, which can never
+   * be re-keyed. Without this, whoever reached a freshly uploaded instance
+   * first would install their own key and become its administrator.
+   */
+  test('a wrong setup token is refused and leaves the instance unclaimed', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByTestId('view-setup')).toBeVisible();
+
+    await page.getByTestId('setup-token').fill('0'.repeat(32));
+    await page.getByTestId('setup-price').fill('2.00');
+    await page.getByTestId('setup-invite').fill('WIZARD-INVITE');
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByTestId('btn-setup-generate').click();
+    await downloadPromise;
+    await page.getByTestId('btn-setup-init').click();
+
+    await expect(page.getByTestId('setup-status')).toHaveText('invalid_setup_token');
+    await expect(page.getByTestId('view-setup')).toBeVisible();
+
+    const status = await page.request.get(SETUP_URL + '/api/setup/status');
+    expect((await status.json()).needsSetup).toBe(true);
+  });
+
+  test('the token file is generated on first contact and removed once setup completes', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByTestId('view-setup')).toBeVisible();
+
+    expect(fs.existsSync(SETUP_TOKEN_PATH)).toBe(true);
+    expect(readSetupToken()).toMatch(/^[0-9a-f]{32}$/);
+    // The token never travels over HTTP -- reading it off the deployment is
+    // the whole proof it stands for.
+    const status = await page.request.get(SETUP_URL + '/api/setup/status');
+    const body = await status.json();
+    expect(body.setupTokenReady).toBe(true);
+    expect(body.setupToken).toBeUndefined();
+    expect(body.setupTokenPath).toBeUndefined();
+
+    await finishSetupViaUi(page, '2.00', 'WIZARD-INVITE');
+    expect(fs.existsSync(SETUP_TOKEN_PATH)).toBe(false);
   });
 
   test('finish setup stays disabled until a key has been generated, so no request can leave the page', async ({

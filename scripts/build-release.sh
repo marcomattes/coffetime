@@ -22,6 +22,22 @@ mkdir -p "${OUTPUT}"
 cp -R public src tools vendor "${OUTPUT}/"
 cp .htaccess composer.json composer.lock config.example.php LICENSE "${OUTPUT}/"
 
+# data/ is gitignored, so its deny rule exists nowhere in the source tree and
+# would never reach a server. The directory holds the SQLite database and the
+# first-run setup token; ship the guard with the bundle rather than relying on
+# Db::pdo() to write one at runtime, which it only does if it finds the
+# directory missing.
+mkdir -p "${OUTPUT}/data"
+cat > "${OUTPUT}/data/.htaccess" <<'HTACCESS'
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>
+HTACCESS
+
 # Fail before deployment if required runtime files or rewrite rules are missing.
 required=(
   .htaccess
@@ -30,6 +46,7 @@ required=(
   src/Bootstrap.php
   vendor/autoload.php
   config.example.php
+  data/.htaccess
 )
 for file in "${required[@]}"; do
   if [[ ! -f "${OUTPUT}/${file}" ]]; then

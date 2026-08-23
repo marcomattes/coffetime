@@ -67,6 +67,9 @@ final class Config
             'dbPath' => dirname(__DIR__) . '/data/coffee.sqlite',
             'testMode' => false,
             'testToken' => '',
+            // Overrides the generated first-run setup token (see SetupToken)
+            // for scripted deployments. Empty means "use the generated file".
+            'setupToken' => '',
             'adminPublicKey' => '',
             'namePepper' => '',
             // Only set this when a reverse proxy in front of the app strips
@@ -75,6 +78,11 @@ final class Config
             // what a TLS-terminating proxy needs for the session cookie to
             // get its Secure flag and for WebAuthn origins to match.
             'trustProxy' => false,
+            // How many proxies sit in front of the app. X-Forwarded-For is
+            // read this many entries from the right, because only what a
+            // trusted proxy appended is trustworthy -- see
+            // RateLimit::clientAddress().
+            'trustedProxyHops' => 1,
             // Offset of the "day" used for streaks, history and the month-end
             // reminder, in minutes east of UTC (Berlin winter = 60). 0 keeps
             // the historical UTC behavior. A fixed offset deliberately does
@@ -255,6 +263,26 @@ final class Config
     }
 
     /**
+     * Number of trusted proxies between the client and the app, used to pick
+     * the right entry out of X-Forwarded-For. Clamped to a sane range: a value
+     * larger than the real chain would select a client-supplied entry again,
+     * which is exactly what reading from the right is meant to prevent.
+     */
+    public static function trustedProxyHops(): int
+    {
+        $value = self::get('trustedProxyHops', 1);
+        if (!is_numeric($value)) {
+            return 1;
+        }
+        $hops = (int) $value;
+        if ($hops < 1 || $hops > 8) {
+            return 1;
+        }
+
+        return $hops;
+    }
+
+    /**
      * Day-boundary offset in seconds east of UTC, used everywhere a Unix
      * timestamp is turned into a calendar day (streaks, history, month-end
      * reminders). Clamped to the real-world range of UTC offsets.
@@ -391,6 +419,18 @@ final class Config
         $value = self::get('testToken', '');
 
         return is_string($value) ? $value : '';
+    }
+
+    /**
+     * Read from config.php only, never from the settings table: the token
+     * gates the very request that first writes those settings, so taking it
+     * from the database would let the wizard authorize itself.
+     */
+    public static function setupToken(): string
+    {
+        $value = self::get('setupToken', '');
+
+        return is_string($value) ? trim($value) : '';
     }
 
     public static function adminPublicKey(): string
