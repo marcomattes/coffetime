@@ -21,11 +21,14 @@ name: Publish container image
 # secrets, and the push there is skipped -- not failed -- when they are
 # missing, so a fork still gets its ghcr.io image without any setup:
 #   DOCKERHUB_USERNAME  Docker Hub account name
-#   DOCKERHUB_TOKEN     access token with Read & Write scope, from
-#                       hub.docker.com -> Account settings -> Personal access
-#                       tokens. Not the account password.
-# The Docker Hub repository itself is created by the first push; make it
-# public there if the README pull commands should work unauthenticated.
+#   DOCKERHUB_TOKEN     access token from hub.docker.com -> Account settings
+#                       -> Personal access tokens. Not the account password.
+#                       Scope must be Read/Write/Delete, not Read & Write:
+#                       the overview sync below writes through the Hub API,
+#                       which the narrower scope is not allowed to call.
+# The Docker Hub repository itself is created by the first push, private by
+# default. It has to be switched to public on the Hub for the unauthenticated
+# pull commands in the README to work; nothing in this file can set that.
 #
 # The ghcr.io package inherited this repository's public visibility on first
 # push, so the pull commands in README.md work unauthenticated. If that ever
@@ -160,6 +163,22 @@ jobs:
           subject-name: docker.io/${{ env.DOCKERHUB_IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      # Without this the Hub page reads "No overview available". README.md is
+      # not the source: it is written for GitHub, sits a few hundred bytes
+      # under the Hub's 25,000-byte ceiling, and most of it (tests, FTP
+      # deployment, contributing) is noise to someone deciding whether to pull
+      # an image. docs/docker-hub.md is the same project described for that
+      # reader, with absolute links because relative ones do not resolve here.
+      - name: Sync the Docker Hub overview
+        if: steps.hub.outputs.enabled == 'true'
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          short-description: Self-hosted coffee tab tracker with passkey sign-in
+          readme-filepath: ./docs/docker-hub.md
 
       - name: Summary
         run: |

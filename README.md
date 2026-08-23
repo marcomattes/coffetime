@@ -210,7 +210,9 @@ Point the web root at `public/`, run `composer install --no-dev`, make the datab
 
 `./scripts/build-release.sh` assembles a production-only `deploy/` directory with optimized Composer dependencies. GitHub Actions runs the same build after the test suite and deploys pushes to `main` over FTPS. Configure the `FTP_SERVER`, `FTP_USERNAME`, and `FTP_PASSWORD` repository secrets. The optional `FTP_SERVER_DIR`, `FTP_PROTOCOL`, and `FTP_PORT` variables control the destination. The workflow explicitly preserves the server-side `config.php` and `data/` directory.
 
-Publishing the container image needs no setup for `ghcr.io`. The Docker Hub push additionally reads the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets — the token is a Docker Hub personal access token with *Read & Write* scope, not the account password. When either is missing the job publishes to `ghcr.io` alone and says so in its summary, so forks work without any credentials.
+Publishing the container image needs no setup for `ghcr.io`. The Docker Hub push additionally reads the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets — the token is a Docker Hub personal access token with *Read/Write/Delete* scope (the narrower *Read & Write* cannot call the API that sets the repository overview), not the account password. When either is missing the job publishes to `ghcr.io` alone and says so in its summary, so forks work without any credentials. A repository created by the first push is private until you switch it to public on the Hub.
+
+The Docker Hub page's overview is [`docs/docker-hub.md`](docs/docker-hub.md), pushed by the same workflow — this README is written for GitHub, is very close to the Hub's 25,000-byte limit, and its relative links do not resolve there.
 
 ## Development
 

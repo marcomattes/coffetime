@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets and
   is skipped rather than failed when they are absent, which keeps forks
   publishing to `ghcr.io` without any credentials of their own.
+- `docs/docker-hub.md` is the overview shown on the Docker Hub page, pushed
+  there by the publish workflow. The README is not used for it: it is written
+  for GitHub, sits a few hundred bytes under the Hub's 25,000-byte ceiling
+  where it would start being truncated, and its relative links do not resolve
+  off GitHub.
 
 ### Security
 
