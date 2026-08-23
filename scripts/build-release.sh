@@ -38,4 +38,18 @@ for file in "${required[@]}"; do
   fi
 done
 
-printf 'Production release assembled in %s\n' "${OUTPUT}"
+# The deployed tree is an FTP mirror with no .git, so the commit it was built
+# from is written into the bundle. src/ is denied over HTTP by its own
+# .htaccess; the value reaches the browser through GET /api/version.
+BUILD_COMMIT="$(git -C "${ROOT}" rev-parse --short=7 HEAD 2>/dev/null || echo '')"
+BUILD_AT="$(date -u +%s)"
+if [[ -z "${BUILD_COMMIT}" ]]; then
+  printf 'Refusing to build: not a git checkout, so the release would carry no build id.\n' >&2
+  exit 1
+fi
+if [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
+  printf 'Warning: the working tree is dirty; %s does not describe it exactly.\n' "${BUILD_COMMIT}" >&2
+fi
+printf '{"version":"%s","builtAt":%s}\n' "${BUILD_COMMIT}" "${BUILD_AT}" > "${OUTPUT}/src/build.json"
+
+printf 'Production release assembled in %s (build %s)\n' "${OUTPUT}" "${BUILD_COMMIT}"

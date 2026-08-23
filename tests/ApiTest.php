@@ -119,6 +119,22 @@ check('me.balanceCents = coffees * priceCents - paidCents', ($me['balanceCents']
 check('me.priceCents matches the configured price', ($me['priceCents'] ?? null) === 150);
 check('me.admin is false for the non-admin user', ($me['admin'] ?? null) === false);
 
+// -------------------------------------------------------------- version ---
+
+// Public on purpose: the footer names the build on the sign-in screen too.
+$anonymous = new HttpClient('http://127.0.0.1:' . $port);
+$r = $anonymous->get('/api/version');
+check('GET /api/version without a session is 200', $r['status'] === 200);
+check('version reports a non-empty build id', is_string($r['json']['version'] ?? null) && ($r['json']['version'] ?? '') !== '');
+check('version reports a builtAt timestamp', is_int($r['json']['builtAt'] ?? null));
+$r = $anonymous->post('/api/version');
+check('POST /api/version is 405 – it is a read', $r['status'] === 405);
+
+// The shell carries the same build, so the badge has something to show
+// before the request above has even come back.
+$r = $anonymous->get('/');
+check('the shell embeds the build id for the footer badge', str_contains((string) $r['raw'], 'data-testid="build-badge"'));
+
 // --------------------------------------------------------------- coffee ---
 
 $r = $client->post('/api/coffee');

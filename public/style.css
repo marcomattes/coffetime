@@ -633,6 +633,38 @@ input {
   text-underline-offset: 2px;
 }
 
+/*
+ * Which build is running, and a double tap to throw the caches away and load
+ * again. A button rather than a span so it is reachable by keyboard;
+ * `touch-action: manipulation` keeps the second tap from being read as
+ * double-tap-to-zoom instead.
+ */
+.build {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.build:active {
+  background: var(--line);
+}
+
+/* The server is on a different build than this shell: a reload gets it. */
+.build.is-stale {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .footer a:hover,
 .footer a:focus-visible {
   text-decoration-thickness: 2px;

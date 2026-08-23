@@ -7,3 +7,6 @@ node_modules/
 /playwright-report/
 /test-results/
 .env
+# Written into the release bundle by scripts/build-release.sh, and briefly
+# by the Version unit test -- never part of the source tree.
+/src/build.json

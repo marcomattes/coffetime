@@ -23,6 +23,7 @@ final class Api
         '/api/setup/init',
         '/api/link/options',
         '/api/link/verify',
+        '/api/version',
     ];
 
     public static function dispatch(): void
@@ -76,6 +77,7 @@ final class Api
             // shared path.
             '/api/admin/settings' => ['GET', 'adminSettingsGet'],
             '/api/admin/settings/update' => ['POST', 'adminSettingsUpdate'],
+            '/api/version' => ['GET', 'version'],
             '/api/setup/status' => ['GET', 'setupStatus'],
             '/api/setup/init' => ['POST', 'setupInit'],
         ];
@@ -910,6 +912,18 @@ final class Api
             'invite' => Config::invite(),
             'paypalHandle' => Config::paypalHandle(),
         ]);
+    }
+
+    /**
+     * The build the server is running. Public and session-free on purpose: it
+     * is shown in the footer, including on the sign-in screen, and it is the
+     * one value that must come from the network rather than the cached shell —
+     * a shell served from the service-worker cache would report the build the
+     * device last downloaded, which is exactly the question being asked.
+     */
+    private static function version(): never
+    {
+        Http::json(Version::current());
     }
 
     // -------------------------------------------------------------- Setup ---

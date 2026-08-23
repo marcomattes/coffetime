@@ -23,6 +23,7 @@ use Coffee\RateLimit;
 use Coffee\Sessions;
 use Coffee\Settings;
 use Coffee\Users;
+use Coffee\Version;
 
 Bootstrap::init();
 
@@ -454,6 +455,48 @@ check(
     'undo on a legacy user without events leaves counter and tab untouched',
     Users::tabCents($updated) === 150 && Users::coffees($updated) === 1
 );
+
+// --------------------------------------------------------------- version ---
+
+// Running from a checkout there is no build.json, so the commit has to come
+// out of .git -- that is the only reason a developer sees a real hash too.
+$version = Version::current();
+check('Version::current reports a version string', isset($version['version']) && is_string($version['version']));
+check('Version::current reports a builtAt timestamp', isset($version['builtAt']) && is_int($version['builtAt']));
+check(
+    'the version is a short commit hash or the dev placeholder',
+    $version['version'] === Version::UNKNOWN || preg_match('/^[0-9a-f]{7}$/', $version['version']) === 1
+);
+check('Version::current is cached per request', Version::current() === $version);
+
+// A release bundle carries build.json and it has to win: the deployed tree
+// has no .git at all, and where both exist the bundle is the newer truth.
+$buildFile = __DIR__ . '/../src/build.json';
+$hadBuildFile = is_file($buildFile);
+$previousBuildFile = $hadBuildFile ? (string) file_get_contents($buildFile) : null;
+try {
+    file_put_contents($buildFile, '{"version":"abcdef1234567","builtAt":1700000000}');
+    Version::forget();
+    $bundled = Version::current();
+    check('build.json takes precedence over .git', $bundled['version'] === 'abcdef1');
+    check('build.json supplies the build timestamp', $bundled['builtAt'] === 1700000000);
+
+    // Anything unusable falls back rather than showing rubbish in the footer.
+    file_put_contents($buildFile, 'not json at all');
+    Version::forget();
+    check('an unreadable build.json falls back instead of reporting nonsense', Version::current()['version'] !== 'not json at all');
+
+    file_put_contents($buildFile, '{"version":"nope"}');
+    Version::forget();
+    check('a build.json whose version is not a hash falls back too', Version::current()['version'] !== 'nope');
+} finally {
+    if ($previousBuildFile === null) {
+        @unlink($buildFile);
+    } else {
+        file_put_contents($buildFile, $previousBuildFile);
+    }
+    Version::forget();
+}
 
 // ---------------------------------------------------------------- paypal ---
 

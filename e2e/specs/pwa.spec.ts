@@ -180,6 +180,36 @@ test.describe('pwa', () => {
     await expect(page.getByTestId('install-card')).toBeHidden();
   });
 
+  test('the build badge names the deployed build and reloads on a double tap', async ({ page, request }) => {
+    await page.goto('/');
+    const badge = page.getByTestId('build-badge');
+    await expect(badge).toBeVisible();
+
+    // Whatever the server reports is what the footer has to say, since that
+    // is the question the badge exists to answer.
+    const reported = (await (await request.get('/api/version')).json()) as { version: string };
+    expect(reported.version).not.toBe('');
+    await expect(badge).toHaveText('build ' + reported.version);
+    // In sync with the shell it was served with, so no update nag.
+    await expect(badge).not.toHaveClass(/is-stale/);
+
+    // One tap only arms the gesture -- it must not reload by itself.
+    await badge.click();
+    await expect(badge).toHaveText('tap again to reload');
+    await expect(badge).toHaveText('build ' + reported.version, { timeout: 2000 });
+
+    // Two taps clear every cache and load again.
+    await page.evaluate(() => caches.open('coffeetime-probe').then((c) => c.put('/probe', new Response('x'))));
+    expect(await page.evaluate(() => caches.keys())).toContain('coffeetime-probe');
+
+    const reloaded = page.waitForNavigation({ waitUntil: 'load' });
+    await badge.dblclick();
+    await reloaded;
+
+    expect(await page.evaluate(() => caches.keys())).not.toContain('coffeetime-probe');
+    await expect(page.getByTestId('build-badge')).toBeVisible();
+  });
+
   test('pull to refresh reloads only in the installed app', async ({ browser, testApi }) => {
     const [user] = await testApi.seed([{ firstName: 'Pull', lastName: 'Down' }]);
 

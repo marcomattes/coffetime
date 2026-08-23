@@ -56,6 +56,11 @@
     users: AdminUser[];
   }
 
+  interface VersionResponse {
+    version: string;
+    builtAt?: number;
+  }
+
   interface SetupStatus {
     needsSetup: boolean;
     priceCents: number;
@@ -2006,6 +2011,101 @@
     return 'Writing the tag failed. Try again with the tag flat against the back of the phone.';
   }
 
+  /* ------------------------------------------------------ Build badge --- */
+
+  /*
+   * The footer names the build so it is possible to tell what is actually
+   * deployed without opening a terminal, and a double tap on it throws away
+   * every cache and loads again.
+   *
+   * Two builds are in play. The one baked into the shell is what this device
+   * downloaded, which after a deploy can still be the previous one -- the
+   * service worker answers a navigation from its cache and only then fetches
+   * a fresh copy. /api/version is never cached, so it reports what the server
+   * runs. When they disagree the badge says so, which is precisely the moment
+   * the double tap is worth using.
+   */
+
+  const DOUBLE_TAP_MS = 600;
+
+  function initBuildBadge(): void {
+    const badge = el<HTMLButtonElement>('build-badge');
+    if (!badge) {
+      return;
+    }
+    const shellBuild = badge.getAttribute('data-build') || '';
+    let label = 'build ' + (shellBuild === '' ? 'unknown' : shellBuild);
+    let lastTap = 0;
+    let hintTimer: number | null = null;
+
+    function show(message: string): void {
+      text(badge!, message);
+    }
+
+    api<VersionResponse>('/api/version')
+      .then((data) => {
+        const serverBuild = data && typeof data.version === 'string' ? data.version : '';
+        if (serverBuild === '') {
+          return;
+        }
+        label = 'build ' + serverBuild;
+        if (serverBuild !== shellBuild) {
+          // Deliberately the server's build: the question the badge answers is
+          // "what is deployed", not "what did this device happen to cache".
+          label += ' \u2013 tap twice to update';
+          badge!.classList.add('is-stale');
+        }
+        show(label);
+      })
+      .catch(() => { /* Offline: the build baked into the shell stands. */ });
+
+    badge.addEventListener('click', () => {
+      if (hintTimer !== null) {
+        window.clearTimeout(hintTimer);
+        hintTimer = null;
+      }
+      const now = Date.now();
+      if (now - lastTap < DOUBLE_TAP_MS) {
+        lastTap = 0;
+        show('reloading\u2026');
+        hardReload();
+        return;
+      }
+      lastTap = now;
+      show('tap again to reload');
+      hintTimer = window.setTimeout(() => {
+        hintTimer = null;
+        lastTap = 0;
+        show(label);
+      }, DOUBLE_TAP_MS);
+    });
+  }
+
+  /*
+   * A reload alone would be served the shell the service worker has cached,
+   * so the caches go first. `location.reload(true)` has not forced anything
+   * for years -- dropping the caches is what actually makes this hard.
+   */
+  async function hardReload(): Promise<void> {
+    try {
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+      if ('serviceWorker' in navigator) {
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (registration) {
+          // Picks up a new sw.js as well; ours calls skipWaiting() on install,
+          // so it takes over rather than waiting for every tab to close.
+          await registration.update();
+        }
+      }
+    } catch (e) {
+      /* Best effort – reload regardless, it is what was asked for. */
+    }
+    window.location.reload();
+  }
+
   /* -------------------------------------------------- Pull to refresh --- */
 
   /*
@@ -2205,6 +2305,7 @@
     registerServiceWorker();
     initInstall();
     initReminders();
+    initBuildBadge();
     initPullToRefresh();
     updateQueueHint();
     window.addEventListener('online', () => {

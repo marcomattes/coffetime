@@ -170,6 +170,8 @@ authenticator (CDP) — nothing in the app is mocked.
 1. Every session-protected endpoint (`/api/me`, `/api/coffee`,
    `/api/coffee/undo`, `/api/stats`, `/api/history`, `/api/logout`,
    `/api/link/code`, all `/api/admin/*`) returns 401 without a session.
+   `/api/version` is deliberately not among them — the footer names the build
+   on the sign-in screen too.
 2. Admin endpoints return 403 for a signed-in non-admin.
 3. `/api/test/*` without or with a wrong `X-Test-Token` returns 404.
 4. Wrong method on an existing route returns 405; unknown `/api/...` paths 404.
@@ -192,7 +194,11 @@ authenticator (CDP) — nothing in the app is mocked.
    pending coffee is booked automatically (counter 1).
 5. The install card stays hidden without an install path, appears once
    `beforeinstallprompt` fires, and stays dismissed across a reload.
-6. Pull to refresh: a downward swipe triggers a second `/api/me` in a
+6. Build badge: the footer reports exactly what `GET /api/version` says and
+   carries no stale marker when shell and server agree. One tap only arms the
+   gesture ("tap again to reload") and reverts; a double tap clears every cache
+   (verified with a probe cache entry) and reloads.
+7. Pull to refresh: a downward swipe triggers a second `/api/me` in a
    standalone launch (`navigator.standalone` injected) and none in a browser
    tab, where the browser's own gesture owns it.
 

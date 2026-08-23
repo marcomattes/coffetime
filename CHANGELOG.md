@@ -131,6 +131,13 @@ Work preparing the project for its open-source release.
 
 ### Added
 
+- The footer names the **deployed build** (short commit hash). The release
+  bundle carries `src/build.json` written by `scripts/build-release.sh`, since
+  the FTP-mirrored tree has no `.git`; a checkout falls back to reading
+  `.git/HEAD`. The badge reports what `GET /api/version` says — never the
+  cached shell — and marks itself when the two disagree. **A double tap on it
+  deletes every cache and reloads**, which is the only reliable hard refresh in
+  an installed PWA.
 - Optional **"Pay with PayPal" button**: a plain PayPal.me link carrying the
   outstanding amount, shown to every user once an admin has stored a handle
   (`paypalHandle`, admin settings or `config.php`; a pasted paypal.me link is

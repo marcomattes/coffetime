@@ -12,6 +12,13 @@ final class Frontend
 {
     public static function shell(): string
     {
+        $build = htmlspecialchars(Version::current()['version'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        return str_replace('{{BUILD}}', $build, self::markup());
+    }
+
+    private static function markup(): string
+    {
         return <<<'HTML'
 <!DOCTYPE html>
 <html lang="en">
@@ -320,6 +327,12 @@ final class Frontend
      would leave the manifest scope and replace the PWA with a browser view. -->
 <footer class="footer">
   <p>&copy; <a href="https://mattes.dev" target="_blank" rel="noopener noreferrer">Marco Mattes</a></p>
+  <!-- The build baked in here is the one this shell was served as, which after
+       a deploy may still come from the service-worker cache. app.ts asks
+       /api/version for the build the server actually runs and says so when the
+       two differ. -->
+  <p><button type="button" id="build-badge" data-testid="build-badge" class="build"
+             data-build="{{BUILD}}" title="Tap twice to clear the cache and reload">build {{BUILD}}</button></p>
 </footer>
 <script src="/app.js"></script>
 </body>
