@@ -38,8 +38,11 @@ const REMINDER_MONTH_TAG = '2031-06';
 const CLIENT_IP = '198.51.100.7';
 const OTHER_CLIENT_IP = '198.51.100.8';
 // Forged X-Forwarded-For prefixes used to prove that reading the header from
-// the right (not the left) defeats a spoofing attempt.
-const SPOOFED_XFF_PREFIXES = ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4'];
+// the right (not the left) defeats a spoofing attempt. Drawn from TEST-NET-1
+// and TEST-NET-3 (RFC 5737) for the same reason as the caller IPs above: the
+// values only have to differ from each other and from the real client, so
+// there is no call to put a live address such as a public resolver in here.
+const SPOOFED_XFF_PREFIXES = ['192.0.2.1', '192.0.2.2', '203.0.113.1', '203.0.113.2'];
 
 Bootstrap::init();
 

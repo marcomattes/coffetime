@@ -43,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The offline booking queue no longer falls back to `Math.random()` for its
   client event id when `crypto.getRandomValues` is missing; the id only has to
   be unique per client, so it now uses a counter instead of a weak PRNG.
+- A second static-analysis pass over the frontend: the base64url padding
+  calculation is an `if`/`else if` rather than a nested ternary, the badge-clear
+  call routes a synchronous throw and a rejected promise through one `.catch()`
+  instead of wrapping a `.catch()` in a `try`, the notification lookup returns a
+  promise from both of its branches, `csvField()` also routes functions through
+  `JSON.stringify()` rather than stringifying their source text, and the reflow
+  read in `bump()` is marked `void` to say the discarded value is deliberate.
+- The forged `X-Forwarded-For` prefixes in the unit tests are drawn from the
+  RFC 5737 documentation ranges, like the caller addresses beside them, instead
+  of live addresses such as a public resolver.
 
 ### Fixed
 

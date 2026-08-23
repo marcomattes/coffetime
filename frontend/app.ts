@@ -172,7 +172,12 @@
     const padded = btoa(binary).replaceAll('+', '-').replaceAll('/', '_');
     // Strip trailing '=' padding without a backtracking-prone regex: base64
     // padding is at most two characters, always at the very end.
-    const padLength = padded.endsWith('==') ? 2 : padded.endsWith('=') ? 1 : 0;
+    let padLength = 0;
+    if (padded.endsWith('==')) {
+      padLength = 2;
+    } else if (padded.endsWith('=')) {
+      padLength = 1;
+    }
     return padLength === 0 ? padded : padded.slice(0, -padLength);
   }
 
@@ -685,23 +690,26 @@
    * running total, which is why clearing it here cannot lose information.
    */
   function clearReminderBadge(): void {
-    if ('clearAppBadge' in navigator) {
-      try {
-        (navigator as any).clearAppBadge().catch(() => {});
-      } catch (e) {
-        /* The badging API is a nice-to-have, not a requirement. */
-      }
+    const badging = navigator as Navigator & { clearAppBadge?: () => Promise<void> };
+    const clearBadge = badging.clearAppBadge;
+    if (typeof clearBadge === 'function') {
+      // Implementations differ on whether an unavailable badge throws straight
+      // away or rejects, so the call goes through Promise.resolve() and one
+      // .catch() covers both. The badging API is a nice-to-have, not a
+      // requirement -- there is nothing useful to do when it declines.
+      Promise.resolve()
+        .then(() => clearBadge.call(badging))
+        .catch(() => {});
     }
     if (!('serviceWorker' in navigator)) {
       return;
     }
     navigator.serviceWorker.ready
-      .then((registration) => {
-        if (typeof registration.getNotifications !== 'function') {
-          return [] as Notification[];
-        }
-        return registration.getNotifications();
-      })
+      .then((registration) =>
+        typeof registration.getNotifications === 'function'
+          ? registration.getNotifications()
+          : Promise.resolve<Notification[]>([])
+      )
       .then((shown) => {
         shown.forEach((entry) => {
           entry.close();
@@ -1326,10 +1334,12 @@
     let str: string;
     if (value === undefined || value === null) {
       str = '';
-    } else if (typeof value === 'object') {
+    } else if (typeof value === 'object' || typeof value === 'function') {
       // Not expected in practice (see exportAdminCsv's rows), but avoids
-      // silently emitting the useless "[object Object]" if it ever happens.
-      str = JSON.stringify(value);
+      // silently emitting the useless "[object Object]" -- or a function's
+      // whole source text -- if it ever happens. JSON.stringify() returns
+      // undefined rather than a string for a function, hence the fallback.
+      str = JSON.stringify(value) ?? '';
     } else {
       str = String(value);
     }
@@ -1975,8 +1985,9 @@
       return;
     }
     node.classList.remove('bump');
-    // Force a reflow so the animation restarts on repeated taps.
-    node.offsetWidth;
+    // Force a reflow so the animation restarts on repeated taps. `void` marks
+    // the read as deliberately discarded -- the side effect *is* the point.
+    void node.offsetWidth;
     node.classList.add('bump');
   }
 
