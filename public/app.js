@@ -28,7 +28,7 @@
     // Kept as `el` to match the original naming throughout this file.
     const el = byId;
     function money(cents) {
-        const value = typeof cents === 'number' && isFinite(cents) ? cents : 0;
+        const value = typeof cents === 'number' && Number.isFinite(cents) ? cents : 0;
         const sign = value < 0 ? '-' : '';
         return sign + (Math.abs(value) / 100).toFixed(2) + ' €';
     }
@@ -41,20 +41,24 @@
     function toBase64Url(buffer) {
         const bytes = new Uint8Array(buffer);
         let binary = '';
-        for (let i = 0; i < bytes.length; i++) {
-            binary += String.fromCharCode(bytes[i]);
+        for (const byte of bytes) {
+            binary += String.fromCodePoint(byte);
         }
-        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const padded = btoa(binary).replaceAll('+', '-').replaceAll('/', '_');
+        // Strip trailing '=' padding without a backtracking-prone regex: base64
+        // padding is at most two characters, always at the very end.
+        const padLength = padded.endsWith('==') ? 2 : padded.endsWith('=') ? 1 : 0;
+        return padLength === 0 ? padded : padded.slice(0, -padLength);
     }
     function fromBase64Url(value) {
-        let normalized = String(value).replace(/-/g, '+').replace(/_/g, '/');
+        let normalized = String(value).replaceAll('-', '+').replaceAll('_', '/');
         while (normalized.length % 4 !== 0) {
             normalized += '=';
         }
         const binary = atob(normalized);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
+            bytes[i] = binary.codePointAt(i) ?? 0;
         }
         return bytes;
     }
@@ -67,7 +71,7 @@
         };
         if (body !== undefined) {
             options.headers = { ...options.headers, 'Content-Type': 'application/json' };
-            options.body = JSON.stringify(body === null ? {} : body);
+            options.body = JSON.stringify(body ?? {});
         }
         const response = await fetch(path, options);
         const raw = await response.text();
@@ -81,7 +85,7 @@
             }
         }
         if (!response.ok) {
-            const code = data && data.error ? data.error : 'http_' + response.status;
+            const code = data?.error || 'http_' + response.status;
             throw new ApiError(response.status, code);
         }
         return data;
@@ -108,19 +112,32 @@
         }
         return randomHexId();
     }
+    /* Only used by the fallback branch of randomHexId() below, when no crypto
+       RNG is available at all. */
+    let fallbackIdCounter = 0;
     function randomHexId() {
         const bytes = new Uint8Array(16);
         if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
             window.crypto.getRandomValues(bytes);
         }
         else {
+            // This id is only a client-side idempotency key for a single booking
+            // (see the offline queue below and Users::addCoffee on the server) --
+            // it is never a secret and never needs to be unguessable, only unique
+            // per client. So rather than reach for Math.random() as a pseudorandom
+            // fallback, mix a strictly increasing counter with the clock: neither
+            // alone is guaranteed unique (the clock can repeat within a
+            // millisecond; the counter resets on reload), but the pair is.
+            fallbackIdCounter += 1;
+            const combinedHex = Date.now().toString(16).padStart(16, '0') +
+                fallbackIdCounter.toString(16).padStart(16, '0');
             for (let i = 0; i < bytes.length; i++) {
-                bytes[i] = Math.floor(Math.random() * 256);
+                bytes[i] = Number.parseInt(combinedHex.slice(i * 2, i * 2 + 2), 16);
             }
         }
         let hex = '';
-        for (let j = 0; j < bytes.length; j++) {
-            const piece = bytes[j].toString(16);
+        for (const byte of bytes) {
+            const piece = byte.toString(16);
             hex += piece.length === 1 ? '0' + piece : piece;
         }
         return hex;
@@ -133,32 +150,39 @@
     function isQueueEntry(value) {
         return !!value && typeof value.id === 'string' && value.id !== '';
     }
+    /* Normalizes one parsed JSON value into a QueueEntry, or null when it is
+       not one -- e.g. a stray value from a future/older version of this app,
+       or plain corruption. */
+    function toQueueEntry(item) {
+        if (!isQueueEntry(item)) {
+            return null;
+        }
+        return {
+            id: item.id,
+            at: typeof item.at === 'number' ? item.at : Date.now(),
+            uid: typeof item.uid === 'string' && item.uid !== '' ? item.uid : undefined
+        };
+    }
     /* Storage may be unavailable (private browsing, cleared site data, quota) –
        every read and write is wrapped so the app still works, just without a
        persistent queue in that case. */
     function loadQueue() {
-        let queue = [];
         try {
             const raw = window.localStorage.getItem(QUEUE_KEY);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (Object.prototype.toString.call(parsed) === '[object Array]') {
-                    for (const item of parsed) {
-                        if (isQueueEntry(item)) {
-                            queue.push({
-                                id: item.id,
-                                at: typeof item.at === 'number' ? item.at : Date.now(),
-                                uid: typeof item.uid === 'string' && item.uid !== '' ? item.uid : undefined
-                            });
-                        }
-                    }
-                }
+            if (!raw) {
+                return [];
             }
+            const parsed = JSON.parse(raw);
+            if (Object.prototype.toString.call(parsed) !== '[object Array]') {
+                return [];
+            }
+            return parsed
+                .map(toQueueEntry)
+                .filter((entry) => entry !== null);
         }
-        catch (e) {
-            queue = [];
+        catch {
+            return [];
         }
-        return queue;
     }
     function saveQueue(queue) {
         try {
@@ -363,7 +387,7 @@
             await prompt.prompt();
             await prompt.userChoice;
         }
-        catch (e) {
+        catch {
             /* Dialog refused by the browser – the card falls back to hidden. */
         }
         updateInstallUi();
@@ -407,7 +431,7 @@
             await periodicSync.register('reminders', { minInterval: 6 * 60 * 60 * 1000 });
             return true;
         }
-        catch (e) {
+        catch {
             // Not installed as an app, permission missing, or unsupported – the
             // on-open check below still covers these devices.
             return false;
@@ -485,7 +509,7 @@
             }
             updateReminderUi(backgroundChecks);
         }
-        catch (e) {
+        catch {
             updateReminderUi();
         }
         busy(button, false);
@@ -569,7 +593,7 @@
      */
     const PAGES = ['coffee', 'users', 'settings'];
     function isPage(value) {
-        return PAGES.indexOf(value) !== -1;
+        return PAGES.includes(value);
     }
     function hashPage() {
         const raw = window.location.hash.replace(/^#\/?/, '');
@@ -628,8 +652,8 @@
         if (nav) {
             nav.addEventListener('click', (event) => {
                 const origin = event.target;
-                const item = origin && origin.closest ? origin.closest('[data-page]') : null;
-                const page = item ? item.getAttribute('data-page') || '' : '';
+                const item = origin?.closest?.('[data-page]') ?? null;
+                const page = item ? item.dataset.page || '' : '';
                 if (isPage(page)) {
                     goToPage(page);
                 }
@@ -679,7 +703,7 @@
             return;
         }
         const name = typeof handle === 'string' ? handle.trim() : '';
-        const cents = typeof balanceCents === 'number' && isFinite(balanceCents) ? Math.round(balanceCents) : 0;
+        const cents = typeof balanceCents === 'number' && Number.isFinite(balanceCents) ? Math.round(balanceCents) : 0;
         if (name === '' || cents <= 0) {
             card.hidden = true;
             return;
@@ -705,7 +729,7 @@
             window.clearTimeout(undoTimer);
             undoTimer = null;
         }
-        const left = typeof seconds === 'number' && isFinite(seconds) ? Math.floor(seconds) : 0;
+        const left = typeof seconds === 'number' && Number.isFinite(seconds) ? Math.floor(seconds) : 0;
         button.hidden = left <= 0;
         if (left > 0) {
             undoTimer = window.setTimeout(() => {
@@ -721,7 +745,7 @@
             return;
         }
         container.textContent = '';
-        const days = (history && history.days ? history.days : []).slice(-14);
+        const days = (history?.days ?? []).slice(-14);
         let max = 0;
         days.forEach((day) => {
             if (typeof day.coffees === 'number' && day.coffees > max) {
@@ -736,7 +760,7 @@
             const date = new Date(day.date + 'T00:00:00Z');
             const col = document.createElement('div');
             col.className = 'chart-col' + (isToday ? ' chart-col-today' : '');
-            col.setAttribute('data-testid', 'history-day');
+            col.dataset.testid = 'history-day';
             col.setAttribute('role', 'img');
             col.setAttribute('aria-label', label);
             col.title = label;
@@ -861,8 +885,8 @@
         state.users.forEach((user) => {
             const row = document.createElement('div');
             row.className = 'row';
-            row.setAttribute('data-testid', 'admin-row');
-            row.setAttribute('data-user-id', user.id);
+            row.dataset.testid = 'admin-row';
+            row.dataset.userId = user.id;
             const head = document.createElement('span');
             head.className = 'row-head';
             const left = document.createElement('span');
@@ -890,13 +914,13 @@
             input.setAttribute('inputmode', 'decimal');
             input.placeholder = '€';
             input.className = 'row-payment-input';
-            input.setAttribute('data-testid', 'admin-payment-input');
+            input.dataset.testid = 'admin-payment-input';
             input.setAttribute('aria-label', 'Payment amount for account ' + user.id);
             const payButton = document.createElement('button');
             payButton.type = 'button';
             payButton.className = 'btn btn-quiet row-payment-btn';
             payButton.textContent = 'Record payment';
-            payButton.setAttribute('data-testid', 'admin-payment-btn');
+            payButton.dataset.testid = 'admin-payment-btn';
             payButton.addEventListener('click', () => {
                 recordPayment(user, input, payButton);
             });
@@ -904,10 +928,10 @@
             recoveryButton.type = 'button';
             recoveryButton.className = 'btn btn-quiet row-payment-btn';
             recoveryButton.textContent = 'Recovery code';
-            recoveryButton.setAttribute('data-testid', 'admin-recovery-btn');
+            recoveryButton.dataset.testid = 'admin-recovery-btn';
             const recoveryCode = document.createElement('span');
             recoveryCode.className = 'hint row-recovery';
-            recoveryCode.setAttribute('data-testid', 'admin-recovery-code');
+            recoveryCode.dataset.testid = 'admin-recovery-code';
             recoveryCode.hidden = true;
             recoveryButton.addEventListener('click', () => {
                 requestRecoveryCode(user, recoveryButton, recoveryCode);
@@ -916,10 +940,10 @@
             remindButton.type = 'button';
             remindButton.className = 'btn btn-quiet row-payment-btn';
             remindButton.textContent = 'Remind';
-            remindButton.setAttribute('data-testid', 'admin-remind-btn');
+            remindButton.dataset.testid = 'admin-remind-btn';
             const remindStatus = document.createElement('span');
             remindStatus.className = 'hint row-recovery';
-            remindStatus.setAttribute('data-testid', 'admin-remind-status');
+            remindStatus.dataset.testid = 'admin-remind-status';
             remindStatus.hidden = true;
             remindButton.addEventListener('click', () => {
                 sendReminder(user, remindButton, remindStatus);
@@ -928,7 +952,7 @@
             deleteButton.type = 'button';
             deleteButton.className = 'btn btn-quiet row-payment-btn row-delete-btn';
             deleteButton.textContent = 'Delete';
-            deleteButton.setAttribute('data-testid', 'admin-delete-btn');
+            deleteButton.dataset.testid = 'admin-delete-btn';
             // Deleting your own account would leave an installation with a single
             // administrator locked out, so the server refuses it – say so here
             // rather than offering a button that only ever answers with an error.
@@ -1007,8 +1031,8 @@
     async function recordPayment(user, input, button) {
         const statusNode = el('admin-status');
         text(statusNode, '');
-        const value = parseFloat(input.value);
-        if (!isFinite(value) || value <= 0 || value > 10000) {
+        const value = Number.parseFloat(input.value);
+        if (!Number.isFinite(value) || value <= 0 || value > 10000) {
             text(statusNode, 'invalid_amount');
             return;
         }
@@ -1037,8 +1061,8 @@
         const button = el('btn-admin-settings');
         const statusNode = el('admin-settings-status');
         text(statusNode, '');
-        const priceValue = parseFloat(el('admin-price-input').value);
-        if (!isFinite(priceValue) || priceValue <= 0 || priceValue > 1000) {
+        const priceValue = Number.parseFloat(el('admin-price-input').value);
+        if (!Number.isFinite(priceValue) || priceValue <= 0 || priceValue > 1000) {
             text(statusNode, 'invalid_settings');
             return;
         }
@@ -1070,9 +1094,20 @@
         busy(button, false);
     }
     function csvField(value) {
-        let str = value === undefined || value === null ? '' : String(value);
+        let str;
+        if (value === undefined || value === null) {
+            str = '';
+        }
+        else if (typeof value === 'object') {
+            // Not expected in practice (see exportAdminCsv's rows), but avoids
+            // silently emitting the useless "[object Object]" if it ever happens.
+            str = JSON.stringify(value);
+        }
+        else {
+            str = String(value);
+        }
         if (/[",\n]/.test(str)) {
-            str = '"' + str.replace(/"/g, '""') + '"';
+            str = '"' + str.replaceAll('"', '""') + '"';
         }
         return str;
     }
@@ -1095,7 +1130,7 @@
         link.download = 'coffee-time.csv';
         document.body.appendChild(link);
         link.click();
-        document.body.removeChild(link);
+        link.remove();
         URL.revokeObjectURL(url);
     }
     function downloadTextFile(content, filename) {
@@ -1106,15 +1141,15 @@
         link.download = filename;
         document.body.appendChild(link);
         link.click();
-        document.body.removeChild(link);
+        link.remove();
         URL.revokeObjectURL(url);
     }
     /* DER (ArrayBuffer) -> PEM text, wrapped at 64 base64 characters per line. */
     function toPem(buffer, label) {
         const bytes = new Uint8Array(buffer);
         let binary = '';
-        for (let i = 0; i < bytes.length; i++) {
-            binary += String.fromCharCode(bytes[i]);
+        for (const byte of bytes) {
+            binary += String.fromCodePoint(byte);
         }
         const base64 = btoa(binary);
         const lines = [];
@@ -1130,24 +1165,24 @@
         const binary = atob(normalized);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++)
-            bytes[i] = binary.charCodeAt(i);
+            bytes[i] = binary.codePointAt(i) ?? 0;
         return bytes;
     }
     async function decryptAdminName(user) {
         const prefix = 'rsa-oaep-sha1:';
-        if (!state.adminKey || !user.nameEncrypted || user.nameEncrypted.indexOf(prefix) !== 0)
+        if (!state.adminKey || !user.nameEncrypted?.startsWith(prefix))
             return;
         const raw = atob(user.nameEncrypted.slice(prefix.length));
         const bytes = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++)
-            bytes[i] = raw.charCodeAt(i);
+            bytes[i] = raw.codePointAt(i) ?? 0;
         const plain = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, state.adminKey, bytes);
         const data = JSON.parse(new TextDecoder().decode(plain));
         user.decryptedName = (String(data.firstName || '') + ' ' + String(data.lastName || '')).trim();
     }
     async function selectPrivateKey(event) {
         const target = event.target;
-        const file = target.files && target.files[0];
+        const file = target.files?.[0];
         const status = el('admin-key-status');
         state.adminKey = null;
         state.users.forEach((user) => { delete user.decryptedName; });
@@ -1177,7 +1212,7 @@
             }
             renderAdmin(state.users);
         }
-        catch (e) {
+        catch {
             state.adminKey = null;
             text(status, 'Could not decrypt names. Check that this is the matching PKCS#8 key.');
             renderAdmin(state.users);
@@ -1200,14 +1235,13 @@
                     .then((data) => {
                     renderAdmin(data.users);
                 })
-                    .catch(() => { }));
-                jobs.push(api('/api/admin/settings')
+                    .catch(() => { }), api('/api/admin/settings')
                     .then(renderAdminSettings)
                     .catch(() => { }));
             }
             await Promise.all(jobs);
         }
-        catch (e) {
+        catch {
             state.me = null;
             show('auth');
         }
@@ -1467,7 +1501,7 @@
                 initButton.disabled = false;
             }
         }
-        catch (e) {
+        catch {
             state.setupPublicKey = null;
             text(status, 'Could not generate the key pair in this browser.');
         }
@@ -1481,8 +1515,8 @@
             text(status, 'Enter the setup token shown in the server log.');
             return;
         }
-        const priceValue = parseFloat(el('setup-price').value);
-        if (!isFinite(priceValue) || priceValue <= 0 || priceValue > 1000) {
+        const priceValue = Number.parseFloat(el('setup-price').value);
+        if (!Number.isFinite(priceValue) || priceValue <= 0 || priceValue > 1000) {
             text(status, 'invalid_price');
             return;
         }
@@ -1603,7 +1637,7 @@
             }
             await flushQueue();
         }
-        catch (e) {
+        catch {
             /* flushQueue() never rejects; this only keeps the handler from throwing. */
         }
         finally {
@@ -1691,7 +1725,7 @@
         }
         node.classList.remove('bump');
         // Force a reflow so the animation restarts on repeated taps.
-        void node.offsetWidth;
+        node.offsetWidth;
         node.classList.add('bump');
     }
     /* --------------------------------------------------- Invitation link -- */
@@ -1925,7 +1959,7 @@
         if (!badge) {
             return;
         }
-        const shellBuild = badge.getAttribute('data-build') || '';
+        const shellBuild = badge.dataset.build || '';
         let label = 'build ' + (shellBuild === '' ? 'unknown' : shellBuild);
         let lastTap = 0;
         let hintTimer = null;
@@ -1989,7 +2023,7 @@
                 }
             }
         }
-        catch (e) {
+        catch {
             /* Best effort – reload regardless, it is what was asked for. */
         }
         window.location.reload();
@@ -2188,14 +2222,9 @@
         window.addEventListener('online', () => {
             flushQueue();
         });
-        async function startNormalFlow() {
-            show('auth');
-            await refresh();
-            await flushQueue();
-        }
         api('/api/setup/status')
             .then((status) => {
-            if (status && status.needsSetup) {
+            if (status?.needsSetup) {
                 show('setup');
                 return undefined;
             }
@@ -2204,6 +2233,11 @@
             .catch(() => {
             return startNormalFlow();
         });
+    }
+    async function startNormalFlow() {
+        show('auth');
+        await refresh();
+        await flushQueue();
     }
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', ready);

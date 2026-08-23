@@ -54,7 +54,7 @@ sw.addEventListener('fetch', (event) => {
     caches.match(request, matchOptions).then((cached) => {
       const network = fetch(request)
         .then((response) => {
-          if (response && response.ok) {
+          if (response?.ok) {
             const copy = response.clone();
             caches.open(CACHE).then((cache) => {
               cache.put(request, copy);
@@ -103,17 +103,16 @@ interface RemindersResponse {
  * used to badge the outstanding balance instead, which by definition never
  * cleared itself and left users with a number they could do nothing about.
  */
-function badge(count: number): void {
+async function badge(count: number): Promise<void> {
   const workerNavigator = (sw as unknown as { navigator?: { setAppBadge?: (n?: number) => Promise<void> } }).navigator;
   if (!workerNavigator || typeof workerNavigator.setAppBadge !== 'function') {
     return;
   }
   try {
-    const result = workerNavigator.setAppBadge(count);
-    if (result && typeof result.catch === 'function') {
-      result.catch(() => {});
-    }
-  } catch (e) {
+    // Awaiting here (rather than a fire-and-forget .catch()) keeps any
+    // rejection inside this try/catch instead of becoming unhandled.
+    await workerNavigator.setAppBadge(count);
+  } catch {
     /* Badging is a nice-to-have; a browser without it loses nothing else. */
   }
 }
@@ -124,13 +123,15 @@ async function appIsVisible(): Promise<boolean> {
   try {
     const clients = await sw.clients.matchAll({ type: 'window' });
     return clients.some((client) => (client as WindowClient).visibilityState === 'visible');
-  } catch (e) {
+  } catch {
+    // If we can't tell, assume the app isn't visible: badging is the safe
+    // default, since it can only ever be a one-off mark the user clears.
     return false;
   }
 }
 
 function euros(cents: unknown): string {
-  const value = typeof cents === 'number' && isFinite(cents) ? cents : 0;
+  const value = typeof cents === 'number' && Number.isFinite(cents) ? cents : 0;
   const sign = value < 0 ? '-' : '';
   return sign + (Math.abs(value) / 100).toFixed(2) + ' €';
 }
@@ -151,7 +152,7 @@ async function checkReminders(): Promise<void> {
       return;
     }
     data = await response.json();
-  } catch (e) {
+  } catch {
     // Offline – the next trigger checks again.
     return;
   }
@@ -159,7 +160,7 @@ async function checkReminders(): Promise<void> {
   const ack: { month?: string; adminRequestedAt?: number } = {};
   let shown = 0;
 
-  const monthEnd = data && data.monthEnd;
+  const monthEnd = data?.monthEnd;
   if (monthEnd && typeof monthEnd.month === 'string') {
     await sw.registration.showNotification('Coffee Time', {
       body: 'The month is ending — remember to settle your coffee tab ('
@@ -171,7 +172,7 @@ async function checkReminders(): Promise<void> {
     shown++;
   }
 
-  const admin = data && data.admin;
+  const admin = data?.admin;
   if (admin && typeof admin.requestedAt === 'number') {
     await sw.registration.showNotification('Coffee Time', {
       body: 'Your admin asks you to settle your coffee tab ('
@@ -203,8 +204,18 @@ async function checkReminders(): Promise<void> {
 }
 
 sw.addEventListener('message', (event) => {
+  // Any page (or, in theory, a malicious cross-origin actor with a handle on
+  // this worker) can call postMessage() on it, so verify the sender before
+  // acting on the payload. requestReminderCheck() in app.ts sends via
+  // registration.active.postMessage() from this same app, which per spec
+  // sets event.origin to the sending document's origin -- i.e. our own -- so
+  // this check passes that call through unchanged while rejecting anything
+  // not from this origin.
+  if (event.origin !== sw.location.origin) {
+    return;
+  }
   const data = event.data as { type?: unknown } | null;
-  if (data && data.type === 'check-reminders') {
+  if (data?.type === 'check-reminders') {
     event.waitUntil(checkReminders());
   }
 });
