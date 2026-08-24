@@ -91,6 +91,8 @@ There is deliberately no rotation path for `adminPublicKey` or `namePepper`. Re-
 
 The PWA service worker caches only static shell resources. API calls always use the network. Dynamic text is assigned with `textContent`; no user data is inserted as HTML.
 
+The shell markup itself is a plain HTML template, `src/shell.html`, not string literals in PHP. `Frontend::shell()` reads it and substitutes the one dynamic value, the `{{BUILD}}` placeholder for the footer badge. It lives under `src/` — beside `src/build.json`, which set the precedent for non-PHP files there — because that directory is shipped as a whole by both the release bundle and the Docker image and is denied over HTTP by its own `.htaccess`, so the template only ever reaches the browser through the front controller.
+
 The frontend is authored in TypeScript (`frontend/app.ts`, `frontend/sw.ts`) and compiled to the plain JavaScript actually served (`public/app.js`, `public/sw.js`), since production hosts have no Node runtime. Compiled output is committed like any other static asset; CI rebuilds it and diffs against the commit (`git diff --exit-code`) so a stale build fails the pipeline rather than reaching production.
 
 ## Payment reminders

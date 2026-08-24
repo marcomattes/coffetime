@@ -1358,8 +1358,8 @@ final class Api
     private static function serveFrontend(string $path): never
     {
         // Only known application routes serve the interface. Everything else
-        // does not exist – this controller never reads a file from the file
-        // system and therefore cannot serve one either.
+        // does not exist – the request path never selects a file: the only
+        // thing ever served is the one fixed shell template.
         if (!in_array($path, self::APP_PATHS, true)) {
             Http::error('not_found', 404);
         }

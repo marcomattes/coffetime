@@ -164,7 +164,7 @@ test.describe('pwa', () => {
       await expect(page.getByTestId('view-auth')).toBeVisible();
 
       await page.goto('/?book=1');
-      // No data-testid on this element (see src/Frontend.php) -- same
+      // No data-testid on this element (see src/shell.html) -- same
       // situation as #admin-key-status; fall back to its plain id.
       await expect(page.locator('#nfc-hint')).toBeVisible();
       await expect(page.getByTestId('view-app')).toBeHidden();

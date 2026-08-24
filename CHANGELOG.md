@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The application shell markup moved out of PHP into a plain HTML template,
+  `src/shell.html`. `Frontend::shell()` now only reads the template and
+  substitutes the `{{BUILD}}` placeholder; the served markup is unchanged.
+  The template sits under `src/` beside `build.json`, so it ships with every
+  existing deployment path unchanged and stays denied over HTTP by that
+  directory's `.htaccess`.
+
 ## [0.10.0] - 2026-08-23
 
 Mostly a hardening release. Three of the fixes below are ones an operator

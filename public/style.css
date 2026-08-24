@@ -65,7 +65,7 @@ body {
 /*
  * Installed as an app there is no browser chrome: the page starts at the very
  * top of the display, so the notch / Dynamic Island would sit on the first
- * card. `viewport-fit=cover` (see Frontend::shell) exposes the insets; the
+ * card. `viewport-fit=cover` (see src/shell.html) exposes the insets; the
  * padding below keeps content out of them and falls back to 0px in a normal
  * browser tab, where the chrome already does the job.
  */
