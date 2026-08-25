@@ -163,10 +163,27 @@ jobs:
       - name: Run test suite with coverage
         run: php tests/run.php --coverage
 
+      # The scanner copies SONAR_TOKEN straight into an Authorization header,
+      # so a secret stored with a trailing newline takes the whole analysis
+      # down with "Unexpected char 0x0a in Authorization value" before it
+      # reaches the server. Normalising here means the secret does not have to
+      # have been pasted byte-perfect, and an unset one fails with a sentence
+      # instead of a scanner stack trace.
+      - name: Normalise the SonarQube token
+        env:
+          RAW_SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          token="$(printf '%s' "$RAW_SONAR_TOKEN" | tr -d '[:space:]')"
+          if [ -z "$token" ]; then
+            echo 'SONAR_TOKEN is empty or unset. Add it as a repository secret.' >&2
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "SONAR_TOKEN=$token" >> "$GITHUB_ENV"
+
       - name: SonarQube Cloud scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
 
   phpstan:
