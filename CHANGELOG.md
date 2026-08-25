@@ -7,8 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `php tests/run.php --coverage` records line coverage and writes
+  `coverage/clover.xml`. The collector (`tests/coverage.php`) is injected as
+  `auto_prepend_file` into the test processes *and* into the `php -S` workers
+  the HTTP tests start, so the API tests count towards the result instead of
+  leaving every endpoint looking untested. It needs Xdebug and does nothing
+  without the flag, so an ordinary run is unaffected.
+- SonarQube Cloud analysis, configured in `sonar-project.properties` and run
+  by the new `sonarqube` job in CI, which uploads that coverage report.
+  `public/app.js` and `public/sw.js` are excluded from analysis: they are the
+  committed compiler output of `frontend/app.ts` and `frontend/sw.ts`, so
+  scanning both reported the whole frontend as duplicated and every issue in
+  it twice.
+
+### Security
+
+- An admin public key is no longer handed to OpenSSL as the caller wrote it.
+  `openssl_pkey_get_public()` reads a `file://…` argument off the server
+  instead of parsing it, and the key is user-supplied — the setup wizard takes
+  a pasted or uploaded one. `Crypto` now parses the PEM and rebuilds it from a
+  fixed label and its re-encoded body, so what reaches OpenSSL cannot be a
+  path by construction rather than by a rejected prefix. Trailing junk, a
+  non-base64 body, mismatched BEGIN/END labels and non-key PEM types are
+  refused along the way; valid keys keep loading whatever their line wrapping
+  or line endings.
+
 ### Changed
 
+- The two connection-tuning statements (`PRAGMA busy_timeout`,
+  `SET SESSION innodb_lock_wait_timeout`) are compile-time constants instead
+  of strings assembled at runtime. Neither takes a bound parameter, so this
+  removes the last runtime SQL construction on the connection path.
+- Registration, login and device linking no longer each spell out the same
+  credential parsing, ceremony consumption and attestation checks; they share
+  `credentialAndChallenge()`, `consumeCreationCeremony()` and
+  `attestNewCredential()`. The four endpoints that take a `userId` share
+  `existingUserIdFromBody()`. Behaviour, including every error code, is
+  unchanged.
+- The three MySQL-only `CREATE INDEX` guards in the migrations share
+  `createIndexIfMissing()`, and the `credentials` columns added in schema step
+  2 are listed once for both drivers, so the two step tables cannot drift
+  apart.
 - The application shell markup moved out of PHP into a plain HTML template,
   `src/shell.html`. `Frontend::shell()` now only reads the template and
   substitutes the `{{BUILD}}` placeholder; the served markup is unchanged.

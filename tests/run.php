@@ -6,9 +6,38 @@ declare(strict_types=1);
  * Runs every standalone tests/*Test.php script as its own child process,
  * streams its output, and aggregates the results. Exits non-zero if any
  * script fails (non-zero exit) or cannot be started at all.
+ *
+ * With --coverage every child (and every `php -S` worker the HTTP tests start)
+ * records line coverage, which is merged into coverage/clover.xml for
+ * SonarQube. That needs Xdebug; without it the run stops rather than
+ * publishing an empty report as if nothing were covered.
  */
 
+require_once __DIR__ . '/coverage.php';
+require_once __DIR__ . '/clover.php';
+
 $dir = __DIR__;
+$coverageDir = null;
+$cloverPath = dirname(__DIR__) . '/coverage/clover.xml';
+
+if (in_array('--coverage', $argv, true)) {
+    if (!function_exists('xdebug_start_code_coverage')) {
+        fwrite(STDERR, "--coverage needs the Xdebug extension (php -d zend_extension=xdebug).\n");
+        exit(1);
+    }
+    $coverageDir = sys_get_temp_dir() . '/coffee-coverage-' . getmypid();
+    if (!is_dir($coverageDir) && !mkdir($coverageDir, 0o775, true) && !is_dir($coverageDir)) {
+        fwrite(STDERR, "Cannot create the coverage directory {$coverageDir}\n");
+        exit(1);
+    }
+    foreach (glob($coverageDir . '/cov-*.json') ?: [] as $stale) {
+        unlink($stale);
+    }
+    // Inherited by every child, including the built-in servers that
+    // tests/helpers.php starts: coverage.php keys off this variable.
+    putenv('COFFEE_COVERAGE_DIR=' . $coverageDir);
+}
+$coverageArgs = coffeeCoverageCliArgs();
 $files = glob($dir . '/*Test.php') ?: [];
 sort($files);
 
@@ -30,7 +59,7 @@ foreach ($files as $file) {
         1 => ['pipe', 'w'],
         2 => ['pipe', 'w'],
     ];
-    $process = proc_open([PHP_BINARY, $file], $descriptors, $pipes, $dir);
+    $process = proc_open([PHP_BINARY, ...$coverageArgs, $file], $descriptors, $pipes, $dir);
     if (!is_resource($process)) {
         echo "FAIL could not start {$name}" . PHP_EOL;
         $results[$name] = false;
@@ -84,4 +113,25 @@ foreach ($results as $name => $passed) {
 }
 
 printf("%d/%d test file(s) failed" . PHP_EOL, $failed, count($results));
+
+if ($coverageDir !== null) {
+    $coverage = coffeeMergeCoverage($coverageDir);
+    foreach (glob($coverageDir . '/cov-*.json') ?: [] as $dump) {
+        unlink($dump);
+    }
+    @rmdir($coverageDir);
+    if ($coverage === []) {
+        fwrite(STDERR, "No coverage was recorded -- refusing to write an empty report." . PHP_EOL);
+        exit(1);
+    }
+    coffeeWriteClover($coverage, $cloverPath, time());
+    printf(
+        'Coverage: %.2f%% of %d recorded lines in %d file(s) -> %s' . PHP_EOL,
+        coffeeCoveragePercent($coverage),
+        array_sum(array_map('count', $coverage)),
+        count($coverage),
+        $cloverPath
+    );
+}
+
 exit($failed === 0 ? 0 : 1);

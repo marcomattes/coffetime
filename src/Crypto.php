@@ -38,6 +38,22 @@ final class Crypto
      */
     private const MAX_SEALED_PAYLOAD_BYTES = 470;
 
+    /** Single message for every way an admin public key can be unusable. */
+    private const KEY_ERROR = 'adminPublicKey must be a valid PEM-encoded RSA public key';
+
+    /**
+     * Splits a PEM block into its label and its base64 body, anchored at both
+     * ends so nothing may precede or follow the block. The body is restricted
+     * to the base64 alphabet and line breaks, which is what makes the parse a
+     * parse rather than a "does it look like a key" check.
+     */
+    private const PEM_PATTERN = '/\\A-----BEGIN (?P<label>[A-Z ]+)-----\\s*'
+        . '(?P<body>[A-Za-z0-9+\\/=\\s]*?)\\s*'
+        . '-----END (?P=label)-----\\z/';
+
+    /** PEM body line length; 64 base64 characters is what OpenSSL emits. */
+    private const PEM_LINE_LENGTH = 64;
+
     /** @var \OpenSSLAsymmetricKey */
     private $publicKey;
 
@@ -67,19 +83,9 @@ final class Crypto
     /** @return \OpenSSLAsymmetricKey */
     private static function loadPublicKey(string $adminPublicKey)
     {
-        $trimmed = trim($adminPublicKey);
-        // openssl_pkey_get_public() also accepts a "file://…" (or bare path)
-        // argument, not just PEM text. adminPublicKey is user-supplied — the
-        // setup wizard takes a pasted/uploaded key — so without this guard a
-        // crafted "public key" could turn into an arbitrary server-side file
-        // read instead of a PEM parse. Requiring an inline PEM block up front
-        // closes that off before OpenSSL ever sees the value.
-        if (!str_starts_with($trimmed, '-----BEGIN ')) {
-            throw new InvalidArgumentException('adminPublicKey must be a valid PEM-encoded RSA public key');
-        }
-        $key = openssl_pkey_get_public($trimmed);
+        $key = openssl_pkey_get_public(self::canonicalPem($adminPublicKey));
         if ($key === false) {
-            throw new InvalidArgumentException('adminPublicKey must be a valid PEM-encoded RSA public key');
+            throw new InvalidArgumentException(self::KEY_ERROR);
         }
         $details = openssl_pkey_get_details($key);
         if (($details['type'] ?? null) !== OPENSSL_KEYTYPE_RSA || ($details['bits'] ?? 0) < 4096) {
@@ -87,6 +93,49 @@ final class Crypto
         }
 
         return $key;
+    }
+
+    /**
+     * Rebuilds a PEM block from scratch instead of handing OpenSSL whatever
+     * the caller sent.
+     *
+     * openssl_pkey_get_public() does not only parse PEM text: given a
+     * "file://…" argument it reads that path off the server instead. The admin
+     * public key is user-supplied – the setup wizard takes a pasted or
+     * uploaded key – so passing it straight through would let a crafted
+     * "public key" turn a key parse into an arbitrary file read.
+     *
+     * Rejecting suspicious input is not enough for that; the value handed to
+     * OpenSSL is therefore not derived from the input as a string at all. The
+     * label comes from a fixed allow-list of literals, and the body is decoded
+     * from base64 and re-encoded, so the result is provably
+     * "-----BEGIN <literal>-----", base64 characters, "-----END <literal>-----"
+     * and nothing else – a shape no path can take. Along the way this also
+     * rejects trailing junk, a non-base64 body and unknown labels, none of
+     * which a prefix check would have caught.
+     */
+    private static function canonicalPem(string $adminPublicKey): string
+    {
+        if (preg_match(self::PEM_PATTERN, trim($adminPublicKey), $matches) !== 1) {
+            throw new InvalidArgumentException(self::KEY_ERROR);
+        }
+
+        // Literal on both sides of the arm: the label that reaches the output
+        // is this file's own constant text, never the matched substring.
+        $label = match ($matches['label']) {
+            'PUBLIC KEY' => 'PUBLIC KEY',
+            'RSA PUBLIC KEY' => 'RSA PUBLIC KEY',
+            default => throw new InvalidArgumentException(self::KEY_ERROR),
+        };
+
+        $der = base64_decode((string) preg_replace('/\\s+/', '', $matches['body']), true);
+        if ($der === false || $der === '') {
+            throw new InvalidArgumentException(self::KEY_ERROR);
+        }
+
+        return '-----BEGIN ' . $label . "-----\n"
+            . chunk_split(base64_encode($der), self::PEM_LINE_LENGTH, "\n")
+            . '-----END ' . $label . "-----\n";
     }
 
     /**

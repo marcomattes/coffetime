@@ -8,6 +8,11 @@ declare(strict_types=1);
  * `php tests/X.php`; this file only avoids duplicating plumbing.
  */
 
+// coffeeCoverageCliArgs(), used by startPhpServer() below. Returns an empty
+// list unless the run was started with --coverage, so requiring it here costs
+// an ordinary run nothing.
+require_once __DIR__ . '/coverage.php';
+
 /**
  * Dedicated exception type for failures inside the test harness itself
  * (as opposed to failures the harness is asserting about). It extends
@@ -244,7 +249,7 @@ function startPhpServer(string $docroot, string $configPath, int $attempts = 5):
             2 => ['pipe', 'w'],
         ];
         $process = proc_open(
-            [PHP_BINARY, '-S', '127.0.0.1:' . $port, '-t', $docroot],
+            [PHP_BINARY, ...coffeeCoverageCliArgs(), '-S', '127.0.0.1:' . $port, '-t', $docroot],
             $descriptors,
             $pipes,
             $projectRoot,

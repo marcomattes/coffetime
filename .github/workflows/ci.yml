@@ -129,6 +129,63 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
+  # Uploads line coverage (and the analysis itself) to SonarQube Cloud. The
+  # scan is deliberately not part of the `build` gate: a Sonar outage or an
+  # expired token should not be able to hold up a release.
+  sonarqube:
+    runs-on: ubuntu-latest
+    # SONAR_TOKEN is not exposed to workflows triggered from a fork, where the
+    # scan could only fail.
+    if: >-
+      github.event_name == 'push'
+      || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Sonar reads the git history to attribute issues and to decide what
+          # counts as new code; a shallow clone leaves both blank.
+          fetch-depth: 0
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.2'
+          extensions: openssl, pdo_sqlite
+          # The only job that needs it: tests/coverage.php collects through
+          # Xdebug, and `coverage: none` everywhere else keeps the other jobs
+          # running at full speed.
+          coverage: xdebug
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run test suite with coverage
+        run: php tests/run.php --coverage
+
+      # The scanner copies SONAR_TOKEN straight into an Authorization header,
+      # so a secret stored with a trailing newline takes the whole analysis
+      # down with "Unexpected char 0x0a in Authorization value" before it
+      # reaches the server. Normalising here means the secret does not have to
+      # have been pasted byte-perfect, and an unset one fails with a sentence
+      # instead of a scanner stack trace.
+      - name: Normalise the SonarQube token
+        env:
+          RAW_SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          token="$(printf '%s' "$RAW_SONAR_TOKEN" | tr -d '[:space:]')"
+          if [ -z "$token" ]; then
+            echo 'SONAR_TOKEN is empty or unset. Add it as a repository secret.' >&2
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "SONAR_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_HOST_URL: https://sonarcloud.io
+
   phpstan:
     runs-on: ubuntu-latest
     steps:
