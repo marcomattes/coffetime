@@ -3,6 +3,8 @@
 /config.php
 node_modules/
 /deploy/
+# Clover report written by `php tests/run.php --coverage` for SonarQube.
+/coverage/
 /e2e/.runtime/
 /playwright-report/
 /test-results/

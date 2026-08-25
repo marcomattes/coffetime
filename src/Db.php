@@ -27,6 +27,18 @@ final class Db
     private const MYSQL_LOCK_WAIT_SECONDS = 15;
 
     /**
+     * Connection tuning that takes neither a bound parameter nor, in SQLite's
+     * case, a prepared statement at all. Because the two timeouts above are
+     * compile-time constants, the complete statement is one as well: these are
+     * fixed strings assembled by the PHP compiler, so there is no query
+     * construction at runtime that request data could ever reach.
+     */
+    private const SQL_SQLITE_BUSY_TIMEOUT = 'PRAGMA busy_timeout = ' . (self::BUSY_TIMEOUT_SECONDS * 1000);
+
+    /** MySQL/MariaDB counterpart to SQL_SQLITE_BUSY_TIMEOUT. */
+    private const SQL_MYSQL_LOCK_WAIT_TIMEOUT = 'SET SESSION innodb_lock_wait_timeout = ' . self::MYSQL_LOCK_WAIT_SECONDS;
+
+    /**
      * Column-type fragments repeated across sqliteSteps()/mysqlSteps() and
      * expectedColumns(), spelled out exactly once here. INTEGER/BIGINT differ
      * only in the type word, so they are kept as two independent constants
@@ -49,6 +61,23 @@ final class Db
 
     /** Logged when a best-effort index create/drop is skipped; see migrate(). */
     private const LOG_INDEX_SKIPPED = '[coffee] index skipped: ';
+
+    /**
+     * The indexes mysqlSteps() creates, as complete literal statements. MySQL
+     * has no CREATE INDEX IF NOT EXISTS, so each one goes through
+     * createIndexIfMissing(); keeping the statement itself a constant means
+     * that helper only ever forwards a fixed string to PDO::exec().
+     */
+    private const SQL_MYSQL_IDX_EVENTS_USER_CREATED = 'CREATE INDEX idx_coffee_events_user_created
+                             ON coffee_events (user_id, created_at)';
+
+    /** See SQL_MYSQL_IDX_EVENTS_USER_CREATED. */
+    private const SQL_MYSQL_IDX_EVENTS_CLIENT = 'CREATE UNIQUE INDEX idx_coffee_events_client
+                             ON coffee_events (client_event_id)';
+
+    /** See SQL_MYSQL_IDX_EVENTS_USER_CREATED. */
+    private const SQL_MYSQL_IDX_EVENTS_USER_CLIENT = 'CREATE UNIQUE INDEX idx_coffee_events_user_client
+                             ON coffee_events (user_id, client_event_id)';
 
     private static ?PDO $pdo = null;
 
@@ -134,7 +163,7 @@ final class Db
         // allows readers alongside a writer; the mode is stored in the file, so
         // it is only switched when still missing – switching requires an
         // exclusive lock.
-        $pdo->exec('PRAGMA busy_timeout = ' . self::sqlInt(self::BUSY_TIMEOUT_SECONDS * 1000));
+        $pdo->exec(self::SQL_SQLITE_BUSY_TIMEOUT);
         try {
             $mode = $pdo->query('PRAGMA journal_mode')->fetchAll();
             $current = strtolower((string) ($mode[0]['journal_mode'] ?? ''));
@@ -172,7 +201,7 @@ final class Db
         $pdo->exec("SET time_zone = '+00:00'");
         // Analogous to the SQLite busy timeout: competing writers wait for an
         // InnoDB row lock instead of failing immediately.
-        $pdo->exec('SET SESSION innodb_lock_wait_timeout = ' . self::sqlInt(self::MYSQL_LOCK_WAIT_SECONDS));
+        $pdo->exec(self::SQL_MYSQL_LOCK_WAIT_TIMEOUT);
 
         return $pdo;
     }
@@ -616,11 +645,7 @@ final class Db
                 self::ensureColumn($pdo, 'users', 'name_encrypted', 'TEXT');
                 self::ensureColumn($pdo, 'users', 'name_hash', 'TEXT');
                 self::ensureColumn($pdo, 'users', 'user_handle', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'aaguid', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'transports', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'attestation_type', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'trust_path', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'last_used_at', self::COL_INT_ZERO);
+                self::addCredentialMetadata($pdo, self::COL_INT_ZERO);
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS ceremonies (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -792,11 +817,7 @@ final class Db
                 self::ensureColumn($pdo, 'users', 'name_encrypted', 'TEXT');
                 self::ensureColumn($pdo, 'users', 'name_hash', self::COL_SHORT_STRING);
                 self::ensureColumn($pdo, 'users', 'user_handle', 'VARCHAR(32)');
-                self::ensureColumn($pdo, 'credentials', 'aaguid', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'transports', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'attestation_type', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'trust_path', 'TEXT');
-                self::ensureColumn($pdo, 'credentials', 'last_used_at', self::COL_BIGINT_ZERO);
+                self::addCredentialMetadata($pdo, self::COL_BIGINT_ZERO);
                 $pdo->exec(
                     'CREATE TABLE IF NOT EXISTS ceremonies (
                         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -819,20 +840,15 @@ final class Db
                 );
             },
             4 => static function (PDO $pdo): void {
-                // MySQL has no CREATE INDEX IF NOT EXISTS – the check therefore
-                // runs up front via information_schema.
-                if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_user_created')) {
-                    // indexExists-then-CREATE is not atomic: two cold starts
-                    // can both pass the check, and the loser must not 500.
-                    try {
-                        $pdo->exec(
-                            'CREATE INDEX idx_coffee_events_user_created
-                             ON coffee_events (user_id, created_at)'
-                        );
-                    } catch (Throwable $e) {
-                        error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
-                    }
-                }
+                // MySQL has no CREATE INDEX IF NOT EXISTS – the check runs up
+                // front via information_schema instead, see
+                // createIndexIfMissing().
+                self::createIndexIfMissing(
+                    $pdo,
+                    'coffee_events',
+                    'idx_coffee_events_user_created',
+                    self::SQL_MYSQL_IDX_EVENTS_USER_CREATED
+                );
             },
             5 => static function (PDO $pdo): void {
                 // Price per booking: see the comment in sqliteSteps().
@@ -870,17 +886,12 @@ final class Db
                 // number of NULLs in an ordinary UNIQUE index – a partial index
                 // (WHERE ...) is not needed here.
                 self::ensureColumn($pdo, 'coffee_events', 'client_event_id', self::COL_SHORT_STRING);
-                if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_client')) {
-                    // See step 4: the check and the CREATE are not atomic.
-                    try {
-                        $pdo->exec(
-                            'CREATE UNIQUE INDEX idx_coffee_events_client
-                             ON coffee_events (client_event_id)'
-                        );
-                    } catch (Throwable $e) {
-                        error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
-                    }
-                }
+                self::createIndexIfMissing(
+                    $pdo,
+                    'coffee_events',
+                    'idx_coffee_events_client',
+                    self::SQL_MYSQL_IDX_EVENTS_CLIENT
+                );
             },
             9 => static function (PDO $pdo): void {
                 // See the comment in sqliteSteps().
@@ -897,18 +908,12 @@ final class Db
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
                 );
                 self::dropIndex($pdo, 'coffee_events', 'idx_coffee_events_client');
-                if (!self::indexExists($pdo, 'coffee_events', 'idx_coffee_events_user_client')) {
-                    // A CREATE INDEX that loses a race with a concurrently
-                    // starting instance must not take the request down with it.
-                    try {
-                        $pdo->exec(
-                            'CREATE UNIQUE INDEX idx_coffee_events_user_client
-                             ON coffee_events (user_id, client_event_id)'
-                        );
-                    } catch (Throwable $e) {
-                        error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
-                    }
-                }
+                self::createIndexIfMissing(
+                    $pdo,
+                    'coffee_events',
+                    'idx_coffee_events_user_client',
+                    self::SQL_MYSQL_IDX_EVENTS_USER_CLIENT
+                );
             },
             11 => static function (PDO $pdo): void {
                 // See the comment in sqliteSteps().
@@ -916,6 +921,47 @@ final class Db
                 self::ensureColumn($pdo, 'users', 'password_set_at', self::COL_BIGINT_ZERO);
             },
         ];
+    }
+
+    /**
+     * Adds the attestation metadata columns of schema step 2 to `credentials`.
+     *
+     * Both drivers add the same columns in the same order and differ in one
+     * type only, so the list lives here once: a column added to one step table
+     * and forgotten in the other is a schema that depends on which database
+     * the installation happens to run on.
+     */
+    private static function addCredentialMetadata(PDO $pdo, string $timestampType): void
+    {
+        self::ensureColumn($pdo, 'credentials', 'aaguid', 'TEXT');
+        self::ensureColumn($pdo, 'credentials', 'transports', 'TEXT');
+        self::ensureColumn($pdo, 'credentials', 'attestation_type', 'TEXT');
+        self::ensureColumn($pdo, 'credentials', 'trust_path', 'TEXT');
+        self::ensureColumn($pdo, 'credentials', 'last_used_at', $timestampType);
+    }
+
+    /**
+     * Creates an index that MySQL/MariaDB cannot create conditionally itself.
+     *
+     * The existence check and the CREATE are not atomic: two instances starting
+     * cold can both pass the check, and the loser must not take its request
+     * down with it – hence the swallowed exception. $createSql is always one of
+     * the SQL_MYSQL_IDX_* constants; nothing is composed here at runtime.
+     */
+    private static function createIndexIfMissing(
+        PDO $pdo,
+        string $table,
+        string $indexName,
+        string $createSql
+    ): void {
+        if (self::indexExists($pdo, $table, $indexName)) {
+            return;
+        }
+        try {
+            $pdo->exec($createSql);
+        } catch (Throwable $e) {
+            error_log(self::LOG_INDEX_SKIPPED . $e->getMessage());
+        }
     }
 
     /** Removes an index if it is there; never fails when it is not. */
@@ -1323,20 +1369,6 @@ final class Db
                 throw $e;
             }
         }
-    }
-
-    /**
-     * Formats an int for interpolation into SQL that cannot take a bound
-     * parameter (PRAGMA and SET SESSION accept neither placeholders nor,
-     * for PRAGMA, even a prepared statement in SQLite). Both call sites pass
-     * a private class constant, never request data, but the int type hint
-     * still makes the safety structural rather than assumed: with
-     * strict_types enabled, anything that is not a genuine integer is
-     * rejected here with a TypeError before it can reach the query string.
-     */
-    private static function sqlInt(int $value): string
-    {
-        return (string) $value;
     }
 
     /** Identifier quoting is driver-dependent: SQLite "..", MySQL `..`. */

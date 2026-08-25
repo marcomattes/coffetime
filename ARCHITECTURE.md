@@ -83,6 +83,8 @@ Normalization also strips control characters, which keeps a maximum-length name 
 
 A missing or placeholder pepper is refused outright at construction rather than silently producing fingerprints anyone can recompute.
 
+**The admin public key is rebuilt, not merely checked.** `openssl_pkey_get_public()` does not only parse PEM text: given a `file://…` argument it reads that path off the server. The key is user-supplied — the setup wizard takes a pasted or uploaded one — so `Crypto` parses the PEM and assembles a fresh block from a fixed label literal and the re-encoded body instead of forwarding the input. What OpenSSL sees is then provably a BEGIN line, base64, and an END line: a shape no path can take, which is a stronger guarantee than a prefix check that has to anticipate every hostile spelling. Trailing junk, a non-base64 body, mismatched BEGIN/END labels and non-key PEM types fall out of the same parse.
+
 ## Key rotation
 
 There is deliberately no rotation path for `adminPublicKey` or `namePepper`. Re-keying either would strand existing data: a new RSA key cannot decrypt names sealed with the old one, and a new pepper invalidates every stored `name_hash`, breaking duplicate detection. The application therefore refuses to change them after initial setup. Rotating in practice means exporting the decrypted roster with the old private key (`tools/decrypt-users.php`), starting a fresh database, and re-registering — treat the admin private key as unrotatable and back it up accordingly.

@@ -235,6 +235,26 @@ The configured database is dropped and recreated before each test phase, so the 
 
 End-to-end tests run with Playwright: `npm run test:e2e` (see [e2e/README.md](e2e/README.md)).
 
+### Coverage
+
+```bash
+php tests/run.php --coverage
+```
+
+Writes `coverage/clover.xml` (gitignored), the report CI uploads to
+SonarQube Cloud. It needs the Xdebug extension and covers the built-in-server
+processes as well, so the HTTP tests count towards the result rather than
+showing up as untested endpoints. Without `--coverage` nothing changes: the
+collector in `tests/coverage.php` only activates for processes started with
+the flag, so an ordinary run pays no Xdebug cost.
+
+The analysis itself runs from the `sonarqube` job in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and is configured by
+[`sonar-project.properties`](sonar-project.properties). `public/app.js` and
+`public/sw.js` are excluded there: they are the committed compiler output of
+`frontend/app.ts` and `frontend/sw.ts`, so analysing both would report the
+whole frontend as duplicated and every issue in it twice.
+
 ### Frontend build
 
 The PWA frontend is written in TypeScript under `frontend/` (`app.ts`, `sw.ts`) and compiled to the plain scripts the server actually ships, `public/app.js` and `public/sw.js`. There is no Node runtime on the production host, so the compiled output is committed to the repository like any other static asset.

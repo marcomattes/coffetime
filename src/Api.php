@@ -221,40 +221,9 @@ final class Api
         self::requireInvite($body);
         self::requireNames($body);
 
-        $raw = self::credentialFromBody($body);
-        if ($raw === null) {
-            Http::error('invalid_credential', 400);
-        }
-        $challenge = WebAuthnService::challengeFromCredential($raw);
-        if ($challenge === null) {
-            Http::error('invalid_credential', 400);
-        }
-
-        $ceremony = Ceremonies::consume(Ceremonies::KIND_REGISTER, $challenge);
-        if ($ceremony === null) {
-            Http::error('challenge_invalid', 400);
-        }
-        $options = WebAuthnService::creationOptionsFromJson((string) ($ceremony['options'] ?? ''));
-        if ($options === null) {
-            Http::error('challenge_invalid', 400);
-        }
-        $payload = json_decode((string) ($ceremony['payload'] ?? '[]'), true);
-        if (!is_array($payload)) {
-            Http::error('challenge_invalid', 400);
-        }
-
-        $credential = WebAuthnService::parseCredential($raw);
-        if ($credential === null) {
-            Http::error('invalid_credential', 400);
-        }
-        $record = WebAuthnService::verifyAttestation($credential, $options);
-        if ($record === null) {
-            Http::error('verification_failed', 400);
-        }
-
-        if (Credentials::exists(Encoding::base64UrlEncode($record->publicKeyCredentialId))) {
-            Http::error('credential_exists', 409);
-        }
+        [$raw, $challenge] = self::credentialAndChallenge($body);
+        [$options, $payload] = self::consumeCreationCeremony(Ceremonies::KIND_REGISTER, $challenge);
+        $record = self::attestNewCredential($raw, $options);
 
         $nameHash = (string) ($payload['nameHash'] ?? '');
         $nameEncrypted = (string) ($payload['nameEncrypted'] ?? '');
@@ -293,14 +262,7 @@ final class Api
         RateLimit::enforce('login', RateLimit::LOGIN_MAX);
 
         $body = Http::body();
-        $raw = self::credentialFromBody($body);
-        if ($raw === null) {
-            Http::error('invalid_credential', 400);
-        }
-        $challenge = WebAuthnService::challengeFromCredential($raw);
-        if ($challenge === null) {
-            Http::error('invalid_credential', 400);
-        }
+        [$raw, $challenge] = self::credentialAndChallenge($body);
 
         // The challenge is consumed immediately: replaying the same
         // clientDataJSON fails.
@@ -503,29 +465,9 @@ final class Api
 
         $body = Http::body();
 
-        $raw = self::credentialFromBody($body);
-        if ($raw === null) {
-            Http::error('invalid_credential', 400);
-        }
-        $challenge = WebAuthnService::challengeFromCredential($raw);
-        if ($challenge === null) {
-            Http::error('invalid_credential', 400);
-        }
-
+        [$raw, $challenge] = self::credentialAndChallenge($body);
         [$options, $userId, $bodyCode] = self::resolveLinkCeremony($challenge, $body);
-
-        $credential = WebAuthnService::parseCredential($raw);
-        if ($credential === null) {
-            Http::error('invalid_credential', 400);
-        }
-        $record = WebAuthnService::verifyAttestation($credential, $options);
-        if ($record === null) {
-            Http::error('verification_failed', 400);
-        }
-
-        if (Credentials::exists(Encoding::base64UrlEncode($record->publicKeyCredentialId))) {
-            Http::error('credential_exists', 409);
-        }
+        $record = self::attestNewCredential($raw, $options);
 
         // Only now is the code consumed: the attestation is verified and the
         // credential ID is free – from here on the link can no longer fail,
@@ -568,18 +510,7 @@ final class Api
      */
     private static function resolveLinkCeremony(string $challenge, array $body): array
     {
-        $ceremony = Ceremonies::consume(Ceremonies::KIND_LINK, $challenge);
-        if ($ceremony === null) {
-            Http::error('challenge_invalid', 400);
-        }
-        $options = WebAuthnService::creationOptionsFromJson((string) ($ceremony['options'] ?? ''));
-        if ($options === null) {
-            Http::error('challenge_invalid', 400);
-        }
-        $payload = json_decode((string) ($ceremony['payload'] ?? '[]'), true);
-        if (!is_array($payload)) {
-            Http::error('challenge_invalid', 400);
-        }
+        [$options, $payload] = self::consumeCreationCeremony(Ceremonies::KIND_LINK, $challenge);
 
         $userId = (string) ($payload['userId'] ?? '');
         $storedCode = (string) ($payload['code'] ?? '');
@@ -753,10 +684,7 @@ final class Api
         self::requireAdmin($user);
 
         $body = Http::body();
-        $userId = Http::stringField($body, 'userId');
-        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
-            Http::error('unknown_user', 404);
-        }
+        $userId = self::existingUserIdFromBody($body);
 
         // Accept genuine integers only – no bool, no float, no string.
         $amountRaw = $body['amountCents'] ?? null;
@@ -780,10 +708,7 @@ final class Api
         self::requireAdmin($user);
 
         $body = Http::body();
-        $userId = Http::stringField($body, 'userId');
-        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
-            Http::error('unknown_user', 404);
-        }
+        $userId = self::existingUserIdFromBody($body);
 
         Users::requestReminder($userId);
         Http::json(['ok' => true]);
@@ -837,10 +762,7 @@ final class Api
         self::requireAdmin($user);
 
         $body = Http::body();
-        $userId = Http::stringField($body, 'userId');
-        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
-            Http::error('unknown_user', 404);
-        }
+        $userId = self::existingUserIdFromBody($body);
 
         $result = LinkCodes::create($userId, 'admin', LinkCodes::ADMIN_TTL);
         Http::json(['code' => $result['code'], 'expiresAt' => $result['expiresAt']]);
@@ -1276,16 +1198,107 @@ final class Api
     private static function testLogin(): never
     {
         $body = Http::body();
-        $userId = Http::stringField($body, 'userId');
-        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
-            Http::error('unknown_user', 404);
-        }
+        $userId = self::existingUserIdFromBody($body);
 
         Sessions::start($userId);
         Http::json(['ok' => true, 'userId' => $userId]);
     }
 
     // ------------------------------------------------------------ Helpers ---
+
+    /**
+     * Pulls the credential out of a request body and reads the challenge it
+     * was produced for. Registration, login and device linking all open this
+     * way, and all three answer the same 400 for a body that is not a usable
+     * credential.
+     *
+     * @param array<string, mixed> $body
+     * @return array{0: array<mixed>, 1: string} [$raw, $challenge]
+     */
+    private static function credentialAndChallenge(array $body): array
+    {
+        $raw = self::credentialFromBody($body);
+        if ($raw === null) {
+            Http::error('invalid_credential', 400);
+        }
+        $challenge = WebAuthnService::challengeFromCredential($raw);
+        if ($challenge === null) {
+            Http::error('invalid_credential', 400);
+        }
+
+        return [$raw, $challenge];
+    }
+
+    /**
+     * Consumes the attestation ceremony behind a challenge and decodes what
+     * was set aside when it was created. Registration and device linking
+     * differ only in the ceremony kind and in what they read out of the
+     * payload afterwards – every failure here is the same 400.
+     *
+     * @return array{0: \Webauthn\PublicKeyCredentialCreationOptions, 1: array<mixed>} [$options, $payload]
+     */
+    private static function consumeCreationCeremony(string $kind, string $challenge): array
+    {
+        $ceremony = Ceremonies::consume($kind, $challenge);
+        if ($ceremony === null) {
+            Http::error('challenge_invalid', 400);
+        }
+        $options = WebAuthnService::creationOptionsFromJson((string) ($ceremony['options'] ?? ''));
+        if ($options === null) {
+            Http::error('challenge_invalid', 400);
+        }
+        $payload = json_decode((string) ($ceremony['payload'] ?? '[]'), true);
+        if (!is_array($payload)) {
+            Http::error('challenge_invalid', 400);
+        }
+
+        return [$options, $payload];
+    }
+
+    /**
+     * Verifies an attestation against the options its ceremony was created
+     * with and confirms the credential ID is still free. Registration and
+     * device linking both have to clear this before either may write
+     * anything, and a credential ID that is already stored is a 409 in both.
+     *
+     * @param array<mixed> $raw
+     */
+    private static function attestNewCredential(
+        array $raw,
+        \Webauthn\PublicKeyCredentialCreationOptions $options
+    ): \Webauthn\CredentialRecord {
+        $credential = WebAuthnService::parseCredential($raw);
+        if ($credential === null) {
+            Http::error('invalid_credential', 400);
+        }
+        $record = WebAuthnService::verifyAttestation($credential, $options);
+        if ($record === null) {
+            Http::error('verification_failed', 400);
+        }
+        if (Credentials::exists(Encoding::base64UrlEncode($record->publicKeyCredentialId))) {
+            Http::error('credential_exists', 409);
+        }
+
+        return $record;
+    }
+
+    /**
+     * Reads a 'userId' field that has to name an account that exists. Four
+     * endpoints take a user ID this way and all four answer the same 404 –
+     * for a missing field, a malformed ID and an unknown account alike, so
+     * that none of them turns into a probe for which IDs are taken.
+     *
+     * @param array<string, mixed> $body
+     */
+    private static function existingUserIdFromBody(array $body): string
+    {
+        $userId = Http::stringField($body, 'userId');
+        if ($userId === null || !Users::isValidId($userId) || Users::find($userId) === null) {
+            Http::error('unknown_user', 404);
+        }
+
+        return $userId;
+    }
 
     /**
      * @param array<string, mixed> $body

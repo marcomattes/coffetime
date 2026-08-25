@@ -21,6 +21,8 @@ playwright.config.ts
 deploy
 docs
 scripts
+coverage
+sonar-project.properties
 
 # App runtime data and any local config.php (never bake a developer's own
 # secrets/DB into the image; the Dockerfile writes its own minimal

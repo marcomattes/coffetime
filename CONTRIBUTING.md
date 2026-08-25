@@ -50,6 +50,10 @@ MySQL/MariaDB via `COFFEE_TEST_DB`.
 If your change affects Composer dependencies, also run
 `composer validate --strict --no-check-publish`, as CI does.
 
+`php tests/run.php --coverage` additionally writes `coverage/clover.xml` for
+SonarQube. It needs the Xdebug extension; see the README for what the report
+covers.
+
 ## Frontend build
 
 The PWA frontend is TypeScript under `frontend/` (`app.ts`, `sw.ts`),
