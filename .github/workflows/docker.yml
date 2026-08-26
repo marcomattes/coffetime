@@ -150,7 +150,7 @@ jobs:
       # manifest list) but the subject name is part of what gets signed, so
       # `gh attestation verify` on a docker.io reference needs its own.
       - name: Attest build provenance (ghcr.io)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -158,7 +158,7 @@ jobs:
 
       - name: Attest build provenance (Docker Hub)
         if: steps.hub.outputs.enabled == 'true'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: docker.io/${{ env.DOCKERHUB_IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
