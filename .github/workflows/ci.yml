@@ -182,7 +182,7 @@ jobs:
           echo "SONAR_TOKEN=$token" >> "$GITHUB_ENV"
 
       - name: SonarQube Cloud scan
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_HOST_URL: https://sonarcloud.io
 
